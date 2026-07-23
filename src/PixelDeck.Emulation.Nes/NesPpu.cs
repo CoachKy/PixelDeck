@@ -619,14 +619,24 @@ internal sealed class NesPpu
             return;
         }
 
-        if (renderingIsEnabled)
+        if (_oamCorruptionMode == NesOamCorruptionMode.WorstCase &&
+            (executedCycle >= 257 || (executedCycle & 1) == 0))
         {
-            ApplyPendingOamCorruption();
-            return;
+            if (renderingIsEnabled)
+            {
+                // Turning rendering on switches from OAM1ADDR to OAM2ADDR
+                // during the access half of the dot.
+                CorruptOamRow(_oamAddress >> 3, _secondaryOamAddress);
+            }
+            else
+            {
+                // Turning rendering off performs the inverse asynchronous
+                // switch, so the currently selected OAM2 row drives OAM1.
+                CorruptOamRow(_secondaryOamAddress, _oamAddress >> 3);
+            }
         }
 
-        RecordOamCorruption(executedCycle);
-        if (executedCycle is >= 65 and <= 256)
+        if (!renderingIsEnabled && executedCycle is >= 65 and <= 256)
         {
             // Disabling rendering during evaluation increments the current
             // primary-OAM address once and leaves the n/m counters misaligned
@@ -637,51 +647,21 @@ internal sealed class NesPpu
         }
     }
 
-    private void RecordOamCorruption(int executedCycle)
+    private void HandleOamAddressWrite(byte value, byte cpuOpenBus)
     {
-        int row;
-        if (executedCycle is >= 0 and < 64)
-        {
-            row = executedCycle >> 1;
-        }
-        else if (executedCycle is >= 256 and < 320)
-        {
-            var fetch = executedCycle - 256;
-            row = ((fetch >> 3) * 4) + Math.Min(3, fetch & 0x07);
-        }
-        else
+        if (_oamCorruptionMode != NesOamCorruptionMode.WorstCase ||
+            (RenderingEnabled &&
+             Scanline < 240 &&
+             !(Cycle < 257 && (Cycle & 1) != 0)))
         {
             return;
         }
 
-        _oamCorruptionRows[row] = 1;
-    }
-
-    private void ApplyPendingOamCorruption()
-    {
-        var oamChanged = false;
-        for (var row = 0; row < _oamCorruptionRows.Length; row++)
-        {
-            if (_oamCorruptionRows[row] == 0)
-            {
-                continue;
-            }
-
-            if (row > 0)
-            {
-                AccessOamRow(0);
-                AccessOamRow(row);
-                Array.Copy(_oam, 0, _oam, row * 8, 8);
-                oamChanged = true;
-            }
-
-            _oamCorruptionRows[row] = 0;
-        }
-
-        if (oamChanged)
-        {
-            _enhancedSpriteCacheDirty = true;
-        }
+        // $2003 is not synchronized to the OAM precharge clock. In a
+        // collision-prone CPU/PPU alignment, its early-write value first
+        // selects the CPU open-bus row, followed by the intended row.
+        CorruptOamRow(_oamAddress >> 3, cpuOpenBus >> 3);
+        CorruptOamRow(cpuOpenBus >> 3, value >> 3);
     }
 
     private void ApplyPreRenderOamAddressBug()
@@ -694,8 +674,29 @@ internal sealed class NesPpu
         }
 
         var byteInRow = Cycle - 1;
-        var sourceAddress = (_oamAddress & 0xF8) + byteInRow;
+        var sourceRow = (_oamAddress & 0xF8) >> 3;
+        var sourceAddress = (sourceRow << 3) + byteInRow;
         WritePrimaryOam((byte)byteInRow, ReadPrimaryOam((byte)sourceAddress));
+        if (Cycle == 1)
+        {
+            _secondaryOam[0] = _secondaryOam[sourceRow];
+        }
+    }
+
+    private void CorruptOamRow(int sourceRow, int destinationRow)
+    {
+        sourceRow &= 0x1F;
+        destinationRow &= 0x1F;
+        if (sourceRow == destinationRow)
+        {
+            return;
+        }
+
+        AccessOamRow(sourceRow);
+        AccessOamRow(destinationRow);
+        Array.Copy(_oam, sourceRow << 3, _oam, destinationRow << 3, 8);
+        _secondaryOam[destinationRow] = _secondaryOam[sourceRow];
+        _enhancedSpriteCacheDirty = true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1018,6 +1019,7 @@ internal sealed class NesPpu
             if ((Cycle & 1) == 0)
             {
                 var secondaryRow = (Cycle >> 1) - 1;
+                _secondaryOamAddress = (byte)secondaryRow;
                 AccessOamRow(secondaryRow);
                 _secondaryOam[secondaryRow] = 0xFF;
             }
