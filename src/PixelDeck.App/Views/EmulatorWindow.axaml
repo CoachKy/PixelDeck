@@ -1,0 +1,85 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="PixelDeck.App.Views.EmulatorWindow"
+        Title="PixelDeck Emulator"
+        Icon="/Assets/PixelDeckIcon.png"
+        WindowState="FullScreen"
+        WindowDecorations="None"
+        Background="#000000">
+
+    <Window.Styles>
+        <Style Selector="Button.guide-item">
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="Background" Value="#0FFFFFFF" />
+            <Setter Property="Foreground" Value="#F7FAFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Padding" Value="18,14" />
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button.guide-item:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#23FFFFFF" />
+        </Style>
+        <Style Selector="Button.guide-item:focus /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#3D91F2" />
+        </Style>
+        <Style Selector="Button.guide-item:disabled">
+            <Setter Property="Opacity" Value="0.34" />
+        </Style>
+        <Style Selector="Button.guide-item.danger:focus /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#D94B64" />
+        </Style>
+    </Window.Styles>
+
+    <Grid>
+        <Image Name="FrameImage"
+               Stretch="Uniform"
+               RenderOptions.BitmapInterpolationMode="None" />
+
+        <Border Name="LoadingOverlay" Background="#000000">
+            <TextBlock Name="EmulatorStatusText"
+                       Text="POWERING ON"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontSize="17"
+                       FontWeight="Black"
+                       LetterSpacing="1.6" />
+        </Border>
+
+        <Grid Name="PauseOverlay" IsVisible="False" ColumnDefinitions="430,*">
+            <Border Grid.ColumnSpan="2" Background="#A6000000" />
+            <Border Grid.Column="0" Background="#F20A1525" BoxShadow="18 0 48 0 #90000000">
+                <Grid Margin="46,42,36,42" RowDefinitions="Auto,*,Auto">
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="PIXELDECK"
+                                   Foreground="#63B8FF"
+                                   FontSize="11"
+                                   FontWeight="Bold"
+                                   LetterSpacing="2.2" />
+                        <TextBlock Text="Paused"
+                                   FontSize="38"
+                                   FontWeight="Black"
+                                   LetterSpacing="-1" />
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="1" VerticalAlignment="Center" Spacing="8">
+                        <Button Name="ResumeButton" Classes="guide-item" Content="Resume" Click="OnResumeClick" />
+                        <Button Name="SaveStateButton" Classes="guide-item" Content="Save state" Click="OnSaveStateClick" />
+                        <Button Name="LoadStateButton" Classes="guide-item" Content="Load state" Click="OnLoadStateClick" />
+                        <Button Name="ResetGameButton" Classes="guide-item" Content="Reset game" Click="OnResetGameClick" />
+                        <Button Name="QuitGameButton" Classes="guide-item danger" Content="Quit game" Click="OnQuitGameClick" />
+                    </StackPanel>
+
+                    <TextBlock Name="StateStatusText"
+                               Grid.Row="2"
+                               Foreground="#8296AD"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               LineHeight="17" />
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

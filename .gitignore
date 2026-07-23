@@ -1,0 +1,20 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+*.suo
+
+# Local game content never belongs in the repository.
+/Games/*
+!/Games/README.md
+!/Games/Nintendo/
+!/Games/SuperNintendo/
+/Games/Nintendo/*
+!/Games/Nintendo/README.md
+/Games/SuperNintendo/*
+!/Games/SuperNintendo/README.md
+
+# Accuracy-test ROMs are installed locally because their redistribution terms vary.
+/tests/PixelDeck.App.Tests/TestRoms/*
+!/tests/PixelDeck.App.Tests/TestRoms/README.md

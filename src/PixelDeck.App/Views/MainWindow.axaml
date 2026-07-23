@@ -1,0 +1,1072 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:PixelDeck.App.ViewModels"
+        xmlns:model="using:PixelDeck.App.Models"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        d:DesignWidth="1440"
+        d:DesignHeight="900"
+        x:Class="PixelDeck.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="PixelDeck"
+        Icon="/Assets/PixelDeckIcon.png"
+        Width="1280"
+        Height="800"
+        MinWidth="960"
+        MinHeight="620"
+        WindowState="Maximized"
+        WindowStartupLocation="CenterScreen"
+        Background="#08111F">
+
+    <Design.DataContext>
+        <vm:MainViewModel />
+    </Design.DataContext>
+
+    <Window.Styles>
+        <Style Selector="Button.utility">
+            <Setter Property="Background" Value="#12FFFFFF" />
+            <Setter Property="BorderBrush" Value="#28FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16,10" />
+            <Setter Property="Foreground" Value="#F6F8FC" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="Button.utility:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#24FFFFFF" />
+        </Style>
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="#3D91F2" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16,12" />
+            <Setter Property="Foreground" Value="#FFFFFFFF" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style Selector="Button.primary:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#55A7FF" />
+        </Style>
+        <Style Selector="Button.danger">
+            <Setter Property="Background" Value="#D94E63" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16,12" />
+            <Setter Property="Foreground" Value="#FFFFFFFF" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style Selector="Button.danger:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#EF6579" />
+        </Style>
+        <Style Selector="Button.dialog-choice:focus">
+            <Setter Property="BorderBrush" Value="#FFFFFFFF" />
+            <Setter Property="BorderThickness" Value="3" />
+        </Style>
+        <Style Selector="Button.dashboard-tab">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0,0,0,3" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="12,4,12,10" />
+            <Setter Property="Foreground" Value="#637386" />
+            <Setter Property="FontSize" Value="28" />
+            <Setter Property="FontWeight" Value="Light" />
+            <Setter Property="LetterSpacing" Value="0.2" />
+            <Setter Property="MinWidth" Value="126" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.dashboard-tab.selected">
+            <Setter Property="Foreground" Value="#F7F9FC" />
+            <Setter Property="FontWeight" Value="Normal" />
+        </Style>
+        <Style Selector="Button.dashboard-tab:pointerover">
+            <Setter Property="Foreground" Value="#DCE5EF" />
+        </Style>
+        <Style Selector="Button.dashboard-tab:focus">
+            <Setter Property="BorderBrush" Value="#65B7FF" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="Button.dashboard-tab:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#0AFFFFFF" />
+        </Style>
+        <Style Selector="Button.dashboard-tab:focus /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#0AFFFFFF" />
+        </Style>
+        <Style Selector="Button.system-tab">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0,0,0,3" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="4,5,4,9" />
+            <Setter Property="Foreground" Value="#64768C" />
+            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Setter Property="MinWidth" Value="150" />
+        </Style>
+        <Style Selector="Button.system-tab.selected">
+            <Setter Property="Foreground" Value="#F7F9FC" />
+        </Style>
+        <Style Selector="Button.system-tab:pointerover">
+            <Setter Property="Foreground" Value="#DCE5EF" />
+        </Style>
+        <Style Selector="Button.system-tab:focus">
+            <Setter Property="BorderBrush" Value="#65B7FF" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
+        </Style>
+        <Style Selector="ListBoxItem">
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,18,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        </Style>
+        <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ListBox.gallery ListBoxItem">
+            <Setter Property="Margin" Value="0,0,14,16" />
+        </Style>
+        <Style Selector="ListBoxItem Border.game-card">
+            <Setter Property="BorderBrush" Value="#24FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BoxShadow" Value="0 14 32 0 #50000000" />
+        </Style>
+        <Style Selector="ListBoxItem:pointerover Border.game-card">
+            <Setter Property="BorderBrush" Value="#90FFFFFF" />
+        </Style>
+        <Style Selector="ListBoxItem:selected Border.game-card">
+            <Setter Property="BorderBrush" Value="#FFFFFFFF" />
+            <Setter Property="BorderThickness" Value="3" />
+            <Setter Property="BoxShadow" Value="0 18 45 0 #90000000" />
+        </Style>
+    </Window.Styles>
+
+    <Grid>
+        <Border>
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                    <GradientStop Color="#142946" Offset="0" />
+                    <GradientStop Color="#08111F" Offset="0.48" />
+                    <GradientStop Color="#10152A" Offset="1" />
+                </LinearGradientBrush>
+            </Border.Background>
+        </Border>
+
+        <Ellipse Width="680"
+                 Height="680"
+                 Margin="-260,-360,0,0"
+                 HorizontalAlignment="Left"
+                 VerticalAlignment="Top"
+                 Fill="#123A9EF7"
+                 IsHitTestVisible="False" />
+        <Ellipse Width="520"
+                 Height="520"
+                 Margin="0,0,-280,-280"
+                 HorizontalAlignment="Right"
+                 VerticalAlignment="Bottom"
+                 Fill="#106F5DE7"
+                 IsHitTestVisible="False" />
+
+        <Grid Margin="54,38,54,34" RowDefinitions="Auto,Auto,*,Auto">
+            <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto">
+                <Image Grid.Column="0"
+                       Width="205"
+                       Height="51"
+                       Stretch="Uniform">
+                    <Image.Source>
+                        <CroppedBitmap Source="/Assets/PixelDeckLogo.png"
+                                       SourceRect="183,234,1527,377" />
+                    </Image.Source>
+                </Image>
+
+                <StackPanel Grid.Column="1"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Orientation="Horizontal"
+                            Spacing="34">
+                    <Button Name="HomeTabButton"
+                            Classes="dashboard-tab"
+                            Classes.selected="{Binding IsHomeVisible}"
+                            Command="{Binding ShowHomeCommand}"
+                            Click="OnDashboardTabClick"
+                            GotFocus="OnPrimaryTabGotFocus"
+                            Content="home" />
+                    <Button Name="LibraryTabButton"
+                            Classes="dashboard-tab"
+                            Classes.selected="{Binding IsLibraryVisible}"
+                            Command="{Binding ShowLibraryCommand}"
+                            Click="OnDashboardTabClick"
+                            GotFocus="OnPrimaryTabGotFocus"
+                            Content="library" />
+                    <Button Name="SettingsTabButton"
+                            Classes="dashboard-tab"
+                            Classes.selected="{Binding IsSettingsVisible}"
+                            Command="{Binding ShowSettingsCommand}"
+                            Click="OnDashboardTabClick"
+                            GotFocus="OnPrimaryTabGotFocus"
+                            Content="settings" />
+                    <Button Name="QuitTabButton"
+                            Classes="dashboard-tab"
+                            Classes.selected="{Binding IsQuitVisible}"
+                            Command="{Binding ShowQuitCommand}"
+                            Click="OnDashboardTabClick"
+                            GotFocus="OnPrimaryTabGotFocus"
+                            Content="quit" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                    <TextBlock Text="{Binding ClockText}"
+                               HorizontalAlignment="Right"
+                               FontSize="18"
+                               FontWeight="SemiBold" />
+                    <TextBlock Text="LOCAL MODE"
+                               HorizontalAlignment="Right"
+                               Foreground="#8092AA"
+                               FontSize="11"
+                               FontWeight="Bold"
+                               LetterSpacing="1.8" />
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="0,60,0,28" ColumnDefinitions="*,Auto" IsVisible="{Binding IsHomeVisible}">
+                <StackPanel>
+                    <TextBlock Text="WELCOME BACK"
+                               FontSize="14"
+                               Foreground="#65B7FF"
+                               FontWeight="Bold"
+                               LetterSpacing="2.4" />
+                    <TextBlock Text="Home"
+                               Margin="-2,4,0,0"
+                               FontSize="50"
+                               FontWeight="Black"
+                               LetterSpacing="-1.5" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
+                    <TextBlock Text="{Binding RecentSummaryText}"
+                               HorizontalAlignment="Right"
+                               Foreground="#9CACBF"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               LetterSpacing="1.3" />
+                    <TextBlock Text="Stored locally on this machine"
+                               Margin="0,4,0,0"
+                               HorizontalAlignment="Right"
+                               Foreground="#607087"
+                               FontSize="12" />
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="0,60,0,28" ColumnDefinitions="Auto,*,Auto" IsVisible="{Binding IsLibraryVisible}">
+                <StackPanel>
+                    <TextBlock Text="YOUR GAMES"
+                               FontSize="14"
+                               Foreground="#65B7FF"
+                               FontWeight="Bold"
+                               LetterSpacing="2.4" />
+                    <TextBlock Text="Library"
+                               Margin="-2,4,0,0"
+                               FontSize="50"
+                               FontWeight="Black"
+                               LetterSpacing="-1.5" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1"
+                            Margin="48,0,0,4"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Bottom"
+                            Orientation="Horizontal"
+                            Spacing="24">
+                    <Button Name="NintendoSystemTabButton"
+                            Classes="system-tab"
+                            Classes.selected="{Binding IsNintendoSelected}"
+                            Command="{Binding ShowNintendoLibraryCommand}"
+                            Click="OnDashboardTabClick"
+                            GotFocus="OnLibraryTabGotFocus"
+                            Content="Nintendo" />
+                    <Button Name="SuperNintendoSystemTabButton"
+                            Classes="system-tab"
+                            Classes.selected="{Binding IsSuperNintendoSelected}"
+                            Command="{Binding ShowSuperNintendoLibraryCommand}"
+                            Click="OnDashboardTabClick"
+                            GotFocus="OnLibraryTabGotFocus"
+                            Content="Super Nintendo" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
+                    <TextBlock Text="{Binding StatusText}"
+                               HorizontalAlignment="Right"
+                               Foreground="#9CACBF"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               LetterSpacing="1.3" />
+                    <TextBlock Text="{Binding SystemTotalPlayTimeText}"
+                               Margin="0,4,0,0"
+                               HorizontalAlignment="Right"
+                               Foreground="#65B7FF"
+                               FontSize="11"
+                               FontWeight="Bold"
+                               LetterSpacing="0.9" />
+                    <TextBlock Text="Watching for changes"
+                               Margin="0,3,0,0"
+                               HorizontalAlignment="Right"
+                               Foreground="#607087"
+                               FontSize="12" />
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="0,60,0,28" ColumnDefinitions="*,Auto" IsVisible="{Binding IsSettingsVisible}">
+                <StackPanel>
+                    <TextBlock Text="LOCAL HARDWARE"
+                               FontSize="14"
+                               Foreground="#65B7FF"
+                               FontWeight="Bold"
+                               LetterSpacing="2.4" />
+                    <TextBlock Text="Settings"
+                               Margin="-2,4,0,0"
+                               FontSize="50"
+                               FontWeight="Black"
+                               LetterSpacing="-1.5" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Bottom">
+                    <TextBlock Text="{Binding ControllerStatusText}"
+                               HorizontalAlignment="Right"
+                               Foreground="#9CACBF"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               LetterSpacing="1.3" />
+                    <TextBlock Text="Saved automatically on this machine"
+                               Margin="0,4,0,0"
+                               HorizontalAlignment="Right"
+                               Foreground="#607087"
+                               FontSize="12" />
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="0,60,0,28" ColumnDefinitions="*,Auto" IsVisible="{Binding IsQuitVisible}">
+                <StackPanel>
+                    <TextBlock Text="FINISHED PLAYING?"
+                               FontSize="14"
+                               Foreground="#65B7FF"
+                               FontWeight="Bold"
+                               LetterSpacing="2.4" />
+                    <TextBlock Text="Quit"
+                               Margin="-2,4,0,0"
+                               FontSize="50"
+                               FontWeight="Black"
+                               LetterSpacing="-1.5" />
+                </StackPanel>
+
+                <TextBlock Grid.Column="1"
+                           Text="RETURN TO DESKTOP"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Bottom"
+                           Foreground="#9CACBF"
+                           FontSize="12"
+                           FontWeight="Bold"
+                           LetterSpacing="1.3" />
+            </Grid>
+
+            <Grid Name="HomePage"
+                  Grid.Row="2"
+                  Focusable="True"
+                  GotFocus="OnPageContentGotFocus"
+                  ClipToBounds="True"
+                  IsVisible="{Binding IsHomeVisible}">
+                <ListBox Name="RecentGameList"
+                         ItemsSource="{Binding RecentGames}"
+                         SelectedItem="{Binding SelectedRecentGame, Mode=TwoWay}"
+                         SelectedIndex="{Binding SelectedRecentIndex, Mode=TwoWay}"
+                         IsVisible="{Binding HasRecentGames}"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                         ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                         SelectionChanged="OnDashboardSelectionChanged"
+                         DoubleTapped="OnRecentGameDoubleTapped">
+                    <ListBox.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" />
+                        </ItemsPanelTemplate>
+                    </ListBox.ItemsPanel>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:RecentGameEntry">
+                            <Border Classes="game-card"
+                                    Width="264"
+                                    Height="380"
+                                    CornerRadius="12"
+                                    ClipToBounds="True">
+                                <Grid RowDefinitions="238,*">
+                                    <Border Grid.Row="0">
+                                        <Border.Background>
+                                            <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                                                <GradientStop Color="{Binding Game.AccentColor}" Offset="0" />
+                                                <GradientStop Color="#202B42" Offset="1" />
+                                            </LinearGradientBrush>
+                                        </Border.Background>
+                                        <Grid>
+                                            <Ellipse Width="240"
+                                                     Height="240"
+                                                     Margin="-100,-110,0,0"
+                                                     HorizontalAlignment="Left"
+                                                     VerticalAlignment="Top"
+                                                     Fill="#24FFFFFF" />
+                                            <TextBlock Text="{Binding Game.PlatformCode}"
+                                                       IsVisible="{Binding Game.HasNoScreenshot}"
+                                                       Margin="22"
+                                                       HorizontalAlignment="Left"
+                                                       VerticalAlignment="Bottom"
+                                                       FontSize="46"
+                                                       FontWeight="Black"
+                                                       Foreground="#F4FFFFFF" />
+                                            <Image Source="{Binding Game.Screenshot}"
+                                                   IsVisible="{Binding Game.HasScreenshot}"
+                                                   Stretch="UniformToFill" />
+                                        </Grid>
+                                    </Border>
+
+                                    <Border Grid.Row="1" Padding="19,14" Background="#E8121C2B">
+                                        <StackPanel VerticalAlignment="Center" Spacing="6">
+                                            <TextBlock Text="{Binding Game.Title}"
+                                                       MaxLines="1"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       FontSize="17"
+                                                       FontWeight="Bold" />
+                                            <TextBlock Text="{Binding TotalPlayTimeText}"
+                                                       Foreground="#65B7FF"
+                                                       FontSize="11"
+                                                       FontWeight="Bold"
+                                                       LetterSpacing="0.7" />
+                                            <TextBlock Text="{Binding LastPlayedText}"
+                                                       Foreground="#8A9CB2"
+                                                       FontSize="10" />
+                                            <TextBlock Text="{Binding SessionText}"
+                                                       Foreground="#607087"
+                                                       FontSize="9"
+                                                       FontWeight="Bold"
+                                                       LetterSpacing="0.7" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+
+                <Border IsVisible="{Binding IsHomeEmpty}"
+                        Padding="42"
+                        CornerRadius="14"
+                        BorderBrush="#22FFFFFF"
+                        BorderThickness="1"
+                        Background="#0EFFFFFF">
+                    <StackPanel MaxWidth="600" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14">
+                        <TextBlock Text="YOUR RECENT GAMES WILL LIVE HERE"
+                                   HorizontalAlignment="Center"
+                                   FontSize="24"
+                                   FontWeight="Black"
+                                   LetterSpacing="1.3" />
+                        <TextBlock Text="Play a game from the Library and PixelDeck will track its last-played time, total play time, and sessions on this machine."
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap"
+                                   Foreground="#8FA0B5"
+                                   FontSize="15"
+                                   LineHeight="22" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid Name="LibraryPage" Grid.Row="2" ColumnDefinitions="*,320" ColumnSpacing="26" ClipToBounds="True" Focusable="True" GotFocus="OnPageContentGotFocus" IsVisible="{Binding IsLibraryVisible}">
+                <Grid Grid.Column="0">
+                    <ListBox Name="GameList"
+                             Classes="gallery"
+                             ItemsSource="{Binding LibraryGames}"
+                             SelectedItem="{Binding SelectedGame, Mode=TwoWay}"
+                             SelectedIndex="{Binding SelectedIndex, Mode=TwoWay}"
+                             IsVisible="{Binding HasGames}"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             SelectionChanged="OnDashboardSelectionChanged"
+                             DoubleTapped="OnGameDoubleTapped">
+                        <ListBox.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="6" />
+                            </ItemsPanelTemplate>
+                        </ListBox.ItemsPanel>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="model:GameEntry">
+                                <Border Classes="game-card"
+                                        Height="330"
+                                        HorizontalAlignment="Stretch"
+                                        CornerRadius="12"
+                                        ClipToBounds="True">
+                                    <Grid RowDefinitions="210,*">
+                                        <Border Grid.Row="0">
+                                            <Border.Background>
+                                                <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                                                    <GradientStop Color="{Binding AccentColor}" Offset="0" />
+                                                    <GradientStop Color="#202B42" Offset="1" />
+                                                </LinearGradientBrush>
+                                            </Border.Background>
+                                            <Grid>
+                                                <Ellipse Width="240"
+                                                         Height="240"
+                                                         Margin="-100,-110,0,0"
+                                                         HorizontalAlignment="Left"
+                                                         VerticalAlignment="Top"
+                                                         Fill="#24FFFFFF" />
+                                                <TextBlock Text="{Binding PlatformCode}"
+                                                           IsVisible="{Binding HasNoScreenshot}"
+                                                           Margin="22"
+                                                           HorizontalAlignment="Left"
+                                                           VerticalAlignment="Bottom"
+                                                           FontSize="46"
+                                                           FontWeight="Black"
+                                                           Foreground="#F4FFFFFF"
+                                                           LetterSpacing="-1" />
+                                                <Image Source="{Binding Screenshot}"
+                                                       IsVisible="{Binding HasScreenshot}"
+                                                       Stretch="UniformToFill" />
+                                                <Border IsVisible="{Binding HasScreenshot}"
+                                                        Height="72"
+                                                        VerticalAlignment="Bottom">
+                                                    <Border.Background>
+                                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                                                            <GradientStop Color="#00101A28" Offset="0" />
+                                                            <GradientStop Color="#B8101A28" Offset="1" />
+                                                        </LinearGradientBrush>
+                                                    </Border.Background>
+                                                </Border>
+                                                <Border Margin="18"
+                                                        Padding="8,5"
+                                                        HorizontalAlignment="Right"
+                                                        VerticalAlignment="Top"
+                                                        CornerRadius="5"
+                                                        Background="#6008121F">
+                                                    <TextBlock Text="{Binding LaunchBadgeText}"
+                                                               FontSize="9"
+                                                               FontWeight="Bold"
+                                                               LetterSpacing="1.2" />
+                                                </Border>
+                                            </Grid>
+                                        </Border>
+
+                                        <Border Grid.Row="1" Padding="19,15" Background="#E8121C2B">
+                                            <StackPanel VerticalAlignment="Center" Spacing="6">
+                                                <TextBlock Text="{Binding Title}"
+                                                           MaxLines="2"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           FontSize="17"
+                                                           FontWeight="Bold"
+                                                           LineHeight="21" />
+                                                <TextBlock Text="{Binding Platform}"
+                                                           Foreground="#7F91A8"
+                                                           FontSize="11"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding PlayTimeText}"
+                                                           Foreground="#65B7FF"
+                                                           FontSize="10"
+                                                           FontWeight="Bold"
+                                                           LetterSpacing="0.6" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <Border IsVisible="{Binding IsEmpty}"
+                            Padding="42"
+                            CornerRadius="14"
+                            BorderBrush="#22FFFFFF"
+                            BorderThickness="1"
+                            Background="#0EFFFFFF">
+                        <StackPanel MaxWidth="590" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="14">
+                            <TextBlock Text="YOUR SHELF IS EMPTY"
+                                       HorizontalAlignment="Center"
+                                       FontSize="24"
+                                       FontWeight="Black"
+                                       LetterSpacing="1.5" />
+                            <TextBlock Text="{Binding EmptyLibraryText}"
+                                       HorizontalAlignment="Center"
+                                       TextAlignment="Center"
+                                       TextWrapping="Wrap"
+                                       Foreground="#8FA0B5"
+                                       FontSize="15"
+                                       LineHeight="22" />
+                            <TextBlock Text="{Binding SelectedLibraryFolder}"
+                                       Margin="0,5,0,3"
+                                       HorizontalAlignment="Center"
+                                       TextAlignment="Center"
+                                       TextWrapping="Wrap"
+                                       Foreground="#5FB5FF"
+                                       FontFamily="Cascadia Mono,Consolas"
+                                       FontSize="12" />
+                            <Button Classes="utility"
+                                    Command="{Binding OpenGamesFolderCommand}"
+                                    HorizontalAlignment="Center"
+                                    Content="{Binding OpenLibraryFolderText}" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <Border Grid.Column="1"
+                        IsVisible="{Binding HasGames}"
+                        ClipToBounds="True"
+                        Padding="22"
+                        CornerRadius="14"
+                        BorderBrush="#22FFFFFF"
+                        BorderThickness="1"
+                        Background="#B00C1727">
+                    <Grid RowDefinitions="Auto,*,Auto">
+                        <StackPanel Grid.Row="0" Spacing="8">
+                            <TextBlock Text="SELECTED GAME"
+                                       Foreground="#6BB9FF"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       LetterSpacing="1.8" />
+                            <TextBlock Text="{Binding SelectedGame.Title}"
+                                       FontSize="27"
+                                       FontWeight="Black"
+                                       TextWrapping="Wrap"
+                                       LineHeight="31" />
+                            <TextBlock Text="{Binding SelectedGame.Platform}"
+                                       Foreground="#8FA0B5"
+                                       FontSize="14" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Margin="0,30,0,0" Spacing="19">
+                            <StackPanel Spacing="4">
+                                <TextBlock Text="FILE" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                <TextBlock Text="{Binding SelectedGame.RelativePath}"
+                                           FontSize="13"
+                                           TextWrapping="Wrap"
+                                           TextTrimming="CharacterEllipsis"
+                                           MaxLines="3" />
+                            </StackPanel>
+                            <Grid ColumnDefinitions="*,*">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="SIZE" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                    <TextBlock Text="{Binding SelectedGame.SizeText}" FontSize="13" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="MODIFIED" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                    <TextBlock Text="{Binding SelectedGame.ModifiedText}" FontSize="13" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,*">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="CARTRIDGE" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                    <TextBlock Text="{Binding SelectedGame.MapperText}" FontSize="13" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="CORE STATUS" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                    <TextBlock Text="{Binding SelectedGame.LaunchBadgeText}" FontSize="13" />
+                                </StackPanel>
+                            </Grid>
+                            <Grid ColumnDefinitions="*,*">
+                                <StackPanel Grid.Column="0" Spacing="4">
+                                    <TextBlock Text="TIME PLAYED" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                    <TextBlock Text="{Binding SelectedGame.PlayTimeText}" Foreground="#65B7FF" FontSize="13" FontWeight="SemiBold" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Spacing="4">
+                                    <TextBlock Text="LAST PLAYED" Foreground="#65768C" FontSize="10" FontWeight="Bold" LetterSpacing="1.3" />
+                                    <TextBlock Text="{Binding SelectedGame.LastPlayedText}" FontSize="13" />
+                                </StackPanel>
+                            </Grid>
+                            <Border Height="1" Background="#18FFFFFF" />
+                            <TextBlock Text="{Binding SelectedGame.CompatibilityText}"
+                                       Foreground="#718399"
+                                       FontSize="12"
+                                       TextWrapping="Wrap"
+                                       LineHeight="18" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="2" Spacing="9">
+                            <Button Classes="primary"
+                                    IsEnabled="{Binding SelectedGame.CanLaunch}"
+                                    Click="OnLaunchClick"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    Content="Play" />
+                            <Button Classes="utility"
+                                    Command="{Binding OpenGamesFolderCommand}"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Center"
+                                    Content="Open games folder" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Grid Name="SettingsPage" Grid.Row="2" ColumnDefinitions="420,*" ColumnSpacing="42" Focusable="True" GotFocus="OnPageContentGotFocus" IsVisible="{Binding IsSettingsVisible}">
+                <Border Grid.Column="0"
+                        Padding="28"
+                        CornerRadius="14"
+                        BorderBrush="#22FFFFFF"
+                        BorderThickness="1"
+                        Background="#B00C1727">
+                    <StackPanel Spacing="18">
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="ACTIVE CONTROLLER"
+                                       Foreground="#6BB9FF"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       LetterSpacing="1.8" />
+                            <TextBlock Text="Choose the XInput controller PixelDeck uses for player one."
+                                       Foreground="#8FA0B5"
+                                       FontSize="13"
+                                       TextWrapping="Wrap"
+                                       LineHeight="19" />
+                        </StackPanel>
+
+                        <ComboBox Name="ControllerSlotPicker"
+                                  ItemsSource="{Binding ControllerSlots}"
+                                  SelectedItem="{Binding SelectedControllerSlot, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch"
+                                  MinHeight="42">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ControllerSlotOption">
+                                    <TextBlock Text="{Binding Label}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+
+                        <Border Height="1" Background="#18FFFFFF" />
+                        <TextBlock Text="The selected controller is used by both the dashboard and emulator. The Xbox button always opens the in-game menu."
+                                   Foreground="#718399"
+                                   FontSize="12"
+                                   TextWrapping="Wrap"
+                                   LineHeight="18" />
+                    </StackPanel>
+                </Border>
+
+                <ScrollViewer Grid.Column="1"
+                              VerticalScrollBarVisibility="Auto"
+                              HorizontalScrollBarVisibility="Disabled">
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="18">
+                        <Border Grid.Column="0"
+                                Padding="24"
+                                CornerRadius="14"
+                                BorderBrush="#22FFFFFF"
+                                BorderThickness="1"
+                                Background="#780C1727">
+                            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="120,*">
+                                <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,20" Spacing="5">
+                                    <TextBlock Text="NINTENDO"
+                                               Foreground="#6BB9FF"
+                                               FontSize="10"
+                                               FontWeight="Bold"
+                                               LetterSpacing="1.8" />
+                                    <TextBlock Text="Controller"
+                                               FontSize="25"
+                                               FontWeight="Black" />
+                                </StackPanel>
+
+                                <TextBlock Grid.Row="1" Text="A BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedNintendoAButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="2" Text="B BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedNintendoBButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="3" Text="START" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedNintendoStartButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="4" Text="SELECT" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedNintendoSelectButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="5" Text="FAST FORWARD" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <Border Grid.Row="5" Grid.Column="1" Margin="0,3" Padding="12,10" CornerRadius="5" Background="#12FFFFFF">
+                                    <TextBlock Text="R2 / RIGHT TRIGGER  ·  2× HOLD" FontSize="11" FontWeight="SemiBold" />
+                                </Border>
+
+                                <TextBlock Grid.Row="6" Text="SPRITE LIMIT" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <CheckBox Grid.Row="6"
+                                          Grid.Column="1"
+                                          Margin="0,8,0,0"
+                                          IsChecked="{Binding RemoveNesSpriteLimit, Mode=TwoWay}"
+                                          Content="Remove 8-sprite limit" />
+
+                                <TextBlock Grid.Row="7" Text="MMC3 IRQ" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="7"
+                                          Grid.Column="1"
+                                          Margin="0,8,0,0"
+                                          ItemsSource="{Binding Mmc3IrqRevisions}"
+                                          SelectedItem="{Binding SelectedMmc3IrqRevision, Mode=TwoWay}"
+                                          ToolTip.Tip="Auto follows NES 2.0 metadata. Use NEC / old for an ambiguous legacy iNES dump that requires alternate zero-latch IRQ behavior.">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:Mmc3IrqRevisionOption">
+                                            <TextBlock Text="{Binding Label}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="8" Text="PPU REVISION" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="8"
+                                          Grid.Column="1"
+                                          Margin="0,8,0,0"
+                                          ItemsSource="{Binding NesPpuRevisions}"
+                                          SelectedItem="{Binding SelectedNesPpuRevision, Mode=TwoWay}"
+                                          ToolTip.Tip="Use the early revision only for software that targets the letterless through RP2C02B sprite-evaluation behavior.">
+                                    <ComboBox.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:NesPpuRevisionOption">
+                                            <TextBlock Text="{Binding Label}" />
+                                        </DataTemplate>
+                                    </ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="9" Text="OAM DECAY" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <CheckBox Grid.Row="9"
+                                          Grid.Column="1"
+                                          Margin="0,8,0,0"
+                                          IsChecked="{Binding EnableNesOamDecay, Mode=TwoWay}"
+                                          Content="Emulate row-level electrical decay"
+                                          ToolTip.Tip="Models the charge loss and refresh timing of the original PPU's sprite memory." />
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Column="1"
+                                Padding="24"
+                                CornerRadius="14"
+                                BorderBrush="#22FFFFFF"
+                                BorderThickness="1"
+                                Background="#780C1727">
+                            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="120,*">
+                                <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,20" Spacing="5">
+                                    <TextBlock Text="SUPER NINTENDO"
+                                               Foreground="#A99BFF"
+                                               FontSize="10"
+                                               FontWeight="Bold"
+                                               LetterSpacing="1.8" />
+                                    <TextBlock Text="Controller"
+                                               FontSize="25"
+                                               FontWeight="Black" />
+                                </StackPanel>
+
+                                <TextBlock Grid.Row="1" Text="A BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="1" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesAButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="2" Text="B BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="2" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesBButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="3" Text="X BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="3" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesXButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="4" Text="Y BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="4" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesYButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="5" Text="L BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="5" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesLButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="6" Text="R BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="6" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesRButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="7" Text="START" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="7" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesStartButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="8" Text="SELECT" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="8" Grid.Column="1" Margin="0,3" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSnesSelectButton, Mode=TwoWay}">
+                                    <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                </ComboBox>
+
+                                <TextBlock Grid.Row="9" Text="FAST FORWARD" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <Border Grid.Row="9" Grid.Column="1" Margin="0,3" Padding="12,10" CornerRadius="5" Background="#12FFFFFF">
+                                    <TextBlock Text="R2 / RIGHT TRIGGER  ·  2× HOLD" FontSize="11" FontWeight="SemiBold" />
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </Grid>
+
+            <Grid Name="QuitPage"
+                  Grid.Row="2"
+                  Focusable="True"
+                  GotFocus="OnPageContentGotFocus"
+                  IsVisible="{Binding IsQuitVisible}">
+                <Border Width="520"
+                        Padding="42"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        CornerRadius="14"
+                        BorderBrush="#22FFFFFF"
+                        BorderThickness="1"
+                        Background="#B00C1727">
+                    <StackPanel Spacing="18">
+                        <TextBlock Text="QUIT PIXELDECK"
+                                   HorizontalAlignment="Center"
+                                   FontSize="26"
+                                   FontWeight="Black"
+                                   LetterSpacing="1.2" />
+                        <TextBlock Text="Close PixelDeck and return to the desktop."
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Foreground="#8FA0B5"
+                                   FontSize="14" />
+                        <Button Name="QuitButton"
+                                Classes="primary"
+                                Margin="0,10,0,0"
+                                Click="OnQuitClick"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Center"
+                                Content="Quit PixelDeck" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid Grid.Row="3" Margin="0,28,0,0" ColumnDefinitions="*,Auto" IsVisible="{Binding IsLibraryVisible}">
+                <TextBlock Text="LOCAL LIBRARY  /  NO NETWORK CONNECTION REQUIRED"
+                           VerticalAlignment="Center"
+                           Foreground="#526379"
+                           FontSize="10"
+                           FontWeight="Bold"
+                           LetterSpacing="1.4" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="20">
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <Border Width="22" Height="22" CornerRadius="11" Background="#47A96B">
+                            <TextBlock Text="A" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" FontWeight="Black" />
+                        </Border>
+                        <TextBlock Text="PLAY" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <Border Width="22" Height="22" CornerRadius="11" Background="#E6F0F7FF">
+                            <TextBlock Text="↔" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#101B2A" FontSize="12" FontWeight="Black" />
+                        </Border>
+                        <TextBlock Text="BROWSE" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <Border Width="22" Height="22" CornerRadius="11" Background="#3A82E6">
+                            <TextBlock Text="X" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" FontWeight="Black" />
+                        </Border>
+                        <TextBlock Text="REFRESH" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="7">
+                        <Border Width="22" Height="22" CornerRadius="11" Background="#D9A928">
+                            <TextBlock Text="Y" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#151515" FontSize="10" FontWeight="Black" />
+                        </Border>
+                        <TextBlock Text="FOLDER" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                    </StackPanel>
+                    <TextBlock Text="LB / RB  TABS" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                </StackPanel>
+            </Grid>
+
+            <Grid Grid.Row="3" Margin="0,28,0,0" ColumnDefinitions="*,Auto" IsVisible="{Binding IsHomeVisible}">
+                <TextBlock Text="RECENT ACTIVITY  /  STORED ON THIS MACHINE"
+                           VerticalAlignment="Center"
+                           Foreground="#526379"
+                           FontSize="10"
+                           FontWeight="Bold"
+                           LetterSpacing="1.4" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="20">
+                    <TextBlock Text="A  PLAY" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                    <TextBlock Text="LR  BROWSE" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                    <TextBlock Text="LB / RB  TABS" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                </StackPanel>
+            </Grid>
+
+            <TextBlock Grid.Row="3"
+                       Margin="0,28,0,0"
+                       IsVisible="{Binding IsSettingsVisible}"
+                       Text="LOCAL SETTINGS  /  STORED ON THIS MACHINE  /  LB + RB SWITCH TABS"
+                       VerticalAlignment="Center"
+                       Foreground="#526379"
+                       FontSize="10"
+                       FontWeight="Bold"
+                       LetterSpacing="1.4" />
+
+            <TextBlock Grid.Row="3"
+                       Margin="0,28,0,0"
+                       IsVisible="{Binding IsQuitVisible}"
+                       Text="A / ENTER  QUIT  /  LB + RB SWITCH TABS"
+                       HorizontalAlignment="Right"
+                       VerticalAlignment="Center"
+                       Foreground="#91A1B5"
+                       FontSize="10"
+                       FontWeight="Bold"
+                       LetterSpacing="1.2" />
+        </Grid>
+
+        <Grid Name="QuitConfirmationOverlay"
+              ZIndex="100"
+              IsVisible="False"
+              Background="#C8000000">
+            <Border Width="560"
+                    Padding="42"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    CornerRadius="16"
+                    BorderBrush="#35FFFFFF"
+                    BorderThickness="1"
+                    Background="#F20B1727"
+                    BoxShadow="0 24 70 0 #B0000000">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="QUIT PIXELDECK?"
+                               HorizontalAlignment="Center"
+                               FontSize="30"
+                               FontWeight="Black"
+                               LetterSpacing="1.2" />
+                    <TextBlock Text="Your play history and settings are already saved."
+                               HorizontalAlignment="Center"
+                               TextAlignment="Center"
+                               Foreground="#91A2B6"
+                               FontSize="14" />
+                    <StackPanel Margin="0,12,0,0"
+                                HorizontalAlignment="Center"
+                                Orientation="Horizontal"
+                                Spacing="14">
+                        <Button Name="QuitCancelButton"
+                                Classes="utility dialog-choice"
+                                Width="190"
+                                Click="OnQuitCancelClick"
+                                HorizontalContentAlignment="Center"
+                                Content="Cancel" />
+                        <Button Name="QuitConfirmButton"
+                                Classes="danger dialog-choice"
+                                Width="190"
+                                Click="OnQuitConfirmClick"
+                                HorizontalContentAlignment="Center"
+                                Content="Quit" />
+                    </StackPanel>
+                    <TextBlock Text="A / ENTER  SELECT     B / ESC  CANCEL"
+                               Margin="0,8,0,0"
+                               HorizontalAlignment="Center"
+                               Foreground="#607087"
+                               FontSize="10"
+                               FontWeight="Bold"
+                               LetterSpacing="1.2" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
