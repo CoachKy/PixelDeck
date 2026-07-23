@@ -44,8 +44,11 @@ is raised on the exact even evaluation dot, and the diagonal overflow search
 can interpret a later sprite's tile byte as Y. A mid-evaluation save-state
 round trip preserves that in-flight n/m-counter state. Rendering-time OAM
 regressions cover the `$2004` clear/evaluation/fetch latch, suppressed writes
-and OAMADDR+4 behavior, the pre-render row-copy bug, clear/fetch-window
-rendering-toggle corruption, and a save made while corruption is pending.
+and OAMADDR+4 behavior, the revision-specific pre-render row-copy bug,
+early-PPU post-wrap X=$FF sprites, row-level electrical decay and refresh,
+worst-case `$2003` open-bus row copies, and direction-correct rendering-toggle
+collisions. Save-state coverage preserves OAM charge age and rejects a state
+created under a different PPU accuracy profile.
 
 The alternate `6-MMC3_alt.nes` ROM uses the NEC/old zero-latch behavior, while
 ROM 5 uses the incompatible Sharp/new behavior. The test ROMs have legacy iNES

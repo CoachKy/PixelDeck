@@ -23,7 +23,10 @@ public sealed class PixelDeckSettings
 
     public NesPpuRevision NesPpuRevision { get; set; } = NesPpuRevision.Rp2C02G;
 
-    public bool EnableNesOamDecay { get; set; } = true;
+    public bool EnableNesOamDecay { get; set; }
+
+    public NesOamCorruptionMode NesOamCorruptionMode { get; set; } =
+        NesOamCorruptionMode.StableCpuPpuAlignment;
 
     public GamepadButton SnesAButton { get; set; } = GamepadButton.B;
 
@@ -92,6 +95,11 @@ public static class PixelDeckSettingsStore
             if (!Enum.IsDefined(settings.NesPpuRevision))
             {
                 settings.NesPpuRevision = NesPpuRevision.Rp2C02G;
+            }
+
+            if (!Enum.IsDefined(settings.NesOamCorruptionMode))
+            {
+                settings.NesOamCorruptionMode = NesOamCorruptionMode.StableCpuPpuAlignment;
             }
 
             return settings;

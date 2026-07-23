@@ -27,7 +27,7 @@ public sealed record NesEmulationOptions
 
     public NesPpuRevision PpuRevision { get; init; } = NesPpuRevision.Rp2C02G;
 
-    public bool EnableOamDecay { get; init; } = true;
+    public bool EnableOamDecay { get; init; }
 
     public NesOamCorruptionMode OamCorruptionMode { get; init; } =
         NesOamCorruptionMode.StableCpuPpuAlignment;

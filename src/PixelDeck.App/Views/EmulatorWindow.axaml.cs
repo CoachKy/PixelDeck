@@ -492,10 +492,7 @@ public partial class EmulatorWindow : Window
                 state = SaveMachineState();
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(SaveStatePath)!);
-            var temporaryPath = SaveStatePath + ".tmp";
-            File.WriteAllBytes(temporaryPath, state);
-            File.Move(temporaryPath, SaveStatePath, overwrite: true);
+            CrashSafeFile.WriteAllBytes(SaveStatePath, state);
             StateStatusText.Text = $"STATE SAVED  ·  {DateTime.Now:h:mm tt}".ToUpperInvariant();
             UpdateStateAvailability(preserveStatus: true);
         }
@@ -509,16 +506,52 @@ public partial class EmulatorWindow : Window
     {
         try
         {
-            var state = File.ReadAllBytes(SaveStatePath);
-            uint[] frame;
-            lock (_machineLock)
+            var candidates = CrashSafeFile.GetReadCandidates(SaveStatePath);
+            if (candidates.Count == 0)
             {
-                LoadMachineState(state);
-                frame = GetCurrentMachineFrame();
+                throw new FileNotFoundException("No saved state is available.", SaveStatePath);
             }
 
-            PresentFrame(frame, 0);
-            StateStatusText.Text = "STATE LOADED";
+            byte[] rollbackState;
+            lock (_machineLock)
+            {
+                rollbackState = SaveMachineState();
+            }
+
+            Exception? loadFailure = null;
+            foreach (var candidate in candidates)
+            {
+                try
+                {
+                    var state = File.ReadAllBytes(candidate);
+                    uint[] frame;
+                    lock (_machineLock)
+                    {
+                        LoadMachineState(state);
+                        frame = GetCurrentMachineFrame();
+                    }
+
+                    if (!string.Equals(candidate, SaveStatePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        CrashSafeFile.CommitTemporary(SaveStatePath);
+                    }
+
+                    PresentFrame(frame, 0);
+                    StateStatusText.Text = "STATE LOADED";
+                    return;
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
+                {
+                    loadFailure = exception;
+                    lock (_machineLock)
+                    {
+                        LoadMachineState(rollbackState);
+                    }
+                }
+            }
+
+            throw new InvalidDataException("No valid saved-state copy could be recovered.", loadFailure);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
         {
@@ -558,15 +591,19 @@ public partial class EmulatorWindow : Window
 
     private void UpdateStateAvailability(bool preserveStatus = false)
     {
-        var exists = _game is not null && File.Exists(SaveStatePath);
+        var exists = _game is not null && CrashSafeFile.Exists(SaveStatePath);
         LoadStateButton.IsEnabled = exists;
         if (!preserveStatus)
         {
             StateStatusText.Text = exists
-                ? $"SAVED STATE  ·  {File.GetLastWriteTime(SaveStatePath):MMM d, h:mm tt}".ToUpperInvariant()
+                ? $"SAVED STATE  ·  {File.GetLastWriteTime(GetAvailableSaveStatePath()):MMM d, h:mm tt}".ToUpperInvariant()
                 : "NO SAVED STATE YET";
         }
     }
+
+    private string GetAvailableSaveStatePath() => File.Exists(SaveStatePath)
+        ? SaveStatePath
+        : CrashSafeFile.GetTemporaryPath(SaveStatePath);
 
     private bool HasMachine => _nesMachine is not null || _snesMachine is not null;
 
@@ -596,7 +633,8 @@ public partial class EmulatorWindow : Window
                     RemoveSpriteLimit = PixelDeckSettingsStore.Current.RemoveNesSpriteLimit,
                     Mmc3IrqRevision = PixelDeckSettingsStore.Current.Mmc3IrqRevision,
                     PpuRevision = PixelDeckSettingsStore.Current.NesPpuRevision,
-                    EnableOamDecay = PixelDeckSettingsStore.Current.EnableNesOamDecay
+                    EnableOamDecay = PixelDeckSettingsStore.Current.EnableNesOamDecay,
+                    OamCorruptionMode = PixelDeckSettingsStore.Current.NesOamCorruptionMode
                 });
             return;
         }
@@ -604,7 +642,7 @@ public partial class EmulatorWindow : Window
         if (string.Equals(extension, ".sfc", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".smc", StringComparison.OrdinalIgnoreCase))
         {
-            _snesMachine = SnesMachine.Load(path);
+            _snesMachine = SnesMachine.Load(path, _game.SaveRamPath);
             return;
         }
 
@@ -616,10 +654,11 @@ public partial class EmulatorWindow : Window
         try
         {
             _nesMachine?.FlushBatterySave();
+            _snesMachine?.FlushBatterySave();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            Debug.WriteLine($"Could not save NES battery RAM: {exception.Message}");
+            Debug.WriteLine($"Could not save cartridge battery RAM: {exception.Message}");
         }
     }
 

@@ -27,6 +27,59 @@ public sealed class NesCartridgeTests
     }
 
     [Fact]
+    public void InterruptedBatteryWritePreservesTheLastCommittedSave()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 1, battery: true);
+        var savePath = Path.Combine(image.DirectoryPath, "game.sav");
+        var cartridge = Cartridge.Load(image.Path, savePath);
+        cartridge.CpuWrite(0x6000, 0x5A);
+        cartridge.FlushBatterySave();
+
+        File.WriteAllBytes(savePath + ".tmp", [0xFF, 0xEE]);
+
+        var reloaded = Cartridge.Load(image.Path, savePath);
+
+        Assert.Equal(0x5A, reloaded.CpuRead(0x6000));
+    }
+
+    [Fact]
+    public void CompleteTemporaryBatterySaveIsRecoveredWhenCommitWasInterrupted()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 1, battery: true);
+        var savePath = Path.Combine(image.DirectoryPath, "game.sav");
+        var temporaryPath = savePath + ".tmp";
+        var cartridge = Cartridge.Load(image.Path, savePath);
+        cartridge.CpuWrite(0x6000, 0xA7);
+        cartridge.FlushBatterySave();
+        File.Move(savePath, temporaryPath);
+
+        var reloaded = Cartridge.Load(image.Path, savePath);
+
+        Assert.Equal(0xA7, reloaded.CpuRead(0x6000));
+        Assert.True(File.Exists(savePath));
+        Assert.False(File.Exists(temporaryPath));
+    }
+
+    [Fact]
+    public void CompleteTemporaryBatterySaveRecoversAInterruptedFinalReplacement()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 1, battery: true);
+        var savePath = Path.Combine(image.DirectoryPath, "game.sav");
+        var temporaryPath = savePath + ".tmp";
+        var cartridge = Cartridge.Load(image.Path, savePath);
+        cartridge.CpuWrite(0x6000, 0xC9);
+        cartridge.FlushBatterySave();
+        File.Copy(savePath, temporaryPath);
+        File.WriteAllBytes(savePath, [0x01, 0x02, 0x03]);
+
+        var reloaded = Cartridge.Load(image.Path, savePath);
+
+        Assert.Equal(0xC9, reloaded.CpuRead(0x6000));
+        Assert.Equal(8_192, new FileInfo(savePath).Length);
+        Assert.False(File.Exists(temporaryPath));
+    }
+
+    [Fact]
     public void TrainerIsCopiedIntoCpuMemoryAtSevenThousand()
     {
         using var image = TemporaryNesImage.Create(mapper: 0, trainer: true);
@@ -104,6 +157,47 @@ public sealed class NesCartridgeTests
         Assert.True(bus.TryTakeOamDma(out var page));
         Assert.Equal(0x02, page);
         Assert.False(bus.TryTakeOamDma(out _));
+    }
+
+    [Fact]
+    public void InvalidSaveStateRollsBackWithoutChangingTheRunningMachine()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var machine = NesMachine.Load(image.Path);
+        for (var frame = 0; frame < 10; frame++)
+        {
+            machine.RunFrame();
+        }
+
+        var stableState = machine.SaveState();
+        var expectedNextFrame = machine.RunFrame().ToArray();
+        machine.LoadState(stableState);
+        var truncatedState = stableState[..(stableState.Length / 2)];
+
+        Assert.Throws<InvalidDataException>(() => machine.LoadState(truncatedState));
+        Assert.Equal(expectedNextFrame, machine.RunFrame().ToArray());
+    }
+
+    [Fact]
+    public void CorruptSaveStateFailsIntegrityBeforeChangingTheRunningMachine()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var machine = NesMachine.Load(image.Path);
+        for (var frame = 0; frame < 10; frame++)
+        {
+            machine.RunFrame();
+        }
+
+        var stableState = machine.SaveState();
+        var expectedNextFrame = machine.RunFrame().ToArray();
+        machine.LoadState(stableState);
+        var corruptState = stableState.ToArray();
+        corruptState[corruptState.Length / 2] ^= 0x80;
+
+        var exception = Assert.Throws<InvalidDataException>(() => machine.LoadState(corruptState));
+
+        Assert.Contains("integrity", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(expectedNextFrame, machine.RunFrame().ToArray());
     }
 
     private sealed class TemporaryNesImage : IDisposable

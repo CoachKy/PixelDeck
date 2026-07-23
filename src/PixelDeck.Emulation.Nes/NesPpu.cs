@@ -649,10 +649,12 @@ internal sealed class NesPpu
 
     private void HandleOamAddressWrite(byte value, byte cpuOpenBus)
     {
-        if (_oamCorruptionMode != NesOamCorruptionMode.WorstCase ||
-            (RenderingEnabled &&
-             Scanline < 240 &&
-             !(Cycle < 257 && (Cycle & 1) != 0)))
+        var inVblank = Scanline is >= 240 and < 261;
+        var oam1IsSelected =
+            !RenderingEnabled ||
+            inVblank ||
+            (Cycle < 257 && (Cycle & 1) != 0);
+        if (_oamCorruptionMode != NesOamCorruptionMode.WorstCase || !oam1IsSelected)
         {
             return;
         }

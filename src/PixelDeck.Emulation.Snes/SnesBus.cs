@@ -37,6 +37,8 @@ internal sealed class SnesBus
     private readonly SnesCartridge _cartridge;
     private readonly byte[] _wram = new byte[128 * 1024];
     private readonly byte[] _dmaRegisters = new byte[8 * 16];
+    private readonly bool[] _hdmaTerminated = new bool[8];
+    private readonly bool[] _hdmaDoTransfer = new bool[8];
     private readonly SnesApu _apu = new();
     private uint _wramAddress;
     private byte _nmitimen;
@@ -60,6 +62,7 @@ internal sealed class SnesBus
     private ushort _automaticControllerOne;
     private ushort _automaticControllerTwo;
     private bool _controllerStrobe;
+    private bool _hdmaInitialized;
 
     public SnesBus(SnesCartridge cartridge)
     {
@@ -181,7 +184,15 @@ internal sealed class SnesBus
         _cartridge.Write(address, value);
     }
 
-    public void BeginFrame() => FrameReady = false;
+    public void BeginFrame()
+    {
+        FrameReady = false;
+        if (_scanline == 0)
+        {
+            InitializeHdma();
+            PerformHdmaScanline();
+        }
+    }
 
     public void Clock(int cpuCycles)
     {
@@ -201,8 +212,18 @@ internal sealed class SnesBus
             }
 
             _masterClockRemainder = 0;
+            if (_scanline < SnesPpu.Height)
+            {
+                Ppu.RenderScanline(_scanline);
+            }
+
             _scanline++;
             CheckVerticalIrqAtScanlineStart();
+
+            if (_scanline < SnesPpu.Height)
+            {
+                PerformHdmaScanline();
+            }
 
             if (_scanline == SnesPpu.Height + 1)
             {
@@ -221,7 +242,6 @@ internal sealed class SnesBus
             {
                 _scanline = 0;
                 _vblank = false;
-                Ppu.RenderFrame();
                 FrameReady = true;
             }
         }
@@ -300,6 +320,9 @@ internal sealed class SnesBus
         writer.Write(_automaticControllerOne);
         writer.Write(_automaticControllerTwo);
         writer.Write(_controllerStrobe);
+        writer.Write(_hdmaInitialized);
+        foreach (var value in _hdmaTerminated) writer.Write(value);
+        foreach (var value in _hdmaDoTransfer) writer.Write(value);
         _apu.SaveState(writer);
         Ppu.SaveState(writer);
     }
@@ -330,6 +353,9 @@ internal sealed class SnesBus
         _automaticControllerOne = reader.ReadUInt16();
         _automaticControllerTwo = reader.ReadUInt16();
         _controllerStrobe = reader.ReadBoolean();
+        _hdmaInitialized = reader.ReadBoolean();
+        for (var index = 0; index < 8; index++) _hdmaTerminated[index] = reader.ReadBoolean();
+        for (var index = 0; index < 8; index++) _hdmaDoTransfer[index] = reader.ReadBoolean();
         _apu.LoadState(reader);
         Ppu.LoadState(reader);
         FrameReady = false;
@@ -503,6 +529,128 @@ internal sealed class SnesBus
             _dmaRegisters[registerBase + 5] = 0;
             _dmaRegisters[registerBase + 6] = 0;
         }
+    }
+
+    private void InitializeHdma()
+    {
+        _hdmaInitialized = true;
+        for (var channel = 0; channel < 8; channel++)
+        {
+            var registerBase = channel * 16;
+            _dmaRegisters[registerBase + 8] = _dmaRegisters[registerBase + 2];
+            _dmaRegisters[registerBase + 9] = _dmaRegisters[registerBase + 3];
+            _dmaRegisters[registerBase + 10] = 0;
+            _hdmaTerminated[channel] = (_hdmaEnable & (1 << channel)) == 0;
+            _hdmaDoTransfer[channel] = false;
+        }
+    }
+
+    private void PerformHdmaScanline()
+    {
+        if (!_hdmaInitialized || _hdmaEnable == 0)
+        {
+            return;
+        }
+
+        for (var channel = 0; channel < 8; channel++)
+        {
+            if ((_hdmaEnable & (1 << channel)) == 0 || _hdmaTerminated[channel])
+            {
+                continue;
+            }
+
+            var registerBase = channel * 16;
+            var lineCounter = _dmaRegisters[registerBase + 10];
+            if ((lineCounter & 0x7F) == 0)
+            {
+                if (!ReloadHdmaLineDescriptor(channel))
+                {
+                    continue;
+                }
+
+                lineCounter = _dmaRegisters[registerBase + 10];
+            }
+
+            if (_hdmaDoTransfer[channel])
+            {
+                TransferHdmaChannel(channel);
+            }
+
+            var remainingLines = (lineCounter & 0x7F) == 0
+                ? 128
+                : lineCounter & 0x7F;
+            remainingLines--;
+            _dmaRegisters[registerBase + 10] =
+                (byte)((lineCounter & 0x80) | (remainingLines & 0x7F));
+            _hdmaDoTransfer[channel] = (lineCounter & 0x80) != 0;
+        }
+    }
+
+    private bool ReloadHdmaLineDescriptor(int channel)
+    {
+        var registerBase = channel * 16;
+        var tableBank = _dmaRegisters[registerBase + 4];
+        var tableAddress = (ushort)(
+            _dmaRegisters[registerBase + 8] |
+            (_dmaRegisters[registerBase + 9] << 8));
+        var descriptor = Read(((uint)tableBank << 16) | tableAddress++);
+        _dmaRegisters[registerBase + 8] = (byte)tableAddress;
+        _dmaRegisters[registerBase + 9] = (byte)(tableAddress >> 8);
+        _dmaRegisters[registerBase + 10] = descriptor;
+        if (descriptor == 0)
+        {
+            _hdmaTerminated[channel] = true;
+            _hdmaDoTransfer[channel] = false;
+            return false;
+        }
+
+        var indirect = (_dmaRegisters[registerBase] & 0x40) != 0;
+        if (indirect)
+        {
+            var low = Read(((uint)tableBank << 16) | tableAddress++);
+            var high = Read(((uint)tableBank << 16) | tableAddress++);
+            _dmaRegisters[registerBase + 5] = low;
+            _dmaRegisters[registerBase + 6] = high;
+            _dmaRegisters[registerBase + 8] = (byte)tableAddress;
+            _dmaRegisters[registerBase + 9] = (byte)(tableAddress >> 8);
+        }
+
+        _hdmaDoTransfer[channel] = true;
+        return true;
+    }
+
+    private void TransferHdmaChannel(int channel)
+    {
+        var registerBase = channel * 16;
+        var control = _dmaRegisters[registerBase];
+        var pattern = DmaPatterns[control & 7];
+        var bAddress = _dmaRegisters[registerBase + 1];
+        var indirect = (control & 0x40) != 0;
+        var dataBank = indirect
+            ? _dmaRegisters[registerBase + 7]
+            : _dmaRegisters[registerBase + 4];
+        var dataAddressOffset = indirect ? 5 : 8;
+        var dataAddress = (ushort)(
+            _dmaRegisters[registerBase + dataAddressOffset] |
+            (_dmaRegisters[registerBase + dataAddressOffset + 1] << 8));
+        var ppuToCpu = (control & 0x80) != 0;
+
+        for (var index = 0; index < pattern.Length; index++)
+        {
+            var aBusAddress = ((uint)dataBank << 16) | dataAddress++;
+            var bBusAddress = (ushort)(0x2100 + bAddress + pattern[index]);
+            if (ppuToCpu)
+            {
+                Write(aBusAddress, Read(bBusAddress));
+            }
+            else
+            {
+                Write(bBusAddress, Read(aBusAddress));
+            }
+        }
+
+        _dmaRegisters[registerBase + dataAddressOffset] = (byte)dataAddress;
+        _dmaRegisters[registerBase + dataAddressOffset + 1] = (byte)(dataAddress >> 8);
     }
 
     private void LatchAutomaticControllers()

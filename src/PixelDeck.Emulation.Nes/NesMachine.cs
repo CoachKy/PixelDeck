@@ -4,7 +4,9 @@ public sealed class NesMachine
 {
     public const int AudioSampleRate = 48_000;
     private const uint SaveStateMagic = 0x31534450; // PDS1
-    private const int SaveStateVersion = 15;
+    private const int SaveStateVersion = 16;
+    private const int SaveStateChecksumLength = 32;
+    private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly NesBus _bus;
     private readonly Cpu6502 _cpu;
 
@@ -82,18 +84,43 @@ public sealed class NesMachine
 
     public byte[] SaveState()
     {
-        using var stream = new MemoryStream();
+        using var payloadStream = new MemoryStream();
+        using (var payloadWriter = new BinaryWriter(payloadStream, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            Cartridge.SaveState(payloadWriter);
+            _cpu.SaveState(payloadWriter);
+            _bus.SaveState(payloadWriter);
+            payloadWriter.Flush();
+        }
+
+        var payload = payloadStream.ToArray();
+        var checksum = System.Security.Cryptography.SHA256.HashData(payload);
+        using var stream = new MemoryStream(payload.Length + SaveStateChecksumLength + 12);
         using var writer = new BinaryWriter(stream);
         writer.Write(SaveStateMagic);
         writer.Write(SaveStateVersion);
-        Cartridge.SaveState(writer);
-        _cpu.SaveState(writer);
-        _bus.SaveState(writer);
+        writer.Write(payload.Length);
+        writer.Write(payload);
+        writer.Write(checksum);
         writer.Flush();
         return stream.ToArray();
     }
 
     public void LoadState(ReadOnlySpan<byte> state)
+    {
+        var rollbackState = SaveState();
+        try
+        {
+            LoadStateCore(state);
+        }
+        catch
+        {
+            LoadStateCore(rollbackState);
+            throw;
+        }
+    }
+
+    private void LoadStateCore(ReadOnlySpan<byte> state)
     {
         using var stream = new MemoryStream(state.ToArray(), writable: false);
         using var reader = new BinaryReader(stream);
@@ -103,13 +130,37 @@ public sealed class NesMachine
             throw new InvalidDataException("This is not a compatible PixelDeck save state.");
         }
 
-        Cartridge.LoadState(reader);
-        _cpu.LoadState(reader);
-        _bus.LoadState(reader);
-
-        if (stream.Position != stream.Length)
+        var payloadLength = reader.ReadInt32();
+        if (payloadLength <= 0 || payloadLength > MaximumSaveStatePayloadLength)
         {
-            throw new InvalidDataException("The save state contains unexpected trailing data.");
+            throw new InvalidDataException("The PixelNES save-state payload length is invalid.");
+        }
+
+        var expectedFileLength = 12L + payloadLength + SaveStateChecksumLength;
+        if (stream.Length != expectedFileLength)
+        {
+            throw new InvalidDataException("The PixelNES save state is truncated or contains unexpected trailing data.");
+        }
+
+        var payload = reader.ReadBytes(payloadLength);
+        var expectedChecksum = reader.ReadBytes(SaveStateChecksumLength);
+        if (payload.Length != payloadLength ||
+            expectedChecksum.Length != SaveStateChecksumLength ||
+            !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Security.Cryptography.SHA256.HashData(payload),
+                expectedChecksum))
+        {
+            throw new InvalidDataException("The PixelNES save state failed its integrity check.");
+        }
+
+        using var payloadStream = new MemoryStream(payload, writable: false);
+        using var payloadReader = new BinaryReader(payloadStream);
+        Cartridge.LoadState(payloadReader);
+        _cpu.LoadState(payloadReader);
+        _bus.LoadState(payloadReader);
+        if (payloadStream.Position != payloadStream.Length)
+        {
+            throw new InvalidDataException("The PixelNES save-state payload contains unexpected trailing data.");
         }
     }
 }

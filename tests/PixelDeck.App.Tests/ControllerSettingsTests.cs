@@ -18,7 +18,10 @@ public sealed class ControllerSettingsTests
         Assert.False(settings.RemoveNesSpriteLimit);
         Assert.Equal(Mmc3IrqRevision.Auto, settings.Mmc3IrqRevision);
         Assert.Equal(NesPpuRevision.Rp2C02G, settings.NesPpuRevision);
-        Assert.True(settings.EnableNesOamDecay);
+        Assert.False(settings.EnableNesOamDecay);
+        Assert.Equal(
+            NesOamCorruptionMode.StableCpuPpuAlignment,
+            settings.NesOamCorruptionMode);
 
         Assert.Equal(GamepadButton.B, settings.SnesAButton);
         Assert.Equal(GamepadButton.A, settings.SnesBButton);

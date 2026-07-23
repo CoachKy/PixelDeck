@@ -22,6 +22,7 @@ internal sealed class NesBus
     private readonly NesController _controllerTwo = new();
     private byte _oamDmaPage;
     private bool _oamDmaPending;
+    private byte _cpuOpenBus;
 
     public NesBus(Cartridge cartridge, NesEmulationOptions? options = null)
     {
@@ -45,28 +46,35 @@ internal sealed class NesBus
 
     public byte Read(ushort address)
     {
+        byte value;
         if (address < 0x2000)
         {
-            return _ram[address & 0x07FF];
+            value = _ram[address & 0x07FF];
+        }
+        else if (address < 0x4000)
+        {
+            value = Ppu.CpuReadRegister((ushort)(address & 0x0007));
+        }
+        else
+        {
+            value = address switch
+            {
+                0x4015 => Apu.ReadStatus(),
+                0x4016 => _controllerOne.Read(),
+                0x4017 => _controllerTwo.Read(),
+                >= 0x4020 => _cartridge.CpuRead(address),
+                _ => 0
+            };
         }
 
-        if (address < 0x4000)
-        {
-            return Ppu.CpuReadRegister((ushort)(address & 0x0007));
-        }
-
-        return address switch
-        {
-            0x4015 => Apu.ReadStatus(),
-            0x4016 => _controllerOne.Read(),
-            0x4017 => _controllerTwo.Read(),
-            >= 0x4020 => _cartridge.CpuRead(address),
-            _ => 0
-        };
+        _cpuOpenBus = value;
+        return value;
     }
 
     public void Write(ushort address, byte value)
     {
+        var previousOpenBus = _cpuOpenBus;
+        _cpuOpenBus = value;
         if (address < 0x2000)
         {
             _ram[address & 0x07FF] = value;
@@ -75,7 +83,7 @@ internal sealed class NesBus
 
         if (address < 0x4000)
         {
-            Ppu.CpuWriteRegister((ushort)(address & 0x0007), value);
+            Ppu.CpuWriteRegister((ushort)(address & 0x0007), value, previousOpenBus);
             return;
         }
 
@@ -124,6 +132,7 @@ internal sealed class NesBus
         writer.Write(_ram);
         writer.Write(_oamDmaPage);
         writer.Write(_oamDmaPending);
+        writer.Write(_cpuOpenBus);
         _controllerOne.SaveState(writer);
         _controllerTwo.SaveState(writer);
         Scheduler.SaveState(writer);
@@ -136,6 +145,7 @@ internal sealed class NesBus
         reader.ReadExactly(_ram);
         _oamDmaPage = reader.ReadByte();
         _oamDmaPending = reader.ReadBoolean();
+        _cpuOpenBus = reader.ReadByte();
         _controllerOne.LoadState(reader);
         _controllerTwo.LoadState(reader);
         Scheduler.LoadState(reader);

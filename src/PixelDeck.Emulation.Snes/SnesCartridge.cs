@@ -16,6 +16,7 @@ public sealed record SnesCartridgeInfo(
     byte CartridgeType,
     int RomSize,
     int RamSize,
+    bool HasBatteryBackedRam,
     bool IsPal,
     ushort ResetVector,
     bool HasCopierHeader,
@@ -30,13 +31,17 @@ public sealed class SnesCartridge
 
     private readonly byte[] _rom;
     private readonly byte[] _ram;
+    private readonly string? _batterySavePath;
+    private bool _ramDirty;
 
-    private SnesCartridge(byte[] rom, SnesCartridgeInfo info)
+    private SnesCartridge(byte[] rom, SnesCartridgeInfo info, string? batterySavePath = null)
     {
         _rom = rom;
         Info = info;
         _ram = info.RamSize == 0 ? [] : new byte[info.RamSize];
+        _batterySavePath = info.HasBatteryBackedRam ? batterySavePath : null;
         Fingerprint = SHA256.HashData(rom);
+        LoadBatterySave();
     }
 
     public SnesCartridgeInfo Info { get; }
@@ -49,10 +54,11 @@ public sealed class SnesCartridge
         return ParseImage(File.ReadAllBytes(path)).Info;
     }
 
-    public static SnesCartridge Load(string path)
+    public static SnesCartridge Load(string path, string? batterySavePath = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var cartridge = ParseImage(File.ReadAllBytes(path));
+        var parsed = ParseImage(File.ReadAllBytes(path));
+        var cartridge = new SnesCartridge(parsed._rom, parsed.Info, batterySavePath);
         if (!cartridge.Info.IsSupported)
         {
             throw new NotSupportedException(cartridge.Info.CompatibilityMessage);
@@ -80,7 +86,11 @@ public sealed class SnesCartridge
         var offset = (ushort)address;
         if (TryGetRamIndex(bank, offset, out var ramIndex))
         {
-            _ram[ramIndex] = value;
+            if (_ram[ramIndex] != value)
+            {
+                _ram[ramIndex] = value;
+                _ramDirty = true;
+            }
         }
     }
 
@@ -95,8 +105,13 @@ public sealed class SnesCartridge
     internal void LoadState(BinaryReader reader)
     {
         var fingerprintLength = reader.ReadInt32();
+        if (fingerprintLength != Fingerprint.Length)
+        {
+            throw new InvalidDataException("The SNES save state contains an invalid game fingerprint.");
+        }
+
         var fingerprint = reader.ReadBytes(fingerprintLength);
-        if (!Fingerprint.Span.SequenceEqual(fingerprint))
+        if (fingerprint.Length != fingerprintLength || !Fingerprint.Span.SequenceEqual(fingerprint))
         {
             throw new InvalidDataException("The save state belongs to a different SNES cartridge.");
         }
@@ -108,6 +123,74 @@ public sealed class SnesCartridge
         }
 
         reader.ReadExactly(_ram);
+        _ramDirty = true;
+    }
+
+    public void FlushBatterySave()
+    {
+        if (_batterySavePath is null || !_ramDirty)
+        {
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(_batterySavePath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var temporaryPath = _batterySavePath + ".tmp";
+        WriteDurableBytes(temporaryPath, _ram);
+        File.Move(temporaryPath, _batterySavePath, overwrite: true);
+        _ramDirty = false;
+    }
+
+    private void LoadBatterySave()
+    {
+        if (_batterySavePath is null)
+        {
+            return;
+        }
+
+        var temporaryPath = _batterySavePath + ".tmp";
+        var finalExists = File.Exists(_batterySavePath);
+        var finalData = finalExists ? File.ReadAllBytes(_batterySavePath) : null;
+        if (finalData?.Length == _ram.Length)
+        {
+            finalData.CopyTo(_ram, 0);
+            _ramDirty = false;
+            return;
+        }
+
+        var temporaryExists = File.Exists(temporaryPath);
+        var temporaryData = temporaryExists ? File.ReadAllBytes(temporaryPath) : null;
+        if (temporaryData?.Length == _ram.Length)
+        {
+            File.Move(temporaryPath, _batterySavePath, overwrite: true);
+            temporaryData.CopyTo(_ram, 0);
+            _ramDirty = false;
+            return;
+        }
+
+        if (finalExists || temporaryExists)
+        {
+            var invalidLength = finalData?.Length ?? temporaryData?.Length ?? 0;
+            throw new InvalidDataException(
+                $"The SNES battery save is {invalidLength} bytes, but this cartridge expects {_ram.Length} bytes.");
+        }
+    }
+
+    private static void WriteDurableBytes(string path, ReadOnlySpan<byte> data)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4_096,
+            FileOptions.WriteThrough);
+        stream.Write(data);
+        stream.Flush(flushToDisk: true);
     }
 
     private static SnesCartridge ParseImage(byte[] image)
@@ -147,6 +230,7 @@ public sealed class SnesCartridge
             _ => false
         };
         var hasEnhancementChip = (header.CartridgeType & 0xF0) != 0;
+        var hasBatteryBackedRam = (header.CartridgeType & 0x0F) is 0x02 or 0x05 or 0x06;
         var isSupported = hasSupportedMapByte && !hasEnhancementChip;
         var compatibility = !hasSupportedMapByte
             ? $"SNES map mode ${header.MapModeByte:X2} is not implemented yet."
@@ -161,6 +245,7 @@ public sealed class SnesCartridge
             header.CartridgeType,
             Math.Max(rom.Length, declaredRomSize),
             ramSize,
+            hasBatteryBackedRam,
             IsPalRegion(header.DestinationCode),
             header.ResetVector,
             hasCopierHeader,

@@ -4,7 +4,9 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 6;
+    private const int SaveStateVersion = 7;
+    private const int SaveStateChecksumLength = 32;
+    private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
     private readonly Cpu65816 _cpu;
 
@@ -86,7 +88,8 @@ public sealed class SnesMachine
 
     public ReadOnlySpan<uint> CurrentFrame => _bus.Ppu.FrameBuffer;
 
-    public static SnesMachine Load(string gamePath) => new(SnesCartridge.Load(gamePath));
+    public static SnesMachine Load(string gamePath, string? batterySavePath = null) =>
+        new(SnesCartridge.Load(gamePath, batterySavePath));
 
     public byte PeekMemory(uint address) => _bus.Read(address);
 
@@ -115,20 +118,50 @@ public sealed class SnesMachine
 
     public void ClearAudioSamples() => _bus.ClearAudioSamples();
 
+    public void FlushBatterySave() => Cartridge.FlushBatterySave();
+
     public byte[] SaveState()
     {
-        using var stream = new MemoryStream();
+        using var payloadStream = new MemoryStream();
+        using (var payloadWriter = new BinaryWriter(
+                   payloadStream,
+                   System.Text.Encoding.UTF8,
+                   leaveOpen: true))
+        {
+            Cartridge.SaveState(payloadWriter);
+            _cpu.SaveState(payloadWriter);
+            _bus.SaveState(payloadWriter);
+            payloadWriter.Flush();
+        }
+
+        var payload = payloadStream.ToArray();
+        var checksum = System.Security.Cryptography.SHA256.HashData(payload);
+        using var stream = new MemoryStream(payload.Length + SaveStateChecksumLength + 12);
         using var writer = new BinaryWriter(stream);
         writer.Write(SaveStateMagic);
         writer.Write(SaveStateVersion);
-        Cartridge.SaveState(writer);
-        _cpu.SaveState(writer);
-        _bus.SaveState(writer);
+        writer.Write(payload.Length);
+        writer.Write(payload);
+        writer.Write(checksum);
         writer.Flush();
         return stream.ToArray();
     }
 
     public void LoadState(ReadOnlySpan<byte> state)
+    {
+        var rollbackState = SaveState();
+        try
+        {
+            LoadStateCore(state);
+        }
+        catch
+        {
+            LoadStateCore(rollbackState);
+            throw;
+        }
+    }
+
+    private void LoadStateCore(ReadOnlySpan<byte> state)
     {
         using var stream = new MemoryStream(state.ToArray(), writable: false);
         using var reader = new BinaryReader(stream);
@@ -138,13 +171,39 @@ public sealed class SnesMachine
             throw new InvalidDataException("This is not a compatible PixelDeck SNES save state.");
         }
 
-        Cartridge.LoadState(reader);
-        _cpu.LoadState(reader);
-        _bus.LoadState(reader);
-
-        if (stream.Position != stream.Length)
+        var payloadLength = reader.ReadInt32();
+        if (payloadLength <= 0 || payloadLength > MaximumSaveStatePayloadLength)
         {
-            throw new InvalidDataException("The SNES save state contains unexpected trailing data.");
+            throw new InvalidDataException("The PixelSNES save-state payload length is invalid.");
+        }
+
+        var expectedFileLength = 12L + payloadLength + SaveStateChecksumLength;
+        if (stream.Length != expectedFileLength)
+        {
+            throw new InvalidDataException(
+                "The PixelSNES save state is truncated or contains unexpected trailing data.");
+        }
+
+        var payload = reader.ReadBytes(payloadLength);
+        var expectedChecksum = reader.ReadBytes(SaveStateChecksumLength);
+        if (payload.Length != payloadLength ||
+            expectedChecksum.Length != SaveStateChecksumLength ||
+            !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+                System.Security.Cryptography.SHA256.HashData(payload),
+                expectedChecksum))
+        {
+            throw new InvalidDataException("The PixelSNES save state failed its integrity check.");
+        }
+
+        using var payloadStream = new MemoryStream(payload, writable: false);
+        using var payloadReader = new BinaryReader(payloadStream);
+        Cartridge.LoadState(payloadReader);
+        _cpu.LoadState(payloadReader);
+        _bus.LoadState(payloadReader);
+        if (payloadStream.Position != payloadStream.Length)
+        {
+            throw new InvalidDataException(
+                "The PixelSNES save-state payload contains unexpected trailing data.");
         }
     }
 }

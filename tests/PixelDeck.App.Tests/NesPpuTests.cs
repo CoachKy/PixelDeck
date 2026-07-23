@@ -318,73 +318,62 @@ public sealed class NesPpuTests
         }
     }
 
-    [Theory]
-    [InlineData(20, 10)]
-    [InlineData(260, 3)]
-    public void RenderingToggleCorruptionCopiesRowZeroIntoTheAffectedRow(
-        int disableCycle,
-        int affectedRow)
+    [Fact]
+    public void WorstCaseOamAddressWriteCopiesThroughTheCpuOpenBusRow()
     {
         using var image = SolidSpriteNesImage.Create();
-        var ppu = new NesPpu(Cartridge.Load(image.Path));
-        var expected = FillOamRowsForCorruption(ppu, affectedRow);
-        ppu.CpuWriteRegister(3, 0);
-        ppu.CpuWriteRegister(1, 0x18);
-        AdvanceTo(ppu, scanline: 0, cycle: disableCycle);
+        var worstCase = new NesPpu(
+            Cartridge.Load(image.Path),
+            new NesEmulationOptions
+            {
+                EnableOamDecay = false,
+                OamCorruptionMode = NesOamCorruptionMode.WorstCase
+            });
+        var stable = new NesPpu(
+            Cartridge.Load(image.Path),
+            new NesEmulationOptions
+            {
+                EnableOamDecay = false,
+                OamCorruptionMode = NesOamCorruptionMode.StableCpuPpuAlignment
+            });
+        var page = Enumerable.Range(0, 256).Select(index => (byte)(0x80 ^ index)).ToArray();
+        worstCase.WriteOamDma(page);
+        stable.WriteOamDma(page);
 
-        ppu.CpuWriteRegister(1, 0);
-        ppu.Tick();
-        ppu.CpuWriteRegister(1, 0x18);
-        ppu.Tick();
-        ppu.CpuWriteRegister(1, 0);
-        ppu.Tick();
+        // The old OAM row is 0, CPU open bus selects row 4, and the intended
+        // destination selects row 6. Worst-case timing copies 0 -> 4 -> 6.
+        worstCase.CpuWriteRegister(3, 0x30, cpuOpenBus: 0x20);
+        stable.CpuWriteRegister(3, 0x30, cpuOpenBus: 0x20);
 
-        for (var index = 0; index < expected.Length; index++)
-        {
-            ppu.CpuWriteRegister(3, (byte)((affectedRow * 8) + index));
-            Assert.Equal(expected[index], ppu.CpuReadRegister(4));
-        }
+        Assert.Equal(page[0], worstCase.CpuReadRegister(4));
+        Assert.Equal(page[0x30], stable.CpuReadRegister(4));
     }
 
     [Fact]
-    public void SaveStatePreservesPendingRenderingToggleOamCorruption()
+    public void WorstCaseRenderingDisableCopiesTheSelectedOam2RowIntoOam1()
     {
         using var image = SolidSpriteNesImage.Create();
-        var original = new NesPpu(Cartridge.Load(image.Path));
-        var expected = FillOamRowsForCorruption(original, affectedRow: 10);
-        original.CpuWriteRegister(3, 0);
-        original.CpuWriteRegister(1, 0x18);
-        AdvanceTo(original, scanline: 0, cycle: 20);
-        original.CpuWriteRegister(1, 0);
-        original.Tick();
-
-        byte[] state;
-        using (var stream = new MemoryStream())
-        {
-            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+        var ppu = new NesPpu(
+            Cartridge.Load(image.Path),
+            new NesEmulationOptions
             {
-                original.SaveState(writer);
-            }
-
-            state = stream.ToArray();
-        }
-
-        var restored = new NesPpu(Cartridge.Load(image.Path));
-        using (var stream = new MemoryStream(state, writable: false))
-        using (var reader = new BinaryReader(stream))
+                EnableOamDecay = false,
+                OamCorruptionMode = NesOamCorruptionMode.WorstCase
+            });
+        var page = new byte[256];
+        for (var index = 0; index < 8; index++)
         {
-            restored.LoadState(reader);
+            page[index] = (byte)(0x20 + index);
+            page[(9 * 8) + index] = (byte)(0xA0 + index);
         }
 
-        restored.CpuWriteRegister(1, 0x18);
-        restored.Tick();
-        restored.CpuWriteRegister(1, 0);
-        restored.Tick();
-        for (var index = 0; index < expected.Length; index++)
-        {
-            restored.CpuWriteRegister(3, (byte)(80 + index));
-            Assert.Equal(expected[index], restored.CpuReadRegister(4));
-        }
+        ppu.WriteOamDma(page);
+        ppu.CpuWriteRegister(1, 0x18);
+        AdvanceTo(ppu, scanline: 0, cycle: 20);
+        ppu.CpuWriteRegister(1, 0);
+        ppu.Tick();
+
+        Assert.Equal(page[9 * 8], ppu.CpuReadRegister(4));
     }
 
     [Fact]
@@ -481,6 +470,39 @@ public sealed class NesPpuTests
     }
 
     [Fact]
+    public void SaveStateRejectsADifferentOamCollisionProfile()
+    {
+        using var image = SolidSpriteNesImage.Create();
+        var original = new NesPpu(
+            Cartridge.Load(image.Path),
+            new NesEmulationOptions
+            {
+                OamCorruptionMode = NesOamCorruptionMode.WorstCase
+            });
+
+        byte[] state;
+        using (var stream = new MemoryStream())
+        {
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+            {
+                original.SaveState(writer);
+            }
+
+            state = stream.ToArray();
+        }
+
+        var restored = new NesPpu(
+            Cartridge.Load(image.Path),
+            new NesEmulationOptions
+            {
+                OamCorruptionMode = NesOamCorruptionMode.StableCpuPpuAlignment
+            });
+        using var stateStream = new MemoryStream(state, writable: false);
+        using var reader = new BinaryReader(stateStream);
+        Assert.Throws<InvalidDataException>(() => restored.LoadState(reader));
+    }
+
+    [Fact]
     public void EarlyPpuCanCreateThePostWrapSpriteAtTheRightEdge()
     {
         using var image = SolidSpriteNesImage.Create();
@@ -522,19 +544,6 @@ public sealed class NesPpuTests
             ppu.CpuWriteRegister(3, (byte)index);
             Assert.Equal(rowZero[index], ppu.CpuReadRegister(4));
         }
-    }
-
-    private static byte[] FillOamRowsForCorruption(NesPpu ppu, int affectedRow)
-    {
-        var expected = new byte[8];
-        for (var index = 0; index < expected.Length; index++)
-        {
-            expected[index] = MaskOamAttributeByte(index, (byte)(0x20 + index));
-            WriteOamByte(ppu, index, expected[index]);
-            WriteOamByte(ppu, (affectedRow * 8) + index, (byte)(0xA0 + index));
-        }
-
-        return expected;
     }
 
     private static byte MaskOamAttributeByte(int address, byte value) =>

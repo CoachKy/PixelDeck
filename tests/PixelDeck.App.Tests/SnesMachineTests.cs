@@ -79,6 +79,126 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void BatteryBackedSaveRamPersistsAcrossCartridgeInstances()
+    {
+        var gamePath = CreateSyntheticLoRom(
+            cartridgeType: 0x02,
+            ramSizeExponent: 0x03);
+        var savePath = Path.Combine(Path.GetTempPath(), $"PixelDeck-{Guid.NewGuid():N}.sav");
+        try
+        {
+            var first = SnesMachine.Load(gamePath, savePath);
+            Assert.True(first.Cartridge.Info.HasBatteryBackedRam);
+            first.Cartridge.Write(0x700123, 0x5A);
+            first.FlushBatterySave();
+
+            var second = SnesMachine.Load(gamePath, savePath);
+            Assert.Equal(0x5A, second.Cartridge.Read(0x700123));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+            File.Delete(savePath);
+            File.Delete(savePath + ".tmp");
+        }
+    }
+
+    [Fact]
+    public void CompleteTemporaryBatterySaveIsRecoveredAfterInterruptedCommit()
+    {
+        var gamePath = CreateSyntheticLoRom(
+            cartridgeType: 0x02,
+            ramSizeExponent: 0x03);
+        var savePath = Path.Combine(Path.GetTempPath(), $"PixelDeck-{Guid.NewGuid():N}.sav");
+        try
+        {
+            var machine = SnesMachine.Load(gamePath, savePath);
+            var expectedLength = machine.Cartridge.Info.RamSize;
+            var temporary = new byte[expectedLength];
+            temporary[0x123] = 0xA5;
+            File.WriteAllBytes(savePath + ".tmp", temporary);
+
+            var recovered = SnesMachine.Load(gamePath, savePath);
+
+            Assert.Equal(0xA5, recovered.Cartridge.Read(0x700123));
+            Assert.True(File.Exists(savePath));
+            Assert.False(File.Exists(savePath + ".tmp"));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+            File.Delete(savePath);
+            File.Delete(savePath + ".tmp");
+        }
+    }
+
+    [Fact]
+    public void CorruptSaveStateFailsIntegrityWithoutChangingTheRunningMachine()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var machine = SnesMachine.Load(gamePath);
+            machine.RunFrame();
+            var stableState = machine.SaveState();
+            machine.RunFrame();
+            machine.LoadState(stableState);
+            var expectedAddress = machine.ProgramAddress;
+            var expectedCycles = machine.CpuCycles;
+            var expectedFrame = machine.RunFrame().ToArray();
+            machine.LoadState(stableState);
+
+            var corruptState = stableState.ToArray();
+            corruptState[^1] ^= 0x80;
+
+            Assert.Throws<InvalidDataException>(() => machine.LoadState(corruptState));
+            Assert.Equal(expectedAddress, machine.ProgramAddress);
+            Assert.Equal(expectedCycles, machine.CpuCycles);
+            Assert.Equal(expectedFrame, machine.RunFrame().ToArray());
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void HdmaChangesPpuRegistersOnSuccessiveScanlines()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.Ppu.WriteRegister(0x2121, 0);
+            bus.Ppu.WriteRegister(0x2122, 0x1F);
+            bus.Ppu.WriteRegister(0x2122, 0);
+            bus.Write(0x7E0000, 0x82);
+            bus.Write(0x7E0001, 0x0F);
+            bus.Write(0x7E0002, 0x80);
+            bus.Write(0x7E0003, 0x00);
+            bus.Write(0x004300, 0x00);
+            bus.Write(0x004301, 0x00);
+            bus.Write(0x004302, 0x00);
+            bus.Write(0x004303, 0x00);
+            bus.Write(0x004304, 0x7E);
+            bus.Write(0x00420C, 0x01);
+
+            bus.BeginFrame();
+            bus.Clock(228);
+            bus.Clock(228);
+
+            Assert.Equal(0xFFFF0000u, bus.Ppu.FrameBuffer[0]);
+            Assert.Equal(0xFF000000u, bus.Ppu.FrameBuffer[SnesPpu.Width]);
+            Assert.Equal(0x04, bus.Read(0x004308));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void LocalSnesImagesCompleteFramesWhenPresent()
     {
         var gamesFolder = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
@@ -266,7 +386,10 @@ public sealed class SnesMachineTests
         gameName.Contains("Mega Man X", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Super Mario World", StringComparison.OrdinalIgnoreCase);
 
-    private static string CreateSyntheticLoRom(byte[]? program = null)
+    private static string CreateSyntheticLoRom(
+        byte[]? program = null,
+        byte cartridgeType = 0x00,
+        byte ramSizeExponent = 0x00)
     {
         var image = new byte[32 * 1024];
         program ??=
@@ -285,9 +408,9 @@ public sealed class SnesMachineTests
         const int header = 0x7FC0;
         "PIXELDECK SNES TEST  ".Select(character => (byte)character).ToArray().CopyTo(image, header);
         image[header + 0x15] = 0x20;
-        image[header + 0x16] = 0x00;
+        image[header + 0x16] = cartridgeType;
         image[header + 0x17] = 0x05;
-        image[header + 0x18] = 0x00;
+        image[header + 0x18] = ramSizeExponent;
         image[header + 0x19] = 0x01;
         image[header + 0x1C] = 0xCB;
         image[header + 0x1D] = 0xED;

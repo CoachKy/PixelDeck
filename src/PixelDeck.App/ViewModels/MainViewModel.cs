@@ -7,6 +7,7 @@ using PixelDeck.App.Models;
 using PixelDeck.App.Services;
 using PixelDeck.App.Settings;
 using PixelDeck.Emulation.Nes;
+using PixelDeck.Emulation.Snes;
 
 namespace PixelDeck.App.ViewModels;
 
@@ -54,6 +55,11 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             new(NesPpuRevision.Rp2C02G, "RP2C02G (standard NES)"),
             new(NesPpuRevision.Rp2C02BOrEarlier, "RP2C02B or earlier")
         ];
+        NesOamCorruptionModes =
+        [
+            new(NesOamCorruptionMode.StableCpuPpuAlignment, "Stable CPU / PPU alignment"),
+            new(NesOamCorruptionMode.WorstCase, "Collision-prone / worst case")
+        ];
 
         var settings = PixelDeckSettingsStore.Current;
         selectedControllerSlot = ControllerSlots[settings.ControllerIndex];
@@ -67,6 +73,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         selectedNesPpuRevision = NesPpuRevisions.First(
             option => option.Revision == settings.NesPpuRevision);
         enableNesOamDecay = settings.EnableNesOamDecay;
+        selectedNesOamCorruptionMode = NesOamCorruptionModes.First(
+            option => option.Mode == settings.NesOamCorruptionMode);
         selectedSnesAButton = FindButton(settings.SnesAButton, GamepadButton.B);
         selectedSnesBButton = FindButton(settings.SnesBButton, GamepadButton.A);
         selectedSnesXButton = FindButton(settings.SnesXButton, GamepadButton.Y);
@@ -92,6 +100,21 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     public IReadOnlyList<Mmc3IrqRevisionOption> Mmc3IrqRevisions { get; }
 
     public IReadOnlyList<NesPpuRevisionOption> NesPpuRevisions { get; }
+
+    public IReadOnlyList<NesOamCorruptionModeOption> NesOamCorruptionModes { get; }
+
+    public string PixelDeckVersionText { get; } =
+        FormatProductVersion("PixelDeck", typeof(MainViewModel).Assembly.GetName().Version);
+
+    public string PixelNesVersionText { get; } =
+        FormatProductVersion("PixelNES", typeof(NesMachine).Assembly.GetName().Version);
+
+    public string PixelSnesVersionText { get; } =
+        FormatProductVersion("PixelSNES", typeof(SnesMachine).Assembly.GetName().Version);
+
+    public string LibraryEmulatorVersionText => SelectedLibrarySystem == LibrarySystem.Nintendo
+        ? PixelNesVersionText
+        : PixelSnesVersionText;
 
     public bool IsHomeVisible => SelectedPage == DashboardPage.Home;
 
@@ -175,6 +198,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [NotifyPropertyChangedFor(nameof(LibrarySystemTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyLibraryText))]
     [NotifyPropertyChangedFor(nameof(OpenLibraryFolderText))]
+    [NotifyPropertyChangedFor(nameof(LibraryEmulatorVersionText))]
     private LibrarySystem selectedLibrarySystem = LibrarySystem.Nintendo;
 
     [ObservableProperty]
@@ -227,6 +251,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     private bool enableNesOamDecay;
+
+    [ObservableProperty]
+    private NesOamCorruptionModeOption selectedNesOamCorruptionMode;
 
     [ObservableProperty]
     private ControllerButtonOption selectedSnesAButton;
@@ -288,6 +315,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     partial void OnEnableNesOamDecayChanged(bool value)
     {
         PixelDeckSettingsStore.Current.EnableNesOamDecay = value;
+        PixelDeckSettingsStore.Save();
+    }
+
+    partial void OnSelectedNesOamCorruptionModeChanged(NesOamCorruptionModeOption value)
+    {
+        PixelDeckSettingsStore.Current.NesOamCorruptionMode = value.Mode;
         PixelDeckSettingsStore.Save();
     }
 
@@ -667,6 +700,14 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     private static string NormalizeRelativePath(string relativePath) =>
         relativePath.Replace('\\', '/');
+
+    private static string FormatProductVersion(string productName, Version? version)
+    {
+        var major = Math.Max(0, version?.Major ?? 0);
+        var minor = Math.Max(0, version?.Minor ?? 0);
+        var patch = Math.Max(0, version?.Build ?? 0);
+        return $"{productName} v{major}.{minor}.{patch:000}";
+    }
 }
 
 public sealed record RecentGameEntry(GameEntry Game, TimeSpan TotalPlayTime, DateTime LastPlayedUtc, int SessionCount)
@@ -720,3 +761,5 @@ public sealed record ControllerButtonOption(GamepadButton Button, string Label);
 public sealed record Mmc3IrqRevisionOption(Mmc3IrqRevision Revision, string Label);
 
 public sealed record NesPpuRevisionOption(NesPpuRevision Revision, string Label);
+
+public sealed record NesOamCorruptionModeOption(NesOamCorruptionMode Mode, string Label);

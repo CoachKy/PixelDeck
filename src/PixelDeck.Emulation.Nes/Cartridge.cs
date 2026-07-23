@@ -199,6 +199,11 @@ public sealed class Cartridge
         }
 
         var fingerprintLength = reader.ReadInt32();
+        if (fingerprintLength != _romFingerprint.Length)
+        {
+            throw new InvalidDataException("The save state contains an invalid game fingerprint.");
+        }
+
         var fingerprint = reader.ReadBytes(fingerprintLength);
         if (fingerprint.Length != fingerprintLength || !_romFingerprint.AsSpan().SequenceEqual(fingerprint))
         {
@@ -223,27 +228,57 @@ public sealed class Cartridge
         }
 
         var temporaryPath = _batterySavePath + ".tmp";
-        File.WriteAllBytes(temporaryPath, _programRam.Data);
+        WriteDurableBytes(temporaryPath, _programRam.Data);
         File.Move(temporaryPath, _batterySavePath, overwrite: true);
         _programRam.MarkClean();
     }
 
     private void LoadBatterySave()
     {
-        if (_batterySavePath is null || !File.Exists(_batterySavePath))
+        if (_batterySavePath is null)
         {
             return;
         }
 
-        var data = File.ReadAllBytes(_batterySavePath);
-        if (data.Length != _programRam.Data.Length)
+        var temporaryPath = _batterySavePath + ".tmp";
+        var finalExists = File.Exists(_batterySavePath);
+        var finalData = finalExists ? File.ReadAllBytes(_batterySavePath) : null;
+        if (finalData?.Length == _programRam.Data.Length)
         {
-            throw new InvalidDataException(
-                $"The battery save is {data.Length} bytes, but this cartridge expects {_programRam.Data.Length} bytes.");
+            finalData.CopyTo(_programRam.Data, 0);
+            _programRam.MarkClean();
+            return;
         }
 
-        data.CopyTo(_programRam.Data, 0);
-        _programRam.MarkClean();
+        var temporaryExists = File.Exists(temporaryPath);
+        var temporaryData = temporaryExists ? File.ReadAllBytes(temporaryPath) : null;
+        if (temporaryData?.Length == _programRam.Data.Length)
+        {
+            File.Move(temporaryPath, _batterySavePath, overwrite: true);
+            temporaryData.CopyTo(_programRam.Data, 0);
+            _programRam.MarkClean();
+            return;
+        }
+
+        if (finalExists || temporaryExists)
+        {
+            var invalidLength = finalData?.Length ?? temporaryData?.Length ?? 0;
+            throw new InvalidDataException(
+                $"The battery save is {invalidLength} bytes, but this cartridge expects {_programRam.Data.Length} bytes.");
+        }
+    }
+
+    private static void WriteDurableBytes(string path, ReadOnlySpan<byte> data)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize: 4_096,
+            FileOptions.WriteThrough);
+        stream.Write(data);
+        stream.Flush(flushToDisk: true);
     }
 
     private static CartridgeInfo InspectHeader(ReadOnlySpan<byte> header, long fileLength)
