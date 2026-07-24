@@ -1,0 +1,45 @@
+name: PixelSNES certification
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/PixelDeck.Emulation.Snes/**"
+      - "src/PixelDeck.App/**"
+      - "tests/PixelDeck.App.Tests/**"
+      - "scripts/Test-PixelSnesRelease.ps1"
+      - ".github/workflows/pixelsnes-certification.yml"
+  pull_request:
+    paths:
+      - "src/PixelDeck.Emulation.Snes/**"
+      - "src/PixelDeck.App/**"
+      - "tests/PixelDeck.App.Tests/**"
+      - "scripts/Test-PixelSnesRelease.ps1"
+      - ".github/workflows/pixelsnes-certification.yml"
+
+jobs:
+  windows-certification:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run pinned accuracy and publish gates
+        shell: pwsh
+        run: ./scripts/Test-PixelSnesRelease.ps1 -SkipLocalGames
+
+  linux-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run PixelSNES core regression suite on Linux
+        run: >-
+          dotnet test tests/PixelDeck.App.Tests/PixelDeck.App.Tests.csproj
+          -c Release
+          --filter "FullyQualifiedName~Snes"

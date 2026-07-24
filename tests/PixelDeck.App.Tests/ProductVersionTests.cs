@@ -11,7 +11,7 @@ public sealed class ProductVersionTests
     {
         Assert.Equal(new Version(0, 8, 0, 0), typeof(MainViewModel).Assembly.GetName().Version);
         Assert.Equal(new Version(1, 7, 0, 0), typeof(NesMachine).Assembly.GetName().Version);
-        Assert.Equal(new Version(0, 2, 0, 0), typeof(SnesMachine).Assembly.GetName().Version);
+        Assert.Equal(new Version(1, 3, 1, 0), typeof(SnesMachine).Assembly.GetName().Version);
     }
 
     [Fact]
@@ -24,6 +24,6 @@ public sealed class ProductVersionTests
 
         viewModel.SelectedLibrarySystem = LibrarySystem.SuperNintendo;
 
-        Assert.Equal("PixelSNES v0.2.000", viewModel.LibraryEmulatorVersionText);
+        Assert.Equal("PixelSNES v1.3.001", viewModel.LibraryEmulatorVersionText);
     }
 }

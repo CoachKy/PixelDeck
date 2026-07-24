@@ -133,6 +133,60 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void Dsp1CartridgeTypeIsOfferedAsCompatible()
+    {
+        var gamePath = CreateSyntheticLoRom(
+            cartridgeType: 0x03,
+            ramSizeExponent: 0x03);
+        try
+        {
+            var info = SnesCartridge.Inspect(gamePath);
+
+            Assert.True(info.IsSupported);
+            Assert.False(info.HasBatteryBackedRam);
+            Assert.Contains("DSP-1", info.CompatibilityMessage);
+            Assert.NotNull(SnesCartridge.Load(gamePath));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void HiRomDsp1BoardRoutesDataStatusAndBatteryRam()
+    {
+        var gamePath = CreateSyntheticHiRom(
+            cartridgeType: 0x05,
+            ramSizeExponent: 0x03);
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+
+            Assert.True(cartridge.Info.HasBatteryBackedRam);
+            Assert.Contains("DSP-1", cartridge.Info.CompatibilityMessage);
+            Assert.Equal(0x80, bus.Read(0x007000));
+
+            bus.Write(0x006000, 0x00);
+            bus.Write(0x006000, 0x00);
+            bus.Write(0x006000, 0x40);
+            bus.Write(0x006000, 0x00);
+            bus.Write(0x006000, 0x40);
+
+            Assert.Equal(0x00, bus.Read(0x006000));
+            Assert.Equal(0x20, bus.Read(0x006000));
+
+            cartridge.Write(0x206123, 0xA5);
+            Assert.Equal(0xA5, cartridge.Read(0x206123));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void CorruptSaveStateFailsIntegrityWithoutChangingTheRunningMachine()
     {
         var gamePath = CreateSyntheticLoRom();
@@ -371,6 +425,161 @@ public sealed class SnesMachineTests
         Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
     }
 
+    [Fact]
+    public void TraceFirstLocalSnesBrkWhenRequested()
+    {
+        var requestedGame = Environment.GetEnvironmentVariable("PIXELDECK_SNES_TRACE_GAME");
+        if (string.IsNullOrWhiteSpace(requestedGame))
+        {
+            return;
+        }
+
+        var gamesFolder = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
+        var gamePath = Directory.EnumerateFiles(gamesFolder)
+            .First(path => Path.GetFileName(path).Contains(requestedGame, StringComparison.OrdinalIgnoreCase));
+        var machine = SnesMachine.Load(gamePath);
+        var trace = new Queue<string>();
+        for (var instruction = 0; instruction < 20_000_000 && machine.BrkCount == 0; instruction++)
+        {
+            trace.Enqueue(
+                $"{machine.ProgramAddress:X6} " +
+                $"A={machine.CpuAccumulator:X4} X={machine.CpuX:X4} Y={machine.CpuY:X4} " +
+                $"S={machine.CpuStackPointer:X4} D={machine.CpuDirectPage:X4} " +
+                $"DB={machine.CpuDataBank:X2} P={machine.CpuStatus:X2}");
+            if (trace.Count > 128)
+            {
+                trace.Dequeue();
+            }
+
+            machine.StepInstructionForDiagnostics();
+        }
+
+        _output.WriteLine(string.Join(Environment.NewLine, trace));
+        _output.WriteLine(
+            $"BRK={machine.BrkCount} at ${machine.FirstBrkAddress:X6}; next=${machine.ProgramAddress:X6}");
+        Assert.True(machine.BrkCount > 0, "The requested trace did not reach a BRK instruction.");
+    }
+
+    [Fact]
+    public void CaptureLocalSnesProgressionWhenRequested()
+    {
+        if (!string.Equals(
+                Environment.GetEnvironmentVariable("PIXELDECK_SNES_PROGRESSION"),
+                "1",
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var gamesFolder = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
+        var requestedFrames = int.TryParse(
+            Environment.GetEnvironmentVariable("PIXELDECK_SNES_FRAMES"),
+            out var parsedFrames)
+            ? Math.Max(600, parsedFrames)
+            : 3_600;
+        var gameFilter = Environment.GetEnvironmentVariable("PIXELDECK_SNES_GAME");
+        var noInput = string.Equals(
+            Environment.GetEnvironmentVariable("PIXELDECK_SNES_NO_INPUT"),
+            "1",
+            StringComparison.Ordinal);
+        var checkpoints = new HashSet<int>(
+            new[] { 600, 1_200, 2_400, requestedFrames }
+                .Where(frame => frame <= requestedFrames));
+
+        foreach (var gamePath in Directory.EnumerateFiles(gamesFolder)
+                     .Where(path => Path.GetExtension(path) is ".sfc" or ".smc")
+                     .Where(path =>
+                         string.IsNullOrWhiteSpace(gameFilter) ||
+                         Path.GetFileName(path).Contains(gameFilter, StringComparison.OrdinalIgnoreCase))
+                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            SnesMachine machine;
+            try
+            {
+                machine = SnesMachine.Load(gamePath);
+            }
+            catch (Exception exception) when (exception is NotSupportedException or InvalidDataException)
+            {
+                _output.WriteLine($"Excluded {Path.GetFileName(gamePath)}: {exception.Message}");
+                continue;
+            }
+
+            for (var frame = 1; frame <= requestedFrames; frame++)
+            {
+                machine.SetControllerState(
+                    1,
+                    noInput
+                        ? SnesButton.None
+                        : GetProgressionInput(Path.GetFileName(gamePath), frame));
+                var pixels = machine.RunFrame();
+                if (checkpoints.Contains(frame))
+                {
+                    CaptureFrameWhenRequested(
+                        gamePath,
+                        pixels.ToArray(),
+                        machine.Width,
+                        machine.Height,
+                        $"-{frame}");
+                }
+            }
+
+            var dspCommands = Enumerable.Range(0, 256)
+                .Select(command => (Command: command, Count: machine.ReadDsp1CommandCount((byte)command)))
+                .Where(entry => entry.Count != 0)
+                .Select(entry => $"${entry.Command:X2}={entry.Count}");
+            _output.WriteLine(
+                $"{Path.GetFileName(gamePath)}: {requestedFrames} frames, " +
+                $"PC=${machine.ProgramAddress:X6}, NMI={machine.NmiCount}, IRQ={machine.IrqCount}, " +
+                $"BRK={machine.BrkCount}, blank={machine.IsDisplayBlanked}, " +
+                $"colors={machine.CurrentFrame.ToArray().Distinct().Count()}, " +
+                $"DSP-1=[{string.Join(", ", dspCommands)}].");
+        }
+    }
+
+    private static SnesButton GetProgressionInput(string gameName, int frame)
+    {
+        if (gameName.Contains("Super Mario Kart", StringComparison.OrdinalIgnoreCase))
+        {
+            if (frame is >= 700 and < 706) return SnesButton.Start;
+            if (frame is >= 1_000 and < 1_006 or
+                >= 1_300 and < 1_306 or
+                >= 1_800 and < 1_806 or
+                >= 2_300 and < 2_306 or
+                >= 2_800 and < 2_806)
+            {
+                return SnesButton.B;
+            }
+
+            return SnesButton.None;
+        }
+
+        var pulse = frame % 300;
+        if (pulse is >= 30 and < 36)
+        {
+            return SnesButton.Start;
+        }
+
+        if (pulse is >= 90 and < 96)
+        {
+            return SnesButton.B;
+        }
+
+        if (pulse is >= 150 and < 156)
+        {
+            return SnesButton.A;
+        }
+
+        return (frame % 1_200) switch
+        {
+            >= 300 and < 420 => SnesButton.Right | SnesButton.B,
+            >= 600 and < 720 => SnesButton.Down,
+            >= 900 and < 1_020 => SnesButton.Left | SnesButton.Y,
+            _ => SnesButton.None
+        };
+    }
+
     private static int RequiredBootFrames(string gameName) =>
         gameName.Contains("Donkey Kong Country", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Final Fantasy III", StringComparison.OrdinalIgnoreCase) ||
@@ -384,6 +593,7 @@ public sealed class SnesMachineTests
         gameName.Contains("Final Fantasy III", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Link to the Past", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Mega Man X", StringComparison.OrdinalIgnoreCase) ||
+        gameName.Contains("Super Mario Kart", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Super Mario World", StringComparison.OrdinalIgnoreCase);
 
     private static string CreateSyntheticLoRom(
@@ -424,7 +634,43 @@ public sealed class SnesMachineTests
         return path;
     }
 
-    private static void CaptureFrameWhenRequested(string gamePath, uint[] frame, int width, int height)
+    private static string CreateSyntheticHiRom(
+        byte cartridgeType,
+        byte ramSizeExponent)
+    {
+        var image = new byte[64 * 1024];
+        byte[] program =
+        [
+            0x78, // SEI
+            0xDB  // STP
+        ];
+        program.CopyTo(image, 0x8000);
+
+        const int header = 0xFFC0;
+        "PIXELDECK DSP1 TEST  ".Select(character => (byte)character).ToArray().CopyTo(image, header);
+        image[header + 0x15] = 0x31;
+        image[header + 0x16] = cartridgeType;
+        image[header + 0x17] = 0x06;
+        image[header + 0x18] = ramSizeExponent;
+        image[header + 0x19] = 0x01;
+        image[header + 0x1C] = 0xCB;
+        image[header + 0x1D] = 0xED;
+        image[header + 0x1E] = 0x34;
+        image[header + 0x1F] = 0x12;
+        image[header + 0x3C] = 0x00;
+        image[header + 0x3D] = 0x80;
+
+        var path = Path.Combine(Path.GetTempPath(), $"PixelDeck-{Guid.NewGuid():N}.sfc");
+        File.WriteAllBytes(path, image);
+        return path;
+    }
+
+    private static void CaptureFrameWhenRequested(
+        string gamePath,
+        uint[] frame,
+        int width,
+        int height,
+        string suffix = "")
     {
         var captureFolder = Environment.GetEnvironmentVariable("PIXELDECK_CAPTURE_SNES");
         if (string.IsNullOrWhiteSpace(captureFolder))
@@ -452,7 +698,7 @@ public sealed class SnesMachineTests
 
         using var image = SKImage.FromBitmap(bitmap);
         using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-        var fileName = Path.GetFileNameWithoutExtension(gamePath) + ".png";
+        var fileName = Path.GetFileNameWithoutExtension(gamePath) + suffix + ".png";
         using var stream = File.Create(Path.Combine(captureFolder, fileName));
         data.SaveTo(stream);
     }

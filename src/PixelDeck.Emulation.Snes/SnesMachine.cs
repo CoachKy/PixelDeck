@@ -4,7 +4,7 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 7;
+    private const int SaveStateVersion = 8;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
@@ -52,6 +52,8 @@ public sealed class SnesMachine
 
     public byte CpuStatus => _cpu.Status;
 
+    public ushort CpuStackPointer => _cpu.StackPointer;
+
     public ushort ApuOutputWord => _bus.ApuOutputWord;
 
     public long ApuExecutedInstructions => _bus.ApuExecutedInstructions;
@@ -61,6 +63,10 @@ public sealed class SnesMachine
     public ushort ApuFirstUnsupportedAddress => _bus.ApuFirstUnsupportedAddress;
 
     public int BufferedAudioSampleCount => _bus.BufferedAudioSampleCount;
+
+    public long DroppedAudioSampleCount => _bus.DroppedAudioSampleCount;
+
+    public long ReadDsp1CommandCount(byte command) => _bus.ReadDsp1CommandCount(command);
 
     internal int ActiveAudioVoiceCount => _bus.ActiveAudioVoiceCount;
 
@@ -91,7 +97,13 @@ public sealed class SnesMachine
     public static SnesMachine Load(string gamePath, string? batterySavePath = null) =>
         new(SnesCartridge.Load(gamePath, batterySavePath));
 
-    public byte PeekMemory(uint address) => _bus.Read(address);
+    public byte PeekMemory(uint address) => _bus.Peek(address);
+
+    internal void StepInstructionForDiagnostics()
+    {
+        var cpuCycles = _cpu.Step();
+        _bus.Clock(cpuCycles);
+    }
 
     public ReadOnlySpan<uint> RunFrame()
     {
@@ -119,6 +131,8 @@ public sealed class SnesMachine
     public void ClearAudioSamples() => _bus.ClearAudioSamples();
 
     public void FlushBatterySave() => Cartridge.FlushBatterySave();
+
+    public void Reset() => _cpu.Reset();
 
     public byte[] SaveState()
     {

@@ -18,3 +18,7 @@
 # Accuracy-test ROMs are installed locally because their redistribution terms vary.
 /tests/PixelDeck.App.Tests/TestRoms/*
 !/tests/PixelDeck.App.Tests/TestRoms/README.md
+
+# Local emulator captures are diagnostic output. Existing checked-in reference
+# captures remain tracked, but new files in this folder stay local.
+/artifacts/snes-audit/*

@@ -47,6 +47,8 @@ internal sealed class SnesApu
 
     public int ActiveVoiceCount => _dsp.ActiveVoiceCount;
 
+    public long DroppedSampleCount => _dsp.DroppedSampleCount;
+
     public byte ReadDspRegister(byte address) => _dsp.ReadRegister(address);
 
     public byte ReadOutputPort(int port) => _apuToCpuPorts[port & 3];

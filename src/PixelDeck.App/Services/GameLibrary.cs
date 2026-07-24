@@ -169,9 +169,7 @@ public sealed class GameLibrary
                     null,
                     0,
                     cartridge.IsSupported,
-                    cartridge.IsSupported
-                        ? $"Compatible with the current local SNES core ({mapText}). CPU, Mode 0/1 video, and S-DSP stereo audio are active; game compatibility is still limited."
-                        : cartridge.CompatibilityMessage,
+                    cartridge.CompatibilityMessage,
                     mapText);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)

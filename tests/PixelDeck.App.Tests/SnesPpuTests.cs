@@ -11,7 +11,8 @@ public sealed class SnesPpuTests
         SetDisplayOn(ppu);
         WriteColor(ppu, 1, 0x001F);
         WriteVramWord(ppu, 0x0000, 0x0000);
-        WriteVramWord(ppu, 0x1000, 0x0080);
+        // The first visible SNES scanline fetches tile row VOFS + 1.
+        WriteVramWord(ppu, 0x1001, 0x0080);
         ppu.WriteRegister(0x2105, 0x03);
         ppu.WriteRegister(0x210B, 0x01);
         ppu.WriteRegister(0x212C, 0x01);

@@ -40,6 +40,7 @@ internal sealed class SnesBus
     private readonly bool[] _hdmaTerminated = new bool[8];
     private readonly bool[] _hdmaDoTransfer = new bool[8];
     private readonly SnesApu _apu = new();
+    private readonly SnesDsp1? _dsp1;
     private uint _wramAddress;
     private byte _nmitimen;
     private byte _wrmpya;
@@ -63,10 +64,12 @@ internal sealed class SnesBus
     private ushort _automaticControllerTwo;
     private bool _controllerStrobe;
     private bool _hdmaInitialized;
+    private byte _openBus;
 
     public SnesBus(SnesCartridge cartridge)
     {
         _cartridge = cartridge;
+        _dsp1 = cartridge.HasDsp1 ? new SnesDsp1() : null;
         Ppu = new SnesPpu();
     }
 
@@ -88,6 +91,10 @@ internal sealed class SnesBus
 
     public int ActiveAudioVoiceCount => _apu.ActiveVoiceCount;
 
+    public long DroppedAudioSampleCount => _apu.DroppedSampleCount;
+
+    public long ReadDsp1CommandCount(byte command) => _dsp1?.GetCommandExecutionCount(command) ?? 0;
+
     public byte ReadDspRegister(byte address) => _apu.ReadDspRegister(address);
 
     public int ReadAudioSamples(Span<float> destination) => _apu.ReadSamples(destination);
@@ -100,37 +107,66 @@ internal sealed class SnesBus
         var bank = (byte)(address >> 16);
         var offset = (ushort)address;
 
+        if (TryReadDsp1(bank, offset, out var dsp1Value))
+        {
+            return LatchOpenBus(dsp1Value);
+        }
+
         if (bank is 0x7E or 0x7F)
         {
-            return _wram[((bank - 0x7E) << 16) | offset];
+            return LatchOpenBus(_wram[((bank - 0x7E) << 16) | offset]);
         }
 
         if (IsSystemBank(bank))
         {
             if (offset < 0x2000)
             {
-                return _wram[offset];
+                return LatchOpenBus(_wram[offset]);
             }
 
             if (offset is >= 0x2100 and <= 0x21FF)
             {
-                return ReadPpuOrApu(offset);
+                return LatchOpenBus(ReadPpuOrApu(offset));
             }
 
             if (offset is 0x4016 or 0x4017)
             {
-                return ReadController(offset == 0x4016 ? 1 : 2);
+                return LatchOpenBus(ReadController(offset == 0x4016 ? 1 : 2));
             }
 
             if (offset is >= 0x4210 and <= 0x421F)
             {
-                return ReadCpuRegister(offset);
+                return LatchOpenBus(ReadCpuRegister(offset));
             }
 
             if (offset is >= 0x4300 and <= 0x437F)
             {
-                return _dmaRegisters[offset - 0x4300];
+                return LatchOpenBus(_dmaRegisters[offset - 0x4300]);
             }
+        }
+
+        return LatchOpenBus(_cartridge.Read(address));
+    }
+
+    public byte Peek(uint address)
+    {
+        address &= 0xFFFFFF;
+        var bank = (byte)(address >> 16);
+        var offset = (ushort)address;
+
+        if (TryPeekDsp1(bank, offset, out var dsp1Value))
+        {
+            return dsp1Value;
+        }
+
+        if (bank is 0x7E or 0x7F)
+        {
+            return _wram[((bank - 0x7E) << 16) | offset];
+        }
+
+        if (IsSystemBank(bank) && offset < 0x2000)
+        {
+            return _wram[offset];
         }
 
         return _cartridge.Read(address);
@@ -138,9 +174,15 @@ internal sealed class SnesBus
 
     public void Write(uint address, byte value)
     {
+        _openBus = value;
         address &= 0xFFFFFF;
         var bank = (byte)(address >> 16);
         var offset = (ushort)address;
+
+        if (TryWriteDsp1(bank, offset, value))
+        {
+            return;
+        }
 
         if (bank is 0x7E or 0x7F)
         {
@@ -321,8 +363,10 @@ internal sealed class SnesBus
         writer.Write(_automaticControllerTwo);
         writer.Write(_controllerStrobe);
         writer.Write(_hdmaInitialized);
+        writer.Write(_openBus);
         foreach (var value in _hdmaTerminated) writer.Write(value);
         foreach (var value in _hdmaDoTransfer) writer.Write(value);
+        _dsp1?.SaveState(writer);
         _apu.SaveState(writer);
         Ppu.SaveState(writer);
     }
@@ -354,11 +398,89 @@ internal sealed class SnesBus
         _automaticControllerTwo = reader.ReadUInt16();
         _controllerStrobe = reader.ReadBoolean();
         _hdmaInitialized = reader.ReadBoolean();
+        _openBus = reader.ReadByte();
         for (var index = 0; index < 8; index++) _hdmaTerminated[index] = reader.ReadBoolean();
         for (var index = 0; index < 8; index++) _hdmaDoTransfer[index] = reader.ReadBoolean();
+        _dsp1?.LoadState(reader);
         _apu.LoadState(reader);
         Ppu.LoadState(reader);
         FrameReady = false;
+    }
+
+    private bool TryReadDsp1(byte bank, ushort address, out byte value)
+    {
+        value = 0;
+        if (_dsp1 is null || !TryDecodeDsp1Address(bank, address, out var isStatus))
+        {
+            return false;
+        }
+
+        value = isStatus ? _dsp1.ReadStatus() : _dsp1.ReadData();
+        return true;
+    }
+
+    private bool TryWriteDsp1(byte bank, ushort address, byte value)
+    {
+        if (_dsp1 is null || !TryDecodeDsp1Address(bank, address, out var isStatus))
+        {
+            return false;
+        }
+
+        if (!isStatus)
+        {
+            _dsp1.WriteData(value);
+        }
+
+        return true;
+    }
+
+    private bool TryPeekDsp1(byte bank, ushort address, out byte value)
+    {
+        value = 0;
+        if (_dsp1 is null || !TryDecodeDsp1Address(bank, address, out var isStatus))
+        {
+            return false;
+        }
+
+        value = isStatus ? _dsp1.ReadStatus() : _dsp1.PeekData();
+        return true;
+    }
+
+    private bool TryDecodeDsp1Address(byte bank, ushort address, out bool isStatus)
+    {
+        isStatus = false;
+        if (_cartridge.Info.MapMode == SnesMapMode.HiRom)
+        {
+            if (bank is not (<= 0x1F or >= 0x80 and <= 0x9F) ||
+                address is < 0x6000 or >= 0x8000)
+            {
+                return false;
+            }
+
+            isStatus = address >= 0x7000;
+            return true;
+        }
+
+        if (_cartridge.Info.RomSize > 0x100000)
+        {
+            if (bank is not (>= 0x60 and <= 0x6F or >= 0xE0 and <= 0xEF) ||
+                address >= 0x8000)
+            {
+                return false;
+            }
+
+            isStatus = address >= 0x4000;
+            return true;
+        }
+
+        if (bank is not (>= 0x20 and <= 0x3F or >= 0xA0 and <= 0xBF) ||
+            address < 0x8000)
+        {
+            return false;
+        }
+
+        isStatus = address >= 0xC000;
+        return true;
     }
 
     private byte ReadPpuOrApu(ushort address)
@@ -410,7 +532,10 @@ internal sealed class SnesBus
         {
             0x4210 => ReadNmiFlag(),
             0x4211 => ReadIrqFlag(),
-            0x4212 => (byte)((_vblank ? 0x80 : 0) | (_masterClockRemainder >= 1_096 ? 0x40 : 0)),
+            0x4212 => (byte)(
+                (_vblank ? 0x80 : 0) |
+                (_masterClockRemainder >= 1_096 ? 0x40 : 0) |
+                (_openBus & 0x3E)),
             0x4214 => (byte)_divisionQuotient,
             0x4215 => (byte)(_divisionQuotient >> 8),
             0x4216 => (byte)_multiplyOrRemainder,
@@ -697,20 +822,26 @@ internal sealed class SnesBus
             shift = (ushort)((shift >> 1) | 0x8000);
         }
 
-        return value;
+        return (byte)((_openBus & 0xFC) | value);
     }
 
     private byte ReadNmiFlag()
     {
-        var value = (byte)(_nmiFlag ? 0x82 : 0x02);
+        var value = (byte)((_nmiFlag ? 0x82 : 0x02) | (_openBus & 0x70));
         _nmiFlag = false;
         return value;
     }
 
     private byte ReadIrqFlag()
     {
-        var value = (byte)(_irqFlag ? 0x80 : 0);
+        var value = (byte)((_irqFlag ? 0x80 : 0) | (_openBus & 0x7F));
         _irqFlag = false;
+        return value;
+    }
+
+    private byte LatchOpenBus(byte value)
+    {
+        _openBus = value;
         return value;
     }
 

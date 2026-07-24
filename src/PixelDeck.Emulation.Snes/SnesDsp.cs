@@ -30,6 +30,7 @@ internal sealed class SnesDsp
     private int _sampleReadIndex;
     private int _sampleWriteIndex;
     private int _sampleCount;
+    private long _droppedSampleCount;
     private int _cycle;
     private int _counter = 30_720;
     private ushort _noiseLfsr = 0x4000;
@@ -56,6 +57,8 @@ internal sealed class SnesDsp
     }
 
     public int ActiveVoiceCount => _voices.Count(voice => voice.Active);
+
+    public long DroppedSampleCount => Interlocked.Read(ref _droppedSampleCount);
 
     public byte ReadRegister(byte address) => _registers[address & 0x7F];
 
@@ -398,6 +401,7 @@ internal sealed class SnesDsp
             {
                 _sampleReadIndex = (_sampleReadIndex + 2) % _samples.Length;
                 _sampleCount -= 2;
+                Interlocked.Add(ref _droppedSampleCount, 2);
             }
 
             _samples[_sampleWriteIndex] = left;

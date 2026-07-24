@@ -78,6 +78,56 @@ public sealed class SnesDspTests
         Assert.Equal(1, dsp.ActiveVoiceCount);
     }
 
+    [Fact]
+    public void AudioQueueReportsSamplesOverwrittenDuringAConsumerStall()
+    {
+        var ram = CreateLoopingSampleRam();
+        var dsp = new SnesDsp(ram);
+        ConfigureVoice(dsp, voice: 0, leftVolume: 0x7F, rightVolume: 0x7F);
+        dsp.WriteRegister(0x4C, 0x01);
+
+        ClockSamples(dsp, 40_000);
+
+        Assert.True(dsp.DroppedSampleCount > 0);
+        Assert.Equal(0, dsp.DroppedSampleCount & 1);
+        Assert.InRange(dsp.BufferedSampleCount, 2, 65_536);
+    }
+
+    [Fact]
+    public void AdsrNoisePitchModulationAndEchoRemainAudibleAndBounded()
+    {
+        var ram = CreateLoopingSampleRam();
+        var dsp = new SnesDsp(ram);
+        ConfigureVoice(dsp, voice: 0, leftVolume: 0x50, rightVolume: 0x50);
+        ConfigureVoice(dsp, voice: 1, leftVolume: 0x50, rightVolume: 0x50);
+        dsp.WriteRegister(0x05, 0x8F); // ADSR, fastest attack.
+        dsp.WriteRegister(0x06, 0xE0);
+        dsp.WriteRegister(0x2D, 0x02); // Voice 0 modulates voice 1 pitch.
+        dsp.WriteRegister(0x3D, 0x01); // Voice 0 uses the noise generator.
+        dsp.WriteRegister(0x4D, 0x03); // Both voices feed echo.
+        dsp.WriteRegister(0x2C, 0x40);
+        dsp.WriteRegister(0x3C, 0x40);
+        dsp.WriteRegister(0x0D, 0x20);
+        dsp.WriteRegister(0x0F, 0x7F); // First FIR tap.
+        dsp.WriteRegister(0x6D, 0x40); // Echo buffer at $4000.
+        dsp.WriteRegister(0x7D, 0x01);
+        dsp.WriteRegister(0x6C, 0x1F); // Unmute, enable echo writes, fast noise.
+        dsp.WriteRegister(0x4C, 0x03);
+
+        ClockSamples(dsp, 1_024);
+
+        var samples = new float[2_048];
+        Assert.Equal(samples.Length, dsp.ReadSamples(samples));
+        Assert.All(samples, sample =>
+        {
+            Assert.True(float.IsFinite(sample));
+            Assert.InRange(sample, -1f, 1f);
+        });
+        Assert.Contains(samples, sample => Math.Abs(sample) > 0.01f);
+        Assert.True(dsp.ReadRegister(0x08) > 0);
+        Assert.Contains(ram.AsSpan(0x4000, 0x0800).ToArray(), value => value != 0);
+    }
+
     private static byte[] CreateLoopingSampleRam()
     {
         var ram = new byte[64 * 1024];

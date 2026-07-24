@@ -48,6 +48,8 @@ internal sealed class Cpu65816
 
     public byte Status => _status;
 
+    public ushort StackPointer => _stackPointer;
+
     public long NmiCount { get; private set; }
 
     public long IrqCount { get; private set; }

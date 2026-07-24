@@ -48,6 +48,8 @@ public sealed class SnesCartridge
 
     public ReadOnlyMemory<byte> Fingerprint { get; }
 
+    internal bool HasDsp1 => IsDsp1Board(Info.MapMode, Info.MapModeByte, Info.CartridgeType);
+
     public static SnesCartridgeInfo Inspect(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -58,13 +60,12 @@ public sealed class SnesCartridge
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var parsed = ParseImage(File.ReadAllBytes(path));
-        var cartridge = new SnesCartridge(parsed._rom, parsed.Info, batterySavePath);
-        if (!cartridge.Info.IsSupported)
+        if (!parsed.Info.IsSupported)
         {
-            throw new NotSupportedException(cartridge.Info.CompatibilityMessage);
+            throw new NotSupportedException(parsed.Info.CompatibilityMessage);
         }
 
-        return cartridge;
+        return new SnesCartridge(parsed._rom, parsed.Info, batterySavePath);
     }
 
     internal byte Read(uint address)
@@ -229,14 +230,24 @@ public sealed class SnesCartridge
             SnesMapMode.HiRom => header.MapModeByte is 0x21 or 0x31,
             _ => false
         };
-        var hasEnhancementChip = (header.CartridgeType & 0xF0) != 0;
-        var hasBatteryBackedRam = (header.CartridgeType & 0x0F) is 0x02 or 0x05 or 0x06;
-        var isSupported = hasSupportedMapByte && !hasEnhancementChip;
+        // The low nibble describes the installed storage while the high
+        // nibble selects a coprocessor family. $03-$06 with high nibble zero
+        // are DSP-family boards. PixelSNES currently implements DSP-1, the
+        // variant used by standard $03-$06 DSP boards such as Super Mario Kart.
+        var hasDsp1 = IsDsp1Board(header.MapMode, header.MapModeByte, header.CartridgeType);
+        var hasUnsupportedEnhancementChip = header.CartridgeType > 0x02 && !hasDsp1;
+        var hasBatteryBackedRam = header.CartridgeType is 0x02 or 0x05 or 0x06;
+        var isPal = IsPalRegion(header.DestinationCode);
+        var isSupported = hasSupportedMapByte && !hasUnsupportedEnhancementChip && !isPal;
         var compatibility = !hasSupportedMapByte
             ? $"SNES map mode ${header.MapModeByte:X2} is not implemented yet."
-            : hasEnhancementChip
+            : hasUnsupportedEnhancementChip
                 ? $"SNES enhancement-chip cartridge type ${header.CartridgeType:X2} is not implemented yet."
-                : $"Compatible with the early local SNES core ({FormatMapMode(header.MapMode)}).";
+                : isPal
+                    ? "PAL SNES timing is not certified yet."
+                    : hasDsp1
+                        ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC, DSP-1). CPU, PPU video, and S-DSP stereo audio are active."
+                        : $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC). CPU, PPU video, and S-DSP stereo audio are active.";
 
         var info = new SnesCartridgeInfo(
             header.Title,
@@ -246,7 +257,7 @@ public sealed class SnesCartridge
             Math.Max(rom.Length, declaredRomSize),
             ramSize,
             hasBatteryBackedRam,
-            IsPalRegion(header.DestinationCode),
+            isPal,
             header.ResetVector,
             hasCopierHeader,
             isSupported,
@@ -362,6 +373,13 @@ public sealed class SnesCartridge
         (ushort)(data[offset] | (data[offset + 1] << 8));
 
     private static bool IsPalRegion(byte destinationCode) => destinationCode is >= 0x02 and <= 0x0C;
+
+    private static bool IsDsp1Board(SnesMapMode mapMode, byte mapModeByte, byte cartridgeType) =>
+        // Type $03 with a $30 map byte denotes DSP-4. Type $05 with a
+        // $20 map byte denotes DSP-2; DSP-3 is another LoROM variant.
+        // The HiROM $05 board used by Super Mario Kart is unambiguously DSP-1.
+        (cartridgeType == 0x03 && mapModeByte != 0x30) ||
+        (cartridgeType == 0x05 && mapMode == SnesMapMode.HiRom);
 
     private static string FormatMapMode(SnesMapMode mapMode) =>
         mapMode == SnesMapMode.LoRom ? "LoROM" : "HiROM";

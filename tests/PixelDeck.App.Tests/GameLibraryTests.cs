@@ -129,6 +129,32 @@ public sealed class GameLibraryTests
     }
 
     [Fact]
+    public async Task ScanAsync_OffersDsp1SnesImagesWithTheCorrectCapability()
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var snesFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.SuperNintendoFolderName));
+            await File.WriteAllBytesAsync(
+                Path.Combine(snesFolder.FullName, "Kart.sfc"),
+                CreateDsp1SnesImage());
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("HIROM", game.MapperText);
+            Assert.Equal("READY", game.LaunchBadgeText);
+            Assert.True(game.CanLaunch);
+            Assert.Contains("DSP-1", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_LoadsASameNamedLocalScreenshot()
     {
         var testRoot = CreateTestDirectory();
@@ -231,6 +257,25 @@ public sealed class GameLibraryTests
         image[header + 0x15] = 0x20;
         image[header + 0x16] = 0x00;
         image[header + 0x17] = 0x05;
+        image[header + 0x19] = 0x01;
+        image[header + 0x1C] = 0xCB;
+        image[header + 0x1D] = 0xED;
+        image[header + 0x1E] = 0x34;
+        image[header + 0x1F] = 0x12;
+        image[header + 0x3C] = 0x00;
+        image[header + 0x3D] = 0x80;
+        return image;
+    }
+
+    private static byte[] CreateDsp1SnesImage()
+    {
+        var image = new byte[64 * 1024];
+        const int header = 0xFFC0;
+        "PIXELDECK DSP1 TEST  ".Select(character => (byte)character).ToArray().CopyTo(image, header);
+        image[header + 0x15] = 0x31;
+        image[header + 0x16] = 0x05;
+        image[header + 0x17] = 0x06;
+        image[header + 0x18] = 0x03;
         image[header + 0x19] = 0x01;
         image[header + 0x1C] = 0xCB;
         image[header + 0x1D] = 0xED;

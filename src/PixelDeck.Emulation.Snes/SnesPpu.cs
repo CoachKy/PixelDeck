@@ -451,7 +451,9 @@ internal sealed class SnesPpu
         var largeTiles = (_backgroundMode & (0x10 << background)) != 0;
         var logicalTileSize = largeTiles ? 16 : 8;
         var worldX = ((screenX * horizontalScale) + _bgHorizontalScroll[background]) & 0x03FF;
-        var worldY = (screenY + _bgVerticalScroll[background]) & 0x03FF;
+        // The SNES background pipeline fetches the first visible line from
+        // vertical coordinate VOFS + 1.
+        var worldY = (screenY + _bgVerticalScroll[background] + 1) & 0x03FF;
         var logicalTileX = worldX / logicalTileSize;
         var logicalTileY = worldY / logicalTileSize;
         var screenSize = _bgScreen[background] & 0x03;
