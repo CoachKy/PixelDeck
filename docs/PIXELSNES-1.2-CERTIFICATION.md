@@ -1,12 +1,19 @@
-# PixelSNES 1.2 certification
+# Historical PixelSNES 1.2 certification attempt
 
-PixelSNES 1.2 is the stable release of feature generation 2. The version
-format is `major.feature.build`: prerelease builds use `0.2.xxx`, and
-`1.2.000` is the first stable release of that feature set.
+> This record is retained as historical test evidence. Subsequent gameplay
+> validation showed that the gates below were not sufficient to establish
+> broadly playable 1.0-level compatibility. The active product version was
+> therefore reset to PixelSNES 0.8.009, and this document is not a current
+> release certification.
+
+This run was originally recorded as the stable release of feature generation
+2. Its version format was `major.feature.build`: prerelease builds used
+`0.2.xxx`, and `1.2.000` was the proposed first stable release of that feature
+set. That promotion has since been withdrawn as described above.
 
 ## Supported envelope
 
-PixelSNES 1.2 intentionally certifies this hardware envelope:
+The historical PixelSNES 1.2 run tested this hardware envelope:
 
 - NTSC timing and 256x224 output
 - standard LoROM and HiROM map modes, including their FastROM header variants

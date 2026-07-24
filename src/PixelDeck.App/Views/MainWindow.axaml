@@ -759,7 +759,7 @@
                                 BorderBrush="#22FFFFFF"
                                 BorderThickness="1"
                                 Background="#780C1727">
-                            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="120,*">
+                            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="120,*">
                                 <StackPanel Grid.Row="0" Grid.ColumnSpan="2" Margin="0,0,0,20" Spacing="5">
                                     <TextBlock Text="NINTENDO"
                                                Foreground="#6BB9FF"
@@ -803,8 +803,16 @@
                                           IsChecked="{Binding RemoveNesSpriteLimit, Mode=TwoWay}"
                                           Content="Remove 8-sprite limit" />
 
-                                <TextBlock Grid.Row="7" Text="MMC3 IRQ" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
-                                <ComboBox Grid.Row="7"
+                                <TextBlock Grid.Row="7" Text="OVERSCAN" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <CheckBox Grid.Row="7"
+                                          Grid.Column="1"
+                                          Margin="0,8,0,0"
+                                          IsChecked="{Binding HideNesHorizontalOverscan, Mode=TwoWay}"
+                                          Content="Hide 8-pixel side artifacts"
+                                          ToolTip.Tip="Masks the horizontal overscan area that was normally hidden by CRT televisions. Disable this to inspect the full 256-pixel PPU output." />
+
+                                <TextBlock Grid.Row="8" Text="MMC3 IRQ" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="8"
                                           Grid.Column="1"
                                           Margin="0,8,0,0"
                                           ItemsSource="{Binding Mmc3IrqRevisions}"
@@ -817,8 +825,8 @@
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
 
-                                <TextBlock Grid.Row="8" Text="PPU REVISION" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
-                                <ComboBox Grid.Row="8"
+                                <TextBlock Grid.Row="9" Text="PPU REVISION" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="9"
                                           Grid.Column="1"
                                           Margin="0,8,0,0"
                                           ItemsSource="{Binding NesPpuRevisions}"
@@ -831,16 +839,16 @@
                                     </ComboBox.ItemTemplate>
                                 </ComboBox>
 
-                                <TextBlock Grid.Row="9" Text="OAM DECAY" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
-                                <CheckBox Grid.Row="9"
+                                <TextBlock Grid.Row="10" Text="OAM DECAY" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <CheckBox Grid.Row="10"
                                           Grid.Column="1"
                                           Margin="0,8,0,0"
                                           IsChecked="{Binding EnableNesOamDecay, Mode=TwoWay}"
                                           Content="Emulate row-level electrical decay"
                                           ToolTip.Tip="Models the charge loss and refresh timing of the original PPU's sprite memory." />
 
-                                <TextBlock Grid.Row="10" Text="OAM PHASE" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
-                                <ComboBox Grid.Row="10"
+                                <TextBlock Grid.Row="11" Text="OAM PHASE" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
+                                <ComboBox Grid.Row="11"
                                           Grid.Column="1"
                                           Margin="0,8,0,0"
                                           ItemsSource="{Binding NesOamCorruptionModes}"

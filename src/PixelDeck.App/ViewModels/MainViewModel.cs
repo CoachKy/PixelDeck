@@ -68,6 +68,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         selectedNintendoStartButton = FindButton(settings.StartButton, GamepadButton.Start);
         selectedNintendoSelectButton = FindButton(settings.SelectButton, GamepadButton.Back);
         removeNesSpriteLimit = settings.RemoveNesSpriteLimit;
+        hideNesHorizontalOverscan = settings.HideNesHorizontalOverscan;
         selectedMmc3IrqRevision = Mmc3IrqRevisions.First(
             option => option.Revision == settings.Mmc3IrqRevision);
         selectedNesPpuRevision = NesPpuRevisions.First(
@@ -244,6 +245,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private bool removeNesSpriteLimit;
 
     [ObservableProperty]
+    private bool hideNesHorizontalOverscan;
+
+    [ObservableProperty]
     private Mmc3IrqRevisionOption selectedMmc3IrqRevision;
 
     [ObservableProperty]
@@ -297,6 +301,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     partial void OnRemoveNesSpriteLimitChanged(bool value)
     {
         PixelDeckSettingsStore.Current.RemoveNesSpriteLimit = value;
+        PixelDeckSettingsStore.Save();
+    }
+
+    partial void OnHideNesHorizontalOverscanChanged(bool value)
+    {
+        PixelDeckSettingsStore.Current.HideNesHorizontalOverscan = value;
         PixelDeckSettingsStore.Save();
     }
 

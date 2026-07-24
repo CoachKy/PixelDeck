@@ -16,6 +16,7 @@ public sealed class ControllerSettingsTests
         Assert.Equal(GamepadButton.Start, settings.StartButton);
         Assert.Equal(GamepadButton.Back, settings.SelectButton);
         Assert.False(settings.RemoveNesSpriteLimit);
+        Assert.True(settings.HideNesHorizontalOverscan);
         Assert.Equal(Mmc3IrqRevision.Auto, settings.Mmc3IrqRevision);
         Assert.Equal(NesPpuRevision.Rp2C02G, settings.NesPpuRevision);
         Assert.False(settings.EnableNesOamDecay);

@@ -3,6 +3,8 @@
 PixelNES 1.7 is the stable release of feature generation 7. The version format
 is `major.feature.build`: `0.7.010` is prerelease feature generation 7 build 10,
 and `1.7.000` is the first stable release of that same feature set.
+`1.7.011` is the current patch build; it preserves the certified core envelope
+and pairs it with PixelDeck's default, reversible horizontal-overscan mask.
 
 ## Supported envelope
 

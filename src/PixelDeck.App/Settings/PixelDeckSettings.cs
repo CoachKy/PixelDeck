@@ -19,6 +19,8 @@ public sealed class PixelDeckSettings
 
     public bool RemoveNesSpriteLimit { get; set; }
 
+    public bool HideNesHorizontalOverscan { get; set; } = true;
+
     public Mmc3IrqRevision Mmc3IrqRevision { get; set; } = Mmc3IrqRevision.Auto;
 
     public NesPpuRevision NesPpuRevision { get; set; } = NesPpuRevision.Rp2C02G;

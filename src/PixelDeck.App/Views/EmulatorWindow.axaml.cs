@@ -249,6 +249,11 @@ public partial class EmulatorWindow : Window
 
     private unsafe void CopyFrameToBitmap(uint[] pixels)
     {
+        if (_nesMachine is not null && PixelDeckSettingsStore.Current.HideNesHorizontalOverscan)
+        {
+            NesFramePresentation.MaskHorizontalOverscan(pixels, MachineWidth, MachineHeight);
+        }
+
         var bitmap = _frameBitmap ?? throw new InvalidOperationException("The emulator display is not initialized.");
         using (var framebuffer = bitmap.Lock())
         {
