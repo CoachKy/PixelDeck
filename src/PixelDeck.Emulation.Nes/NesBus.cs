@@ -28,12 +28,13 @@ internal sealed class NesBus
     {
         _cartridge = cartridge;
         Ppu = new NesPpu(cartridge, options ?? new NesEmulationOptions());
-        Apu = new NesApu();
+        Apu = new NesApu(() => _cartridge.ExpansionAudioOutput);
         Scheduler = new NesCycleScheduler(
             Apu,
             Ppu,
             () => Apu.IrqPending,
-            () => _cartridge.IrqPending);
+            () => _cartridge.IrqPending,
+            _cartridge.ClockCpuCycle);
     }
 
     public NesPpu Ppu { get; }
@@ -75,6 +76,7 @@ internal sealed class NesBus
     {
         var previousOpenBus = _cpuOpenBus;
         _cpuOpenBus = value;
+        _cartridge.ClockCpuWrite();
         if (address < 0x2000)
         {
             _ram[address & 0x07FF] = value;

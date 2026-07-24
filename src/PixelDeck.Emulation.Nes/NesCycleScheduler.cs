@@ -6,6 +6,7 @@ internal sealed class NesCycleScheduler
     private readonly NesPpu _ppu;
     private readonly Func<bool> _apuIrqPending;
     private readonly Func<bool> _cartridgeIrqPending;
+    private readonly Action _clockCartridgeCpuCycle;
     private bool _currentApuIrqPending;
     private bool _currentCartridgeIrqPending;
     private bool _currentNmiPending;
@@ -14,12 +15,14 @@ internal sealed class NesCycleScheduler
         NesApu apu,
         NesPpu ppu,
         Func<bool> apuIrqPending,
-        Func<bool> cartridgeIrqPending)
+        Func<bool> cartridgeIrqPending,
+        Action clockCartridgeCpuCycle)
     {
         _apu = apu;
         _ppu = ppu;
         _apuIrqPending = apuIrqPending;
         _cartridgeIrqPending = cartridgeIrqPending;
+        _clockCartridgeCpuCycle = clockCartridgeCpuCycle;
     }
 
     public long CpuCycles { get; private set; }
@@ -45,6 +48,7 @@ internal sealed class NesCycleScheduler
         NmiPendingAtPollPoint = _currentNmiPending;
         CpuCycles++;
         _apu.Clock(1);
+        _clockCartridgeCpuCycle();
         _ppu.Tick();
         // Mapper IRQs are sampled between the first and second PPU sub-phases
         // of each NTSC CPU cycle.

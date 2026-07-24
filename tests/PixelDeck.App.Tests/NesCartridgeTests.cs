@@ -158,9 +158,11 @@ public sealed class NesCartridgeTests
         using var image = TemporaryNesImage.Create(mapper: 64);
 
         var info = Cartridge.Inspect(image.Path);
+        var cartridge = Cartridge.Load(image.Path);
 
         Assert.Equal(64, info.MapperNumber);
-        Assert.False(info.IsSupported);
+        Assert.Equal(64, cartridge.MapperNumber);
+        Assert.True(info.IsSupported);
     }
 
     [Fact]
@@ -175,6 +177,71 @@ public sealed class NesCartridgeTests
         Assert.Equal(1, cartridge.MapperNumber);
         Assert.True(info.IsSupported);
         Assert.Contains("loaded as mapper 1", info.CompatibilityWarning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ImpossibleLegacyMapper8GeometryIsCorrectedToNina06()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 8, prgBanks: 4, chrBanks: 8);
+        var bytes = File.ReadAllBytes(image.Path);
+        bytes[6] |= 0x01;
+        for (var bank = 0; bank < 2; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x20 + bank), 16 + (bank * 32_768), 32_768);
+        }
+
+        var chrOffset = 16 + (4 * 16_384);
+        for (var bank = 0; bank < 8; bank++)
+        {
+            Array.Fill(bytes, (byte)(0xA0 + bank), chrOffset + (bank * 8_192), 8_192);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var info = Cartridge.Inspect(image.Path);
+        var cartridge = Cartridge.Load(image.Path);
+
+        Assert.Equal(79, info.MapperNumber);
+        Assert.Equal(79, cartridge.MapperNumber);
+        Assert.True(info.IsSupported);
+        Assert.Equal(NametableMirroring.Horizontal, cartridge.Mirroring);
+        Assert.Contains("loaded as mapper 79", info.CompatibilityWarning, StringComparison.OrdinalIgnoreCase);
+
+        cartridge.CpuWrite(0x4100, 0x0D);
+        Assert.Equal(0x21, cartridge.CpuRead(0x8000));
+        Assert.Equal(0xA5, cartridge.PpuRead(0));
+    }
+
+    [Fact]
+    public void ObsoleteMapper160IsCorrectedToJyCompanyMapper90()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 160, prgBanks: 16, chrBanks: 32);
+
+        var info = Cartridge.Inspect(image.Path);
+        var cartridge = Cartridge.Load(image.Path);
+
+        Assert.Equal(90, info.MapperNumber);
+        Assert.Equal(90, cartridge.MapperNumber);
+        Assert.True(info.IsSupported);
+        Assert.Contains("mapper 90", info.CompatibilityWarning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ReservedTailGarbageCannotInventAnUpperMapperOrConsoleType()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0, prgBanks: 2, chrBanks: 1);
+        var bytes = File.ReadAllBytes(image.Path);
+        bytes[7] = 0xFF;
+        "Ni0330"u8.CopyTo(bytes.AsSpan(10, 6));
+        File.WriteAllBytes(image.Path, bytes);
+
+        var info = Cartridge.Inspect(image.Path);
+        var cartridge = Cartridge.Load(image.Path);
+
+        Assert.Equal(0, info.MapperNumber);
+        Assert.Equal(0, cartridge.MapperNumber);
+        Assert.Equal(0, info.ConsoleType);
+        Assert.True(info.IsSupported);
+        Assert.Contains("archaic iNES", info.CompatibilityWarning, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -267,7 +334,9 @@ public sealed class NesCartridgeTests
             NesTimingMode timing = NesTimingMode.Ntsc,
             byte defaultInputDevice = 0,
             bool exponentPrgSize = false,
-            byte consoleType = 0)
+            byte consoleType = 0,
+            int prgBanks = 1,
+            int chrBanks = 0)
         {
             var directoryPath = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(),
@@ -276,14 +345,16 @@ public sealed class NesCartridgeTests
             Directory.CreateDirectory(directoryPath);
             var path = System.IO.Path.Combine(directoryPath, "game.nes");
 
-            var prgLength = 16_384;
+            var prgLength = exponentPrgSize ? 16_384 : prgBanks * 16_384;
+            var chrLength = chrBanks * 8_192;
             var trainerLength = trainer ? 512 : 0;
-            var image = new byte[16 + trainerLength + prgLength];
+            var image = new byte[16 + trainerLength + prgLength + chrLength];
             image[0] = (byte)'N';
             image[1] = (byte)'E';
             image[2] = (byte)'S';
             image[3] = 0x1A;
-            image[4] = exponentPrgSize ? (byte)(14 << 2) : (byte)1;
+            image[4] = exponentPrgSize ? (byte)(14 << 2) : (byte)prgBanks;
+            image[5] = (byte)chrBanks;
             image[6] = (byte)(((mapper & 0x0F) << 4) | (battery ? 0x02 : 0) | (trainer ? 0x04 : 0));
             image[7] = (byte)((mapper & 0xF0) | (nes20 ? 0x08 : 0) | (consoleType & 0x03));
 

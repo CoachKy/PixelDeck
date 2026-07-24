@@ -520,10 +520,6 @@
                                        Foreground="#5FB5FF"
                                        FontFamily="Cascadia Mono,Consolas"
                                        FontSize="12" />
-                            <Button Classes="utility"
-                                    Command="{Binding OpenGamesFolderCommand}"
-                                    HorizontalAlignment="Center"
-                                    Content="{Binding OpenLibraryFolderText}" />
                         </StackPanel>
                     </Border>
                 </Grid>
@@ -602,18 +598,13 @@
                                        TextTrimming="CharacterEllipsis" />
                         </StackPanel>
 
-                        <StackPanel Grid.Row="2" Spacing="9">
+                        <StackPanel Grid.Row="2">
                             <Button Classes="primary"
                                     IsEnabled="{Binding SelectedGame.CanLaunch}"
                                     Click="OnLaunchClick"
                                     HorizontalAlignment="Stretch"
                                     HorizontalContentAlignment="Center"
                                     Content="Play" />
-                            <Button Classes="utility"
-                                    Command="{Binding OpenGamesFolderCommand}"
-                                    HorizontalAlignment="Stretch"
-                                    HorizontalContentAlignment="Center"
-                                    Content="Open games folder" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -916,12 +907,6 @@
                             <TextBlock Text="X" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="10" FontWeight="Black" />
                         </Border>
                         <TextBlock Text="REFRESH" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Spacing="7">
-                        <Border Width="22" Height="22" CornerRadius="11" Background="#D9A928">
-                            <TextBlock Text="Y" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#151515" FontSize="10" FontWeight="Black" />
-                        </Border>
-                        <TextBlock Text="FOLDER" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
                     </StackPanel>
                     <TextBlock Text="LB / RB  TABS" VerticalAlignment="Center" Foreground="#91A1B5" FontSize="10" FontWeight="Bold" LetterSpacing="1" />
                 </StackPanel>

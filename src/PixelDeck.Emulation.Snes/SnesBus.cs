@@ -101,6 +101,10 @@ internal sealed class SnesBus
 
     public void ClearAudioSamples() => _apu.ClearSamples();
 
+    internal ushort AutomaticControllerOne => _automaticControllerOne;
+
+    internal byte NmiTimerControl => _nmitimen;
+
     public byte Read(uint address)
     {
         address &= 0xFFFFFF;
@@ -269,6 +273,7 @@ internal sealed class SnesBus
 
             if (_scanline == SnesPpu.Height + 1)
             {
+                Ppu.BeginVBlank();
                 _vblank = true;
                 _nmiFlag = true;
                 if ((_nmitimen & 0x80) != 0)
@@ -276,7 +281,10 @@ internal sealed class SnesBus
                     _nmiPending = true;
                 }
 
-                LatchAutomaticControllers();
+                if ((_nmitimen & 0x01) != 0)
+                {
+                    LatchAutomaticControllers();
+                }
             }
 
             var totalScanlines = _cartridge.Info.IsPal ? 312 : 262;
@@ -791,6 +799,10 @@ internal sealed class SnesBus
         {
             if ((serialButtons & (1 << button)) != 0)
             {
+                // The first serial bit (B) is the most significant bit of
+                // the 16-bit automatic result. On the little-endian S-CPU,
+                // $4218 therefore exposes A/X/L/R and $4219 exposes
+                // B/Y/Select/Start/Up/Down/Left/Right.
                 result |= (ushort)(1 << (15 - button));
             }
         }

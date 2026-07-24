@@ -4,7 +4,7 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 8;
+    private const int SaveStateVersion = 9;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
@@ -71,6 +71,10 @@ public sealed class SnesMachine
     internal int ActiveAudioVoiceCount => _bus.ActiveAudioVoiceCount;
 
     internal byte ReadDspRegister(byte address) => _bus.ReadDspRegister(address);
+
+    internal ushort AutomaticControllerOne => _bus.AutomaticControllerOne;
+
+    internal byte NmiTimerControl => _bus.NmiTimerControl;
 
     public int NonZeroVramBytes => _bus.Ppu.NonZeroVramBytes;
 

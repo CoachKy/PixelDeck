@@ -71,6 +71,21 @@ public sealed class NesApuTests
         Assert.True(samples.Max(sample => Math.Abs(sample)) < 1.0f);
     }
 
+    [Theory]
+    [InlineData(1f)]
+    [InlineData(-1f)]
+    public void CartridgeExpansionAudioUsesTheSharedFilteredMixer(float expansionOutput)
+    {
+        var apu = new NesApu(() => expansionOutput);
+
+        apu.Clock(10_000);
+        var samples = ReadAllSamples(apu);
+
+        Assert.NotEmpty(samples);
+        Assert.Contains(samples, sample => Math.Abs(sample) > 0.001f);
+        Assert.All(samples, sample => Assert.InRange(sample, -1f, 1f));
+    }
+
     [Fact]
     public void DmcSampleChangesTheMixedAudioOutput()
     {

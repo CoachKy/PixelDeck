@@ -373,13 +373,6 @@ public partial class MainWindow : Window
             _ = viewModel.RefreshAsync();
         }
 
-        if (viewModel.IsLibraryVisible &&
-            presses.HasFlag(GamepadButton.Y) &&
-            viewModel.OpenGamesFolderCommand.CanExecute(null))
-        {
-            viewModel.OpenGamesFolderCommand.Execute(null);
-        }
-
         if (presses.HasFlag(GamepadButton.A))
         {
             ActivatePageContent(viewModel);

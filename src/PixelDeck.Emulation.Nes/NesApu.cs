@@ -18,6 +18,7 @@ internal sealed class NesApu
     private readonly TriangleChannel _triangle = new();
     private readonly NoiseChannel _noise = new();
     private readonly DmcChannel _dmc = new();
+    private readonly Func<float> _expansionAudioOutput;
     private readonly object _sampleLock = new();
     private readonly float[] _samples = new float[16_384];
     private int _sampleReadIndex;
@@ -36,6 +37,11 @@ internal sealed class NesApu
     private double _highPassPreviousInput;
     private double _highPassPreviousOutput;
     private double _lowPassPreviousOutput;
+
+    public NesApu(Func<float>? expansionAudioOutput = null)
+    {
+        _expansionAudioOutput = expansionAudioOutput ?? (() => 0);
+    }
 
     public bool IrqPending => _frameIrqPending || _dmc.IrqPending;
 
@@ -352,7 +358,11 @@ internal sealed class NesApu
         var pulseOutput = pulseSum == 0 ? 0 : 95.88 / ((8128.0 / pulseSum) + 100.0);
         var tndInput = (triangle / 8227.0) + (noise / 12241.0) + (dmc / 22638.0);
         var tndOutput = tndInput == 0 ? 0 : 159.79 / ((1.0 / tndInput) + 100.0);
-        var mixed = pulseOutput + tndOutput;
+        // Expansion devices may expose either a unipolar DAC (Sunsoft 5B) or
+        // a sample centered around zero (Namco 163). Their board-specific
+        // output is AC-coupled with the APU signal by the filter below.
+        var expansionOutput = Math.Clamp(_expansionAudioOutput(), -1, 1);
+        var mixed = pulseOutput + tndOutput + (expansionOutput * 0.32);
 
         const double highPassCutoff = 90.0;
         var highPassRc = 1.0 / (2.0 * Math.PI * highPassCutoff);

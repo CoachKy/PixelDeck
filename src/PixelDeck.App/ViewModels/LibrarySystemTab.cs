@@ -11,7 +11,6 @@ public sealed partial class LibrarySystemTab : ObservableObject
         string systemTitle,
         string folder,
         string emptyText,
-        string openFolderText,
         IReadOnlyList<string> platformCodes,
         string emulatorVersionText,
         Action select)
@@ -21,7 +20,6 @@ public sealed partial class LibrarySystemTab : ObservableObject
         SystemTitle = systemTitle;
         Folder = folder;
         EmptyText = emptyText;
-        OpenFolderText = openFolderText;
         PlatformCodes = platformCodes;
         EmulatorVersionText = emulatorVersionText;
         SelectCommand = new RelayCommand(select);
@@ -36,8 +34,6 @@ public sealed partial class LibrarySystemTab : ObservableObject
     public string Folder { get; }
 
     public string EmptyText { get; }
-
-    public string OpenFolderText { get; }
 
     public IReadOnlyList<string> PlatformCodes { get; }
 

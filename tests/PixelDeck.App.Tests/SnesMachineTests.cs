@@ -253,6 +253,53 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void AutomaticControllerRegistersUseTheHardwareButtonLayout()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.SetControllerState(
+                1,
+                SnesButton.B | SnesButton.Right | SnesButton.A | SnesButton.R);
+            bus.Write(0x004200, 0x01);
+
+            bus.BeginFrame();
+            bus.Clock(60_000);
+
+            Assert.Equal(0x90, bus.Read(0x004218));
+            Assert.Equal(0x81, bus.Read(0x004219));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void AutomaticControllerRegistersRemainLatchedWhenAutoReadIsDisabled()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.SetControllerState(1, SnesButton.Start);
+
+            bus.BeginFrame();
+            bus.Clock(60_000);
+
+            Assert.Equal(0, bus.Read(0x004218));
+            Assert.Equal(0, bus.Read(0x004219));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void LocalSnesImagesCompleteFramesWhenPresent()
     {
         var gamesFolder = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
@@ -423,6 +470,226 @@ public sealed class SnesMachineTests
         }
 
         Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    [Fact]
+    public void LocalSuperMarioWorldReachesControllableGameplayWhenPresent()
+    {
+        var gamesFolder = Path.GetFullPath(
+            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
+        if (!Directory.Exists(gamesFolder))
+        {
+            return;
+        }
+
+        var gamePath = Directory.EnumerateFiles(gamesFolder)
+            .FirstOrDefault(path =>
+                (Path.GetExtension(path) is ".sfc" or ".smc") &&
+                Path.GetFileName(path).Contains("Super Mario World (U)", StringComparison.OrdinalIgnoreCase));
+        if (gamePath is null)
+        {
+            return;
+        }
+
+        var machine = SnesMachine.Load(gamePath);
+        var gameModeTransitions = new List<string>();
+        var previousGameMode = byte.MaxValue;
+        var titleStartPulse = 0;
+        var fileConfirmPulse = 0;
+        var playerConfirmPulse = 0;
+        var overworldConfirmPulse = 0;
+        var titleStarted = false;
+        var fileConfirmed = false;
+        var playerConfirmed = false;
+        var overworldConfirmed = false;
+        var playerModeFrames = 0;
+        var overworldFrames = 0;
+        var reachedGameplay = false;
+        for (var frame = 1; frame <= 1_200; frame++)
+        {
+            var modeBeforeFrame = machine.PeekMemory(0x7E0100);
+            if (modeBeforeFrame == 0x07 && !titleStarted)
+            {
+                titleStartPulse = 6;
+                titleStarted = true;
+            }
+            else if (modeBeforeFrame == 0x08 && !fileConfirmed)
+            {
+                fileConfirmPulse = 6;
+                fileConfirmed = true;
+            }
+            playerModeFrames = modeBeforeFrame == 0x0A ? playerModeFrames + 1 : 0;
+            if (playerModeFrames >= 30 && !playerConfirmed)
+            {
+                playerConfirmPulse = 6;
+                playerConfirmed = true;
+            }
+
+            overworldFrames = modeBeforeFrame == 0x0C ? overworldFrames + 1 : 0;
+            if (overworldFrames >= 60 && !overworldConfirmed)
+            {
+                overworldConfirmPulse = 6;
+                overworldConfirmed = true;
+            }
+
+            var input = titleStartPulse > 0
+                ? SnesButton.Start
+                : fileConfirmPulse > 0 || playerConfirmPulse > 0 || overworldConfirmPulse > 0
+                    ? SnesButton.B
+                    : SnesButton.None;
+            if (titleStartPulse > 0) titleStartPulse--;
+            if (fileConfirmPulse > 0) fileConfirmPulse--;
+            if (playerConfirmPulse > 0) playerConfirmPulse--;
+            if (overworldConfirmPulse > 0) overworldConfirmPulse--;
+            machine.SetControllerState(1, input);
+            machine.RunFrame();
+            var gameMode = machine.PeekMemory(0x7E0100);
+            if (gameMode != previousGameMode)
+            {
+                gameModeTransitions.Add($"{frame}:${gameMode:X2}");
+                previousGameMode = gameMode;
+            }
+
+            if (gameMode == 0x14)
+            {
+                reachedGameplay = true;
+                break;
+            }
+        }
+
+        Assert.True(
+            reachedGameplay,
+            $"Super Mario World did not reach gameplay; modes={string.Join(",", gameModeTransitions)}.");
+        Assert.False(machine.IsDisplayBlanked);
+        Assert.Equal(0, machine.BrkCount);
+        Assert.Equal(0, machine.CopCount);
+        Assert.Equal(ushort.MaxValue, machine.ApuFirstUnsupportedAddress);
+        // Super Mario World's normal in-level game mode.
+        Assert.Equal(0x14, machine.PeekMemory(0x7E0100));
+
+        // The first "level" is the Dinosaur Land opening message. The game
+        // intentionally ignores dismissal input until the window has fully
+        // opened ($1B89 == $50) and its intro delay ($1DF5) has expired, so
+        // wait for both states before pressing B.
+        var messageReady = false;
+        for (var frame = 0; frame < 900; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.None);
+            machine.RunFrame();
+            if (machine.PeekMemory(0x7E1426) != 0 &&
+                machine.PeekMemory(0x7E1B89) == 0x50 &&
+                machine.PeekMemory(0x7E1DF5) == 0)
+            {
+                messageReady = true;
+                break;
+            }
+        }
+        Assert.True(messageReady, "Super Mario World's opening message never became dismissible.");
+        for (var frame = 0; frame < 6; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.B);
+            machine.RunFrame();
+        }
+
+        // Return to the overworld, move to the first actual stage, and enter
+        // it.
+        var returnedToOverworld = false;
+        for (var frame = 0; frame < 600; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.None);
+            machine.RunFrame();
+            if (machine.PeekMemory(0x7E0100) == 0x0C)
+            {
+                returnedToOverworld = true;
+                break;
+            }
+        }
+        Assert.True(
+            returnedToOverworld,
+            $"Super Mario World's opening message did not return to the overworld " +
+            $"(mode=${machine.PeekMemory(0x7E0100):X2}, " +
+            $"message=${machine.PeekMemory(0x7E1426):X2}, " +
+            $"window=${machine.PeekMemory(0x7E1B89):X2}, " +
+            $"intro=${machine.PeekMemory(0x7E0109):X2}, " +
+            $"hold1=${machine.PeekMemory(0x7E0015):X2}, " +
+            $"press1=${machine.PeekMemory(0x7E0016):X2}).");
+
+        var overworldInteractive = false;
+        for (var frame = 0; frame < 600; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.None);
+            machine.RunFrame();
+            if (machine.PeekMemory(0x7E0100) == 0x0E)
+            {
+                overworldInteractive = true;
+                break;
+            }
+        }
+        Assert.True(overworldInteractive, "Super Mario World's overworld did not become interactive.");
+
+        for (var frame = 0; frame < 120; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.Right);
+            machine.RunFrame();
+        }
+        for (var frame = 0; frame < 10; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.None);
+            machine.RunFrame();
+        }
+        for (var frame = 0; frame < 6; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.B);
+            machine.RunFrame();
+        }
+
+        var enteredPlayableStage = false;
+        for (var frame = 0; frame < 600; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.None);
+            machine.RunFrame();
+            if (machine.PeekMemory(0x7E0100) == 0x14)
+            {
+                enteredPlayableStage = true;
+                break;
+            }
+        }
+        Assert.True(enteredPlayableStage, "Super Mario World did not enter the selected playable stage.");
+        for (var frame = 0; frame < 60; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.None);
+            machine.RunFrame();
+        }
+
+        var startingX = machine.PeekMemory(0x7E0094) |
+                        (machine.PeekMemory(0x7E0095) << 8);
+        for (var frame = 0; frame < 120; frame++)
+        {
+            machine.SetControllerState(1, SnesButton.Right);
+            machine.RunFrame();
+        }
+
+        var endingX = machine.PeekMemory(0x7E0094) |
+                      (machine.PeekMemory(0x7E0095) << 8);
+        var currentInput = machine.PeekMemory(0x7E0015);
+        CaptureFrameWhenRequested(
+            gamePath,
+            machine.CurrentFrame.ToArray(),
+            machine.Width,
+            machine.Height,
+            "-gameplay");
+        Assert.True(
+            (currentInput & 0x01) != 0,
+            $"Super Mario World did not copy Right into its controller RAM " +
+            $"(RAM=${currentInput:X2}, JOY1=${machine.AutomaticControllerOne:X4}, " +
+            $"NMITIMEN=${machine.NmiTimerControl:X2}, " +
+            $"modes={string.Join(",", gameModeTransitions)}).");
+        Assert.True(
+            endingX > startingX,
+            $"Super Mario World received Right=${currentInput:X2} but did not move " +
+            $"(X {startingX} -> {endingX}, lock=${machine.PeekMemory(0x7E009D):X2}, " +
+            $"mode=${machine.PeekMemory(0x7E0100):X2}, " +
+            $"modes={string.Join(",", gameModeTransitions)}).");
     }
 
     [Fact]

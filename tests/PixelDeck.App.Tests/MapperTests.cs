@@ -474,6 +474,228 @@ public sealed class MapperTests
     }
 
     [Fact]
+    public void Mapper8SwitchesSuperMagicCardPrgAndChrAndWriteProtectsChr()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 8,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 4,
+            prgRamShift: 7);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 4; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x40 + bank), 16 + (bank * 32_768), 32_768);
+        }
+
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 4; bank++)
+        {
+            Array.Fill(bytes, (byte)(0xA0 + bank), chrOffset + (bank * 8_192), 8_192);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+
+        cartridge.CpuWrite(0x8000, 0x32);
+        cartridge.CpuWrite(0x6000, 0x5A);
+        var state = SaveCartridgeState(cartridge);
+
+        Assert.Equal(0x43, cartridge.CpuRead(0x8000));
+        Assert.Equal(0xA2, cartridge.PpuRead(0x0123));
+        Assert.Equal(0x5A, cartridge.CpuRead(0x6000));
+
+        cartridge.PpuWrite(0x0123, 0xFF);
+        cartridge.CpuWrite(0x8000, 0x00);
+        cartridge.CpuWrite(0x6000, 0x00);
+        LoadCartridgeState(cartridge, state);
+
+        Assert.Equal(0x43, cartridge.CpuRead(0x8000));
+        Assert.Equal(0xA2, cartridge.PpuRead(0x0123));
+        Assert.Equal(0x5A, cartridge.CpuRead(0x6000));
+    }
+
+    [Fact]
+    public void Mapper15ImplementsAllFourK1029PrgModesAndChrProtection()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 15,
+            submapper: 0,
+            prgBanks: 64,
+            chrBanks: 0);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 128; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x20 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+
+        cartridge.CpuWrite(0x8000, 0x0B);
+        Assert.Equal(0x34, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x36, cartridge.CpuRead(0xC000));
+        cartridge.PpuWrite(0x0123, 0xA5);
+        Assert.Equal(0, cartridge.PpuRead(0x0123));
+
+        cartridge.CpuWrite(0x8001, 0x12);
+        Assert.Equal(0x44, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x4E, cartridge.CpuRead(0xC000));
+        cartridge.PpuWrite(0x0123, 0xA5);
+        Assert.Equal(0xA5, cartridge.PpuRead(0x0123));
+
+        cartridge.CpuWrite(0x8002, 0x85);
+        var state = SaveCartridgeState(cartridge);
+        Assert.Equal(0x2B, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x2B, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x2B, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x2B, cartridge.CpuRead(0xE000));
+
+        cartridge.CpuWrite(0x8003, 0x49);
+        Assert.Equal(0x32, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x32, cartridge.CpuRead(0xC000));
+        Assert.Equal(NametableMirroring.Horizontal, cartridge.Mirroring);
+
+        LoadCartridgeState(cartridge, state);
+        Assert.Equal(0x2B, cartridge.CpuRead(0x8000));
+        Assert.Equal(NametableMirroring.Vertical, cartridge.Mirroring);
+    }
+
+    [Fact]
+    public void Mapper15MapperHackCompatibilityProvidesRamAndWritableChr()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 15,
+            submapper: 0,
+            prgBanks: 16,
+            chrBanks: 0,
+            prgRamShift: 7);
+        var cartridge = Cartridge.Load(image.Path);
+
+        cartridge.CpuWrite(0x6000, 0x5A);
+        cartridge.CpuWrite(0x8000, 0x00);
+        cartridge.PpuWrite(0x0123, 0xA5);
+
+        Assert.Equal(0x5A, cartridge.CpuRead(0x6000));
+        Assert.Equal(0xA5, cartridge.PpuRead(0x0123));
+    }
+
+    [Fact]
+    public void Mapper90ImplementsJyBankingArithmeticRegistersIrqAndState()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 90,
+            submapper: 0,
+            prgBanks: 16,
+            chrBanks: 32,
+            prgRamShift: 7);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 32; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x20 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        var chrOffset = 16 + (16 * 16_384);
+        for (var bank = 0; bank < 256; bank++)
+        {
+            Array.Fill(bytes, (byte)bank, chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+
+        cartridge.CpuWrite(0x8000, 1);
+        cartridge.CpuWrite(0x8001, 2);
+        cartridge.CpuWrite(0x8002, 3);
+        cartridge.CpuWrite(0x8003, 4);
+        cartridge.CpuWrite(0xD000, 0x06);
+        Assert.Equal(0x21, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x22, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x23, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x24, cartridge.CpuRead(0xE000));
+
+        cartridge.CpuWrite(0xD000, 0x1E);
+        cartridge.CpuWrite(0x9003, 0x12);
+        cartridge.CpuWrite(0xA003, 0x00);
+        cartridge.CpuWrite(0xD001, 0x03);
+        Assert.Equal(0x12, cartridge.PpuRead(0x0C00));
+        Assert.Equal(NametableMirroring.OneScreenUpper, cartridge.Mirroring);
+
+        cartridge.CpuWrite(0x5800, 12);
+        cartridge.CpuWrite(0x5801, 13);
+        Assert.Equal(0, cartridge.CpuRead(0x5800));
+        for (var cycle = 0; cycle < 8; cycle++)
+        {
+            cartridge.ClockCpuCycle();
+        }
+
+        Assert.Equal(156, cartridge.CpuRead(0x5800));
+        Assert.Equal(0, cartridge.CpuRead(0x5801));
+        cartridge.CpuWrite(0x5802, 7);
+        cartridge.CpuWrite(0x5802, 9);
+        Assert.Equal(16, cartridge.CpuRead(0x5802));
+        cartridge.CpuWrite(0x5803, 0xA5);
+        Assert.Equal(0, cartridge.CpuRead(0x5802));
+        Assert.Equal(0xA5, cartridge.CpuRead(0x5803));
+
+        cartridge.CpuWrite(0xC006, 0);
+        cartridge.CpuWrite(0xC004, 0xFE);
+        cartridge.CpuWrite(0xC005, 0xFF);
+        cartridge.CpuWrite(0xC001, 0x40);
+        cartridge.CpuWrite(0xC003, 0);
+        cartridge.ClockCpuCycle();
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+
+        var state = SaveCartridgeState(cartridge);
+        cartridge.CpuWrite(0xC002, 0);
+        cartridge.CpuWrite(0xD001, 0);
+        Assert.False(cartridge.IrqPending);
+        LoadCartridgeState(cartridge, state);
+        Assert.True(cartridge.IrqPending);
+        Assert.Equal(NametableMirroring.OneScreenUpper, cartridge.Mirroring);
+    }
+
+    [Fact]
+    public void Mapper240SwitchesExpansionSpaceGnromBanksAndRestoresThem()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 240,
+            submapper: 0,
+            prgBanks: 32,
+            chrBanks: 16,
+            prgRamShift: 7);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x30 + bank), 16 + (bank * 32_768), 32_768);
+        }
+
+        var chrOffset = 16 + (32 * 16_384);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x70 + bank), chrOffset + (bank * 8_192), 8_192);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+
+        cartridge.CpuWrite(0x4020, 0xA3);
+        cartridge.CpuWrite(0x6000, 0x5A);
+        var state = SaveCartridgeState(cartridge);
+        Assert.Equal(0x3A, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x73, cartridge.PpuRead(0));
+        Assert.Equal(0x5A, cartridge.CpuRead(0x6000));
+
+        cartridge.CpuWrite(0x5000, 0x00);
+        cartridge.CpuWrite(0x6000, 0x00);
+        LoadCartridgeState(cartridge, state);
+        Assert.Equal(0x3A, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x73, cartridge.PpuRead(0));
+        Assert.Equal(0x5A, cartridge.CpuRead(0x6000));
+    }
+
+    [Fact]
     public void Mapper34DisambiguatesBnromFromNinaAndRestoresTheirBanks()
     {
         using var bnromImage = TemporaryNesImage.Create(
@@ -654,6 +876,158 @@ public sealed class MapperTests
     }
 
     [Fact]
+    public void Mapper22UsesVrc2aAddressLinesChrShiftAndOneBitLatch()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 22,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 16);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x40 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 128; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x80 + bank), chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+        cartridge.CpuWrite(0x8000, 3);
+        cartridge.CpuWrite(0xA000, 4);
+        cartridge.CpuWrite(0xB000, 2);
+        cartridge.CpuWrite(0xB002, 1);
+        cartridge.CpuWrite(0xB001, 8);
+        cartridge.CpuWrite(0xB003, 3);
+        cartridge.CpuWrite(0x9000, 1);
+        cartridge.CpuWrite(0x6000, 1);
+
+        Assert.Equal(0x43, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x44, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x4E, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x4F, cartridge.CpuRead(0xE000));
+        Assert.Equal(0x89, cartridge.PpuRead(0x0000));
+        Assert.Equal(0x9C, cartridge.PpuRead(0x0400));
+        Assert.Equal(NametableMirroring.Horizontal, cartridge.Mirroring);
+        Assert.Equal(0x61, cartridge.CpuRead(0x6100));
+    }
+
+    [Fact]
+    public void Mapper21Vrc4aSwapsPrgBanksAndRestoresCycleIrqState()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 21,
+            submapper: 1,
+            prgBanks: 8,
+            chrBanks: 16,
+            prgRamShift: 7);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x40 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 128; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x80 + bank), chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+        cartridge.CpuWrite(0x8000, 3);
+        cartridge.CpuWrite(0xA000, 4);
+        cartridge.CpuWrite(0xB000, 2);
+        cartridge.CpuWrite(0xB002, 1);
+        cartridge.CpuWrite(0x9000, 2);
+        cartridge.CpuWrite(0x9004, 3);
+        cartridge.CpuWrite(0x6000, 0xA5);
+
+        Assert.Equal(0x4E, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x44, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x43, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x4F, cartridge.CpuRead(0xE000));
+        Assert.Equal(0x92, cartridge.PpuRead(0x0000));
+        Assert.Equal(NametableMirroring.OneScreenLower, cartridge.Mirroring);
+        Assert.Equal(0xA5, cartridge.CpuRead(0x6000));
+
+        cartridge.CpuWrite(0xF000, 0x0E);
+        cartridge.CpuWrite(0xF002, 0x0F);
+        cartridge.CpuWrite(0xF004, 0x06);
+        ClockCpuCycles(cartridge, 1);
+        Assert.False(cartridge.IrqPending);
+        var state = SaveCartridgeState(cartridge);
+
+        ClockCpuCycles(cartridge, 1);
+        Assert.True(cartridge.IrqPending);
+        cartridge.CpuWrite(0xF006, 0);
+        Assert.False(cartridge.IrqPending);
+
+        LoadCartridgeState(cartridge, state);
+        Assert.False(cartridge.IrqPending);
+        ClockCpuCycles(cartridge, 1);
+        Assert.True(cartridge.IrqPending);
+        Assert.Equal(0x92, cartridge.PpuRead(0x0000));
+    }
+
+    [Fact]
+    public void Mapper21Vrc4ScanlineIrqUsesTheThreeFourOnePrescaler()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 21,
+            submapper: 1,
+            prgBanks: 8,
+            chrBanks: 16);
+        var cartridge = Cartridge.Load(image.Path);
+        cartridge.CpuWrite(0xF000, 0x0E);
+        cartridge.CpuWrite(0xF002, 0x0F);
+        cartridge.CpuWrite(0xF004, 0x03);
+
+        ClockCpuCycles(cartridge, 227);
+        Assert.False(cartridge.IrqPending);
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+
+        cartridge.CpuWrite(0xF006, 0);
+        Assert.False(cartridge.IrqPending);
+        ClockCpuCycles(cartridge, 227);
+        Assert.True(cartridge.IrqPending);
+    }
+
+    [Theory]
+    [InlineData(0, 0xB001)]
+    [InlineData(1, 0xB001)]
+    [InlineData(2, 0xB004)]
+    [InlineData(3, 0xB001)]
+    public void Mapper23DecodesEveryDeclaredVrc2Vrc4AddressVariant(
+        int submapper,
+        int highRegisterAddress)
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 23,
+            submapper: submapper,
+            prgBanks: 8,
+            chrBanks: 16);
+        var bytes = File.ReadAllBytes(image.Path);
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 128; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x80 + bank), chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+        cartridge.CpuWrite(0xB000, 3);
+        cartridge.CpuWrite((ushort)highRegisterAddress, 2);
+
+        Assert.Equal(0xA3, cartridge.PpuRead(0x0000));
+    }
+
+    [Fact]
     public void Mapper32SwitchesIremPrgModeAndEightIndependentChrBanks()
     {
         using var image = TemporaryNesImage.Create(mapper: 32, submapper: 0, prgBanks: 4, chrBanks: 2);
@@ -740,6 +1114,332 @@ public sealed class MapperTests
         Assert.Equal(0x46, cartridge.CpuRead(0x8001));
         Assert.Equal(0xAF, cartridge.PpuRead(0));
         Assert.Equal(NametableMirroring.Horizontal, cartridge.Mirroring);
+    }
+
+    [Fact]
+    public void Mapper64SwitchesExtendedBanksAndRestoresItsCycleIrq()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 64,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 2);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x40 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x80 + bank), chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+
+        WriteRamboBank(cartridge, 6, 3);
+        WriteRamboBank(cartridge, 7, 4);
+        WriteRamboBank(cartridge, 15, 5);
+        Assert.Equal(0x43, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x44, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x45, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x4F, cartridge.CpuRead(0xE000));
+
+        cartridge.CpuWrite(0x8000, 0x40);
+        Assert.Equal(0x45, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x43, cartridge.CpuRead(0xC000));
+
+        WriteRamboBank(cartridge, 0, 2, oneKilobyteChrMode: true);
+        WriteRamboBank(cartridge, 8, 7, oneKilobyteChrMode: true);
+        Assert.Equal(0x82, cartridge.PpuRead(0x0000));
+        Assert.Equal(0x87, cartridge.PpuRead(0x0400));
+
+        cartridge.CpuWrite(0xA000, 1);
+        Assert.Equal(NametableMirroring.Horizontal, cartridge.Mirroring);
+        cartridge.CpuWrite(0xC000, 1);
+        cartridge.CpuWrite(0xC001, 1);
+        cartridge.CpuWrite(0xE001, 0);
+        ClockCpuCycles(cartridge, 8);
+        Assert.False(cartridge.IrqPending);
+        var state = SaveCartridgeState(cartridge);
+
+        ClockCpuCycles(cartridge, 4);
+        Assert.True(cartridge.IrqPending);
+        cartridge.CpuWrite(0xE000, 0);
+        Assert.False(cartridge.IrqPending);
+
+        LoadCartridgeState(cartridge, state);
+        Assert.False(cartridge.IrqPending);
+        ClockCpuCycles(cartridge, 4);
+        Assert.True(cartridge.IrqPending);
+        Assert.Equal(0x82, cartridge.PpuRead(0x0000));
+        Assert.Equal(0x87, cartridge.PpuRead(0x0400));
+    }
+
+    [Fact]
+    public void Mapper64ScanlineIrqUsesFilteredA12AndDelayedAssertion()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 64,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 2);
+        var cartridge = Cartridge.Load(image.Path);
+        cartridge.CpuWrite(0xC000, 1);
+        cartridge.CpuWrite(0xC001, 0);
+        cartridge.CpuWrite(0xE001, 0);
+
+        ClockPpuAddress(cartridge, 0x0000, 8);
+        cartridge.ClockPpuAddress(0x1000);
+        ClockPpuAddress(cartridge, 0x0000, 8);
+        cartridge.ClockPpuAddress(0x1000);
+        Assert.False(cartridge.IrqPending);
+
+        ClockCpuCycles(cartridge, 3);
+        Assert.False(cartridge.IrqPending);
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+    }
+
+    [Fact]
+    public void Mapper69BanksEveryWindowAndRestoresItsDownCounterIrq()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 69,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 2,
+            prgRamShift: 7);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x40 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x80 + bank), chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+        WriteFme7Register(cartridge, 0, 6);
+        WriteFme7Register(cartridge, 7, 12);
+        WriteFme7Register(cartridge, 8, 2);
+        WriteFme7Register(cartridge, 9, 3);
+        WriteFme7Register(cartridge, 10, 4);
+        WriteFme7Register(cartridge, 11, 5);
+        WriteFme7Register(cartridge, 12, 3);
+
+        Assert.Equal(0x42, cartridge.CpuRead(0x6000));
+        Assert.Equal(0x43, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x44, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x45, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x4F, cartridge.CpuRead(0xE000));
+        Assert.Equal(0x86, cartridge.PpuRead(0x0000));
+        Assert.Equal(0x8C, cartridge.PpuRead(0x1C00));
+        Assert.Equal(NametableMirroring.OneScreenUpper, cartridge.Mirroring);
+
+        WriteFme7Register(cartridge, 8, 0xC0);
+        cartridge.CpuWrite(0x6000, 0xA5);
+        Assert.Equal(0xA5, cartridge.CpuRead(0x6000));
+        WriteFme7Register(cartridge, 8, 0x40);
+        Assert.Equal(0, cartridge.CpuRead(0x6000));
+
+        WriteFme7Register(cartridge, 14, 1);
+        WriteFme7Register(cartridge, 15, 0);
+        WriteFme7Register(cartridge, 13, 0x81);
+        cartridge.ClockCpuCycle();
+        Assert.False(cartridge.IrqPending);
+        var state = SaveCartridgeState(cartridge);
+
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+        WriteFme7Register(cartridge, 13, 0);
+        Assert.False(cartridge.IrqPending);
+
+        LoadCartridgeState(cartridge, state);
+        Assert.False(cartridge.IrqPending);
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+        Assert.Equal(0x86, cartridge.PpuRead(0x0000));
+    }
+
+    [Fact]
+    public void Mapper69Sunsoft5BAudioClocksToneNoiseAndEnvelope()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 69,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 2);
+        var cartridge = Cartridge.Load(image.Path);
+
+        WriteSunsoftAudio(cartridge, 0, 1);
+        WriteSunsoftAudio(cartridge, 1, 0);
+        WriteSunsoftAudio(cartridge, 7, 0x3E);
+        WriteSunsoftAudio(cartridge, 8, 0x0F);
+        Assert.Equal(0, cartridge.ExpansionAudioOutput);
+        ClockCpuCycles(cartridge, 16);
+        Assert.True(cartridge.ExpansionAudioOutput > 0.3f);
+        var toneState = SaveCartridgeState(cartridge);
+        ClockCpuCycles(cartridge, 16);
+        Assert.Equal(0, cartridge.ExpansionAudioOutput);
+        LoadCartridgeState(cartridge, toneState);
+        Assert.True(cartridge.ExpansionAudioOutput > 0.3f);
+
+        WriteSunsoftAudio(cartridge, 6, 1);
+        WriteSunsoftAudio(cartridge, 7, 0x37);
+        Assert.True(cartridge.ExpansionAudioOutput > 0.3f);
+        ClockCpuCycles(cartridge, 32);
+        Assert.Equal(0, cartridge.ExpansionAudioOutput);
+
+        WriteSunsoftAudio(cartridge, 7, 0x3F);
+        WriteSunsoftAudio(cartridge, 8, 0x10);
+        WriteSunsoftAudio(cartridge, 11, 1);
+        WriteSunsoftAudio(cartridge, 12, 0);
+        WriteSunsoftAudio(cartridge, 13, 0x0C);
+        Assert.Equal(0, cartridge.ExpansionAudioOutput);
+        ClockCpuCycles(cartridge, 32);
+        Assert.True(cartridge.ExpansionAudioOutput > 0);
+
+        cartridge.CpuWrite(0xC000, 0x18);
+        cartridge.CpuWrite(0xE000, 0);
+        cartridge.CpuWrite(0xC000, 8);
+        Assert.True(cartridge.ExpansionAudioOutput > 0);
+    }
+
+    [Fact]
+    public void Mapper19BanksEveryWindowMapsCiramAndRestoresItsCycleIrq()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 19,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 16,
+            prgRamShift: 7);
+        var bytes = File.ReadAllBytes(image.Path);
+        for (var bank = 0; bank < 16; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x40 + bank), 16 + (bank * 8_192), 8_192);
+        }
+
+        var chrOffset = 16 + (8 * 16_384);
+        for (var bank = 0; bank < 128; bank++)
+        {
+            Array.Fill(bytes, (byte)(0x80 + bank), chrOffset + (bank * 1_024), 1_024);
+        }
+
+        File.WriteAllBytes(image.Path, bytes);
+        var cartridge = Cartridge.Load(image.Path);
+        cartridge.CpuWrite(0x8000, 6);
+        cartridge.CpuWrite(0xB800, 12);
+        cartridge.CpuWrite(0xC000, 7);
+        cartridge.CpuWrite(0xE000, 3);
+        cartridge.CpuWrite(0xE800, 4);
+        cartridge.CpuWrite(0xF000, 5);
+
+        Assert.Equal(0x43, cartridge.CpuRead(0x8000));
+        Assert.Equal(0x44, cartridge.CpuRead(0xA000));
+        Assert.Equal(0x45, cartridge.CpuRead(0xC000));
+        Assert.Equal(0x4F, cartridge.CpuRead(0xE000));
+        Assert.Equal(0x86, cartridge.PpuRead(0x0000));
+        Assert.Equal(0x8C, cartridge.PpuRead(0x1C00));
+
+        var nametableRam = new byte[2_048];
+        Assert.True(cartridge.TryPpuReadNametable(
+            0x2000, PpuAccessKind.Background, nametableRam, out var chrNametable));
+        Assert.Equal(0x87, chrNametable);
+
+        cartridge.CpuWrite(0xC000, 0xE1);
+        Assert.True(cartridge.TryPpuWriteNametable(0x2002, 0xA1, nametableRam));
+        cartridge.CpuWrite(0x8000, 0xE1);
+        Assert.Equal(0xA1, cartridge.PpuRead(0x0002));
+        cartridge.CpuWrite(0xE800, 0x44);
+        Assert.Equal(0xE1, cartridge.PpuRead(0x0002));
+
+        cartridge.CpuWrite(0xF800, 0x40);
+        cartridge.CpuWrite(0x6000, 0xA5);
+        Assert.Equal(0xA5, cartridge.CpuRead(0x6000));
+        cartridge.CpuWrite(0xF800, 0x41);
+        cartridge.CpuWrite(0x6000, 0xB6);
+        Assert.Equal(0xA5, cartridge.CpuRead(0x6000));
+
+        cartridge.CpuWrite(0x5000, 0xFE);
+        cartridge.CpuWrite(0x5800, 0xFF);
+        var state = SaveCartridgeState(cartridge);
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+        Assert.Equal(0x7F, cartridge.CpuRead(0x5800));
+        cartridge.CpuWrite(0x5000, 0);
+        Assert.False(cartridge.IrqPending);
+
+        LoadCartridgeState(cartridge, state);
+        Assert.False(cartridge.IrqPending);
+        cartridge.ClockCpuCycle();
+        Assert.True(cartridge.IrqPending);
+        Assert.Equal(0xA1, cartridge.TryPpuReadNametable(
+            0x2002, PpuAccessKind.Background, nametableRam, out var restoredCiram)
+            ? restoredCiram
+            : 0);
+    }
+
+    [Fact]
+    public void Mapper19InternalPortAndNamco163AudioPreserveSerialOutput()
+    {
+        using var image = TemporaryNesImage.Create(
+            mapper: 19,
+            submapper: 0,
+            prgBanks: 8,
+            chrBanks: 16);
+        var cartridge = Cartridge.Load(image.Path);
+
+        cartridge.CpuWrite(0xF800, 2);
+        cartridge.CpuWrite(0x4FFF, 0x5A);
+        cartridge.CpuWrite(0xF800, 2);
+        Assert.Equal(0x5A, cartridge.CpuRead(0x48A5));
+        cartridge.CpuWrite(0x57FF, 0x34);
+        Assert.Equal(0x34, cartridge.CpuRead(0x5001));
+
+        cartridge.CpuWrite(0xF800, 0xFE);
+        cartridge.CpuWrite(0x4800, 0xAA);
+        cartridge.CpuWrite(0x4800, 0xBB);
+        cartridge.CpuWrite(0x4800, 0xCC);
+        cartridge.CpuWrite(0xF800, 0x7E);
+        Assert.Equal(0xAA, cartridge.CpuRead(0x4800));
+        cartridge.CpuWrite(0xF800, 0x7F);
+        Assert.Equal(0xCC, cartridge.CpuRead(0x4800));
+
+        WriteNamco163Ram(cartridge, 0x00, 0xF0);
+        WriteNamco163Ram(cartridge, 0x78, 0);
+        WriteNamco163Ram(cartridge, 0x79, 0);
+        WriteNamco163Ram(cartridge, 0x7A, 0);
+        WriteNamco163Ram(cartridge, 0x7B, 0);
+        WriteNamco163Ram(cartridge, 0x7C, 0);
+        WriteNamco163Ram(cartridge, 0x7D, 0);
+        WriteNamco163Ram(cartridge, 0x7E, 1);
+        WriteNamco163Ram(cartridge, 0x7F, 0x0F);
+        ClockCpuCycles(cartridge, 15);
+        Assert.InRange(cartridge.ExpansionAudioOutput, 0.65f, 0.67f);
+        var state = SaveCartridgeState(cartridge);
+
+        WriteNamco163Ram(cartridge, 0x00, 0x88);
+        ClockCpuCycles(cartridge, 15);
+        Assert.Equal(0, cartridge.ExpansionAudioOutput);
+        LoadCartridgeState(cartridge, state);
+        Assert.InRange(cartridge.ExpansionAudioOutput, 0.65f, 0.67f);
+
+        cartridge.CpuWrite(0xE000, 0x40);
+        Assert.Equal(0, cartridge.ExpansionAudioOutput);
+        cartridge.CpuWrite(0xE000, 0);
+        Assert.InRange(cartridge.ExpansionAudioOutput, 0.65f, 0.67f);
+
+        WriteNamco163Ram(cartridge, 0x7E, 0);
+        ClockCpuCycles(cartridge, 15);
+        Assert.InRange(cartridge.ExpansionAudioOutput, -0.76f, -0.74f);
     }
 
     [Fact]
@@ -965,6 +1665,42 @@ public sealed class MapperTests
         for (var bit = 0; bit < 5; bit++)
         {
             cartridge.CpuWrite(address, (byte)((value >> bit) & 1));
+        }
+    }
+
+    private static void WriteRamboBank(
+        Cartridge cartridge,
+        byte register,
+        byte value,
+        bool oneKilobyteChrMode = false)
+    {
+        cartridge.CpuWrite(0x8000, (byte)(register | (oneKilobyteChrMode ? 0x20 : 0)));
+        cartridge.CpuWrite(0x8001, value);
+    }
+
+    private static void WriteFme7Register(Cartridge cartridge, byte register, byte value)
+    {
+        cartridge.CpuWrite(0x8000, register);
+        cartridge.CpuWrite(0xA000, value);
+    }
+
+    private static void WriteSunsoftAudio(Cartridge cartridge, byte register, byte value)
+    {
+        cartridge.CpuWrite(0xC000, register);
+        cartridge.CpuWrite(0xE000, value);
+    }
+
+    private static void WriteNamco163Ram(Cartridge cartridge, byte address, byte value)
+    {
+        cartridge.CpuWrite(0xF800, address);
+        cartridge.CpuWrite(0x4800, value);
+    }
+
+    private static void ClockCpuCycles(Cartridge cartridge, int count)
+    {
+        for (var cycle = 0; cycle < count; cycle++)
+        {
+            cartridge.ClockCpuCycle();
         }
     }
 

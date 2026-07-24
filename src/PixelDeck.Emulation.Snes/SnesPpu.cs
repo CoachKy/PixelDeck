@@ -47,6 +47,11 @@ internal sealed class SnesPpu
     private bool _cgramHighWrite;
     private byte _cgramLow;
     private ushort _oamAddress;
+    private ushort _oamReloadAddress;
+    private byte _oamWriteLatch;
+    private bool _oamPriorityRotation;
+    private bool _spriteRangeOver;
+    private bool _spriteTimeOver;
     private byte _mode7Control;
     private byte _mode7Latch;
     private short _mode7A;
@@ -89,13 +94,18 @@ internal sealed class SnesPpu
                 _objectSizeAndBase = value;
                 break;
             case 0x2102:
-                _oamAddress = (ushort)((_oamAddress & 0x100) | value);
+                _oamReloadAddress = (ushort)((_oamReloadAddress & 0x100) | value);
+                ReloadOamAddress();
                 break;
             case 0x2103:
-                _oamAddress = (ushort)((_oamAddress & 0x0FF) | ((value & 1) << 8));
+                _oamReloadAddress = (ushort)(
+                    (_oamReloadAddress & 0x0FF) |
+                    ((value & 1) << 8));
+                _oamPriorityRotation = (value & 0x80) != 0;
+                ReloadOamAddress();
                 break;
             case 0x2104:
-                _oam[(_oamAddress++) % _oam.Length] = value;
+                WriteOam(value);
                 break;
             case 0x2105:
                 _backgroundMode = value;
@@ -202,11 +212,14 @@ internal sealed class SnesPpu
             0x2134 => (byte)multiplication,
             0x2135 => (byte)(multiplication >> 8),
             0x2136 => (byte)(multiplication >> 16),
-            0x2138 => _oam[(_oamAddress++) % _oam.Length],
+            0x2138 => ReadOam(),
             0x2139 => ReadVram(highByte: false),
             0x213A => ReadVram(highByte: true),
             0x213B => _cgram[_cgramAddress++ & 0x01FF],
-            0x213E => 0x01,
+            0x213E => (byte)(
+                0x01 |
+                (_spriteRangeOver ? 0x40 : 0) |
+                (_spriteTimeOver ? 0x80 : 0)),
             0x213F => 0x03,
             _ => 0
         };
@@ -220,11 +233,28 @@ internal sealed class SnesPpu
         }
     }
 
+    internal void BeginVBlank()
+    {
+        // With the display enabled, the PPU restores the internal byte
+        // address from the last OAMADD word address at the beginning of
+        // VBlank. Forced blank leaves the live address alone.
+        if (!_forcedBlank)
+        {
+            ReloadOamAddress();
+        }
+    }
+
     public void RenderScanline(int y)
     {
         if (y is < 0 or >= Height)
         {
             return;
+        }
+
+        if (y == 0)
+        {
+            _spriteRangeOver = false;
+            _spriteTimeOver = false;
         }
 
         if (_forcedBlank)
@@ -318,6 +348,11 @@ internal sealed class SnesPpu
         writer.Write(_cgramHighWrite);
         writer.Write(_cgramLow);
         writer.Write(_oamAddress);
+        writer.Write(_oamReloadAddress);
+        writer.Write(_oamWriteLatch);
+        writer.Write(_oamPriorityRotation);
+        writer.Write(_spriteRangeOver);
+        writer.Write(_spriteTimeOver);
         writer.Write(_mode7Control);
         writer.Write(_mode7Latch);
         writer.Write(_mode7A);
@@ -365,6 +400,11 @@ internal sealed class SnesPpu
         _cgramHighWrite = reader.ReadBoolean();
         _cgramLow = reader.ReadByte();
         _oamAddress = reader.ReadUInt16();
+        _oamReloadAddress = reader.ReadUInt16();
+        _oamWriteLatch = reader.ReadByte();
+        _oamPriorityRotation = reader.ReadBoolean();
+        _spriteRangeOver = reader.ReadBoolean();
+        _spriteTimeOver = reader.ReadBoolean();
         _mode7Control = reader.ReadByte();
         _mode7Latch = reader.ReadByte();
         _mode7A = reader.ReadInt16();
@@ -449,13 +489,26 @@ internal sealed class SnesPpu
 
         var horizontalScale = mode is 5 or 6 ? 2 : 1;
         var largeTiles = (_backgroundMode & (0x10 << background)) != 0;
-        var logicalTileSize = largeTiles ? 16 : 8;
-        var worldX = ((screenX * horizontalScale) + _bgHorizontalScroll[background]) & 0x03FF;
+        // Modes 5 and 6 always fetch background characters in horizontal
+        // pairs. On the native 512-pixel surface this is a 16-pixel-wide
+        // logical tile even when BGMODE selects the nominal 8x8 size.
+        var logicalTileWidth = largeTiles || mode is 5 or 6 ? 16 : 8;
+        var logicalTileHeight = largeTiles ? 16 : 8;
+        var horizontalScroll = (int)_bgHorizontalScroll[background];
+        var verticalScroll = (int)_bgVerticalScroll[background];
+        ApplyOffsetPerTile(
+            background,
+            mode,
+            screenX,
+            horizontalScale,
+            ref horizontalScroll,
+            ref verticalScroll);
+        var worldX = ((screenX * horizontalScale) + horizontalScroll) & 0x03FF;
         // The SNES background pipeline fetches the first visible line from
         // vertical coordinate VOFS + 1.
-        var worldY = (screenY + _bgVerticalScroll[background] + 1) & 0x03FF;
-        var logicalTileX = worldX / logicalTileSize;
-        var logicalTileY = worldY / logicalTileSize;
+        var worldY = (screenY + verticalScroll + 1) & 0x03FF;
+        var logicalTileX = worldX / logicalTileWidth;
+        var logicalTileY = worldY / logicalTileHeight;
         var screenSize = _bgScreen[background] & 0x03;
         var widthInTiles = screenSize is 1 or 3 ? 64 : 32;
         var heightInTiles = screenSize is 2 or 3 ? 64 : 32;
@@ -480,12 +533,12 @@ internal sealed class SnesPpu
         highPriority = (entry & 0x2000) != 0;
         var horizontalFlip = (entry & 0x4000) != 0;
         var verticalFlip = (entry & 0x8000) != 0;
-        var pixelX = worldX % logicalTileSize;
-        var pixelY = worldY % logicalTileSize;
-        if (horizontalFlip) pixelX = logicalTileSize - 1 - pixelX;
-        if (verticalFlip) pixelY = logicalTileSize - 1 - pixelY;
+        var pixelX = worldX % logicalTileWidth;
+        var pixelY = worldY % logicalTileHeight;
+        if (horizontalFlip) pixelX = logicalTileWidth - 1 - pixelX;
+        if (verticalFlip) pixelY = logicalTileHeight - 1 - pixelY;
 
-        if (largeTiles)
+        if (logicalTileWidth > 8 || logicalTileHeight > 8)
         {
             character = (character + (pixelX / 8) + ((pixelY / 8) * 16)) & 0x03FF;
             pixelX &= 7;
@@ -509,8 +562,118 @@ internal sealed class SnesPpu
             _ when mode == 0 => (background * 32) + (palette * 4),
             _ => palette * 4
         };
-        color = ReadColor15(paletteBase + pixel);
+        color = bitsPerPixel == 8 &&
+                background == 0 &&
+                (_colorMathControl & 0x01) != 0
+            ? DecodeDirectColor(pixel, palette)
+            : ReadColor15(paletteBase + pixel);
         return true;
+    }
+
+    private void ApplyOffsetPerTile(
+        int background,
+        int mode,
+        int screenX,
+        int horizontalScale,
+        ref int horizontalScroll,
+        ref int verticalScroll)
+    {
+        if (mode is not (2 or 4 or 6) ||
+            background > 1 ||
+            (mode == 6 && background != 0))
+        {
+            return;
+        }
+
+        var offsetTileWidth = mode == 6 ? 16 : 8;
+        var visibleColumn = ((screenX * horizontalScale) + (horizontalScroll & 7)) /
+                            offsetTileWidth;
+        // The first partially or fully visible tile column is always driven
+        // by the layer's ordinary HOFS/VOFS. BG3 entry zero starts with the
+        // following column.
+        if (visibleColumn == 0)
+        {
+            return;
+        }
+
+        var offsetMapUsesLargeTiles = (_backgroundMode & 0x40) != 0;
+        var offsetMapTileWidth = offsetMapUsesLargeTiles || mode == 6 ? 16 : 8;
+        var offsetMapTileHeight = offsetMapUsesLargeTiles ? 16 : 8;
+        var offsetMapX = (_bgHorizontalScroll[2] & 0x03F8) +
+                         ((visibleColumn - 1) * offsetTileWidth);
+        var offsetMapY = _bgVerticalScroll[2] & 0x03F8;
+        var enableMask = background == 0 ? 0x2000 : 0x4000;
+
+        var horizontalEntry = ReadTilemapEntry(
+            background: 2,
+            offsetMapX,
+            offsetMapY,
+            offsetMapTileWidth,
+            offsetMapTileHeight);
+        if (mode == 4)
+        {
+            if ((horizontalEntry & enableMask) == 0)
+            {
+                return;
+            }
+
+            if ((horizontalEntry & 0x8000) != 0)
+            {
+                verticalScroll = horizontalEntry & 0x03FF;
+            }
+            else
+            {
+                horizontalScroll = (horizontalScroll & 7) | (horizontalEntry & 0x03F8);
+            }
+
+            return;
+        }
+
+        if ((horizontalEntry & enableMask) != 0)
+        {
+            horizontalScroll = (horizontalScroll & 7) | (horizontalEntry & 0x03F8);
+        }
+
+        var verticalEntry = ReadTilemapEntry(
+            background: 2,
+            offsetMapX,
+            offsetMapY + 8,
+            offsetMapTileWidth,
+            offsetMapTileHeight);
+        if ((verticalEntry & enableMask) != 0)
+        {
+            verticalScroll = verticalEntry & 0x03FF;
+        }
+    }
+
+    private ushort ReadTilemapEntry(
+        int background,
+        int worldX,
+        int worldY,
+        int logicalTileWidth,
+        int logicalTileHeight)
+    {
+        var logicalTileX = (worldX & 0x03FF) / logicalTileWidth;
+        var logicalTileY = (worldY & 0x03FF) / logicalTileHeight;
+        var screenSize = _bgScreen[background] & 0x03;
+        var widthInTiles = screenSize is 1 or 3 ? 64 : 32;
+        var heightInTiles = screenSize is 2 or 3 ? 64 : 32;
+        logicalTileX %= widthInTiles;
+        logicalTileY %= heightInTiles;
+
+        var screenBlockX = logicalTileX / 32;
+        var screenBlockY = logicalTileY / 32;
+        var screenBlock = screenSize switch
+        {
+            1 => screenBlockX,
+            2 => screenBlockY,
+            3 => (screenBlockY * 2) + screenBlockX,
+            _ => 0
+        };
+        var mapBase = (_bgScreen[background] & 0xFC) << 9;
+        var mapIndex = (mapBase + (screenBlock * 0x800) +
+                        ((((logicalTileY & 31) * 32) + (logicalTileX & 31)) * 2)) & 0xFFFF;
+        return (ushort)(_vram[mapIndex] | (_vram[(mapIndex + 1) & 0xFFFF] << 8));
     }
 
     private void RenderMode7Line(int screenY, bool mainScreen)
@@ -624,7 +787,9 @@ internal sealed class SnesPpu
             highPriority = false;
         }
 
-        color = ReadColor15(pixel);
+        color = background == 0 && (_colorMathControl & 0x01) != 0
+            ? DecodeDirectColor(pixel, palette: 0)
+            : ReadColor15(pixel);
         return true;
     }
 
@@ -643,23 +808,83 @@ internal sealed class SnesPpu
         var sizes = GetObjectSizes((_objectSizeAndBase >> 5) & 7);
         var characterBase = (_objectSizeAndBase & 7) * 0x4000;
         var nameSelectOffset = (((_objectSizeAndBase >> 3) & 3) + 1) * 0x2000;
+        var firstSprite = _oamPriorityRotation
+            ? (_oamAddress >> 2) & 0x7F
+            : 0;
 
-        for (var objectIndex = 127; objectIndex >= 0; objectIndex--)
+        Span<int> selectedSprites = stackalloc int[32];
+        Span<byte> selectedSlivers = stackalloc byte[32];
+        var selectedCount = 0;
+        for (var priorityRank = 0; priorityRank < 128; priorityRank++)
         {
+            var objectIndex = (firstSprite + priorityRank) & 0x7F;
+            var lowIndex = objectIndex * 4;
+            var highBits = _oam[512 + (objectIndex / 4)];
+            var shift = (objectIndex & 3) * 2;
+            var large = ((highBits >> (shift + 1)) & 1) != 0;
+            var height = large ? sizes.LargeHeight : sizes.SmallHeight;
+            var localY = (y - _oam[lowIndex + 1]) & 0xFF;
+            if (localY >= height)
+            {
+                continue;
+            }
+
+            if (selectedCount == selectedSprites.Length)
+            {
+                _spriteRangeOver = true;
+                break;
+            }
+
+            selectedSprites[selectedCount++] = objectIndex;
+        }
+
+        var sliverCount = 0;
+        for (var selectedIndex = selectedCount - 1; selectedIndex >= 0; selectedIndex--)
+        {
+            var objectIndex = selectedSprites[selectedIndex];
             var lowIndex = objectIndex * 4;
             var highBits = _oam[512 + (objectIndex / 4)];
             var shift = (objectIndex & 3) * 2;
             var x = _oam[lowIndex] | (((highBits >> shift) & 1) << 8);
             if (x >= 256) x -= 512;
-            var objectY = (int)_oam[lowIndex + 1];
-            if (objectY >= 224) objectY -= 256;
             var large = ((highBits >> (shift + 1)) & 1) != 0;
-            var size = large ? sizes.Large : sizes.Small;
-            var localY = y - objectY;
-            if (localY is < 0 || localY >= size)
+            var width = large ? sizes.LargeWidth : sizes.SmallWidth;
+            for (var tileColumn = 0; tileColumn < width / 8; tileColumn++)
             {
-                continue;
+                var sliverX = x + (tileColumn * 8);
+                var countsAgainstLimit =
+                    x == -256 ||
+                    (sliverX < Width && sliverX + 7 >= 0);
+                if (!countsAgainstLimit)
+                {
+                    continue;
+                }
+
+                if (sliverCount >= 34)
+                {
+                    _spriteTimeOver = true;
+                    continue;
+                }
+
+                selectedSlivers[selectedIndex] |= (byte)(1 << tileColumn);
+                sliverCount++;
             }
+        }
+
+        for (var selectedIndex = selectedCount - 1; selectedIndex >= 0; selectedIndex--)
+        {
+            // Equal-priority pixels from the first sprite win. Walk the
+            // rotated list backwards so that sprite is composited last.
+            var objectIndex = selectedSprites[selectedIndex];
+            var lowIndex = objectIndex * 4;
+            var highBits = _oam[512 + (objectIndex / 4)];
+            var shift = (objectIndex & 3) * 2;
+            var x = _oam[lowIndex] | (((highBits >> shift) & 1) << 8);
+            if (x >= 256) x -= 512;
+            var large = ((highBits >> (shift + 1)) & 1) != 0;
+            var width = large ? sizes.LargeWidth : sizes.SmallWidth;
+            var height = large ? sizes.LargeHeight : sizes.SmallHeight;
+            var localY = (y - _oam[lowIndex + 1]) & 0xFF;
 
             var baseCharacter = _oam[lowIndex + 2];
             var attributes = _oam[lowIndex + 3];
@@ -668,11 +893,16 @@ internal sealed class SnesPpu
             var priority = GetObjectPriority((attributes >> 4) & 3);
             var horizontalFlip = (attributes & 0x40) != 0;
             var verticalFlip = (attributes & 0x80) != 0;
-            var sourceY = verticalFlip ? size - 1 - localY : localY;
+            var sourceY = verticalFlip ? height - 1 - localY : localY;
             var objectBase = (characterBase + (nameSelect != 0 ? nameSelectOffset : 0)) & 0xFFFF;
 
-            for (var localX = 0; localX < size; localX++)
+            for (var localX = 0; localX < width; localX++)
             {
+                if ((selectedSlivers[selectedIndex] & (1 << (localX / 8))) == 0)
+                {
+                    continue;
+                }
+
                 var outputX = x + localX;
                 if (outputX is < 0 or >= Width)
                 {
@@ -684,7 +914,7 @@ internal sealed class SnesPpu
                     continue;
                 }
 
-                var sourceX = horizontalFlip ? size - 1 - localX : localX;
+                var sourceX = horizontalFlip ? width - 1 - localX : localX;
                 var character = (baseCharacter + (sourceX / 8) + ((sourceY / 8) * 16)) & 0xFF;
                 var pixel = ReadPlanarPixel(
                     (objectBase + (character * 32)) & 0xFFFF,
@@ -726,6 +956,15 @@ internal sealed class SnesPpu
         return (ushort)((_cgram[address] | (_cgram[(address + 1) & 0x01FF] << 8)) & 0x7FFF);
     }
 
+    private static ushort DecodeDirectColor(int pixel, int palette) =>
+        (ushort)(
+            ((palette & 0x01) << 4) |
+            ((pixel & 0x07) << 1) |
+            ((palette & 0x02) << 8) |
+            ((pixel & 0x38) << 3) |
+            ((palette & 0x04) << 12) |
+            ((pixel & 0xC0) << 5));
+
     private uint ExpandColor(ushort color)
     {
         var red = ((color & 0x1F) * 255 / 31) * _brightness / 15;
@@ -757,26 +996,68 @@ internal sealed class SnesPpu
             _mode7VerticalOffset = WriteMode7Word(value);
         }
 
-        if (!_scrollHighWrite[register])
-        {
-            _scrollLow[register] = value;
-            _scrollHighWrite[register] = true;
-            return;
-        }
-
-        var scroll = (ushort)(((value << 8) | _scrollLow[register]) & 0x03FF);
         var background = register / 2;
         if ((register & 1) == 0)
         {
-            _bgHorizontalScroll[background] = scroll;
+            // All BG scroll registers share the previous-write latch. HOFS
+            // also retains three fine-scroll bits from its previous high
+            // byte, which matters when HDMA performs one write per line.
+            var current = _bgHorizontalScroll[background];
+            _bgHorizontalScroll[background] = (ushort)(
+                ((value << 8) |
+                 (_scrollLow[0] & 0xF8) |
+                 ((current >> 8) & 0x07)) &
+                0x03FF);
         }
         else
         {
-            _bgVerticalScroll[background] = scroll;
+            _bgVerticalScroll[background] = (ushort)(
+                ((value << 8) | _scrollLow[0]) &
+                0x03FF);
         }
 
-        _scrollHighWrite[register] = false;
+        _scrollLow[0] = value;
     }
+
+    private void ReloadOamAddress() =>
+        _oamAddress = (ushort)((_oamReloadAddress & 0x01FF) << 1);
+
+    private void WriteOam(byte value)
+    {
+        if (_oamAddress < 0x0200)
+        {
+            if ((_oamAddress & 1) == 0)
+            {
+                _oamWriteLatch = value;
+            }
+            else
+            {
+                _oam[_oamAddress - 1] = _oamWriteLatch;
+                _oam[_oamAddress] = value;
+            }
+        }
+        else
+        {
+            _oam[MapOamAddress(_oamAddress)] = value;
+        }
+
+        IncrementOamAddress();
+    }
+
+    private byte ReadOam()
+    {
+        var value = _oam[MapOamAddress(_oamAddress)];
+        IncrementOamAddress();
+        return value;
+    }
+
+    private static int MapOamAddress(ushort address) =>
+        address < 0x0200
+            ? address
+            : 0x0200 + ((address - 0x0200) & 0x1F);
+
+    private void IncrementOamAddress() =>
+        _oamAddress = (ushort)((_oamAddress + 1) & 0x03FF);
 
     private short WriteMode7Word(byte value)
     {
@@ -968,15 +1249,19 @@ internal sealed class SnesPpu
         return (value & 0x1000) != 0 ? value | ~0x1FFF : value;
     }
 
-    private static (int Small, int Large) GetObjectSizes(int mode) => mode switch
+    private static (
+        int SmallWidth,
+        int SmallHeight,
+        int LargeWidth,
+        int LargeHeight) GetObjectSizes(int mode) => mode switch
     {
-        0 => (8, 16),
-        1 => (8, 32),
-        2 => (8, 64),
-        3 => (16, 32),
-        4 => (16, 64),
-        5 => (32, 64),
-        6 => (16, 32),
-        _ => (16, 32)
+        0 => (8, 8, 16, 16),
+        1 => (8, 8, 32, 32),
+        2 => (8, 8, 64, 64),
+        3 => (16, 16, 32, 32),
+        4 => (16, 16, 64, 64),
+        5 => (32, 32, 64, 64),
+        6 => (16, 32, 32, 64),
+        _ => (16, 32, 32, 32)
     };
 }

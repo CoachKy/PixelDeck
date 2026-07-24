@@ -64,23 +64,33 @@ public sealed class Cartridge
         (4, 0 or 4) => true,
         (5, 0) => true,
         (7, 0 or 1 or 2) => true,
+        (8, 0) => true,
         (9, 0) => true,
         (10, 0) => true,
         (11, 0) => true,
         (13, 0) => true,
+        (15, 0) => true,
+        (19, 0 or 1 or 2 or 3 or 4 or 5) => true,
+        (21, 0 or 1 or 2) => true,
+        (22, 0) => true,
+        (23, 0 or 1 or 2 or 3) => true,
         (32, 0) => true,
         (33, 0) => true,
         (34, 0 or 1 or 2) => true,
         (41, 0) => true,
+        (64, 0) => true,
         (66, 0) => true,
+        (69, 0) => true,
         (71, 0) => true,
         (75, 0) => true,
         (79, 0) => true,
+        (90, 0) => true,
         (113, 0) => true,
         (118, 0) => true,
         (119, 0) => true,
         (228, 0) => true,
         (232, 0) => true,
+        (240, 0) => true,
         _ => false
     };
 
@@ -120,6 +130,12 @@ public sealed class Cartridge
         var submapperNumber = info.SubmapperNumber;
         var prgLength = GetRomSize(image[4], (byte)(image[9] & 0x0F), info.IsNes20, 16_384);
         var chrLength = GetRomSize(image[5], (byte)(image[9] >> 4), info.IsNes20, 8_192);
+        var rawMapperNumber = GetMapperNumber(header, (image[7] & 0x0C) == 0x04);
+        var correctedMapper8Nina06 =
+            !info.IsNes20 &&
+            rawMapperNumber == 8 &&
+            prgLength == 65_536 &&
+            chrLength == 65_536;
 
         var offset = 16 + ((flags6 & 0x04) != 0 ? 512 : 0);
 
@@ -134,7 +150,14 @@ public sealed class Cartridge
         var minimumChrRamSize = mapperNumber == 13 ? 16_384 : 8_192;
         var chrRamSize = Math.Max(info.ChrRamSize + info.ChrNvRamSize, minimumChrRamSize);
         var chr = usesChrRam ? new byte[chrRamSize] : image.AsSpan(offset, chrLength).ToArray();
-        var programRamSize = Math.Max(info.PrgRamSize + info.PrgNvRamSize, info.HasTrainer ? 8_192 : 0);
+        var externalProgramRamSize = Math.Max(
+            info.PrgRamSize + info.PrgNvRamSize,
+            info.HasTrainer ? 8_192 : 0);
+        // Namco 163-family boards contain 128 bytes of internal sound RAM.
+        // Keep it in the cartridge's persistent/state-managed RAM allocation so
+        // battery and save-state restores preserve waveforms and channel state.
+        var mapperInternalRamSize = mapperNumber == 19 ? 128 : 0;
+        var programRamSize = checked(externalProgramRamSize + mapperInternalRamSize);
         var programRam = new CartridgeRam(programRamSize, info.HasBatteryBackedRam);
         if (info.HasTrainer)
         {
@@ -146,6 +169,12 @@ public sealed class Cartridge
             : (flags6 & 0x01) != 0
                 ? NametableMirroring.Vertical
                 : NametableMirroring.Horizontal;
+        if (correctedMapper8Nina06)
+        {
+            // The known NINA-06 legacy conversion also carries the wrong
+            // vertical-mirroring bit alongside its wrong mapper number.
+            mirroring = NametableMirroring.Horizontal;
+        }
 
         if (!IsMapperSupported(mapperNumber, submapperNumber))
         {
@@ -176,10 +205,29 @@ public sealed class Cartridge
                 Mmc3BoardVariant.Standard),
             5 => new Mapper5(prgRom, chr, usesChrRam, programRam),
             7 => new Mapper7(prgRom, chr, usesChrRam, hasBusConflicts, programRam),
+            8 => new Mapper8(prgRom, chr, usesChrRam, mirroring, programRam),
             9 => new Mapper9And10(prgRom, chr, usesChrRam, mirroring, programRam, isMmc4: false),
             10 => new Mapper9And10(prgRom, chr, usesChrRam, mirroring, programRam, isMmc4: true),
             11 => new Mapper11(prgRom, chr, usesChrRam, mirroring, programRam),
             13 => new Mapper13(prgRom, chr, mirroring),
+            15 => new Mapper15(prgRom, chr, usesChrRam, mirroring, programRam),
+            19 => new Mapper19(
+                submapperNumber,
+                prgRom,
+                chr,
+                usesChrRam,
+                mirroring,
+                programRam,
+                externalProgramRamSize),
+            21 or 22 or 23 => new Mapper21To23(
+                mapperNumber,
+                submapperNumber,
+                info.IsNes20,
+                prgRom,
+                chr,
+                usesChrRam,
+                mirroring,
+                programRam),
             32 => new Mapper32(prgRom, chr, usesChrRam, mirroring),
             33 => new Mapper33(prgRom, chr, usesChrRam, programRam),
             34 => new Mapper34(
@@ -190,10 +238,13 @@ public sealed class Cartridge
                 programRam,
                 submapperNumber),
             41 => new Mapper41(prgRom, chr),
+            64 => new Mapper64(prgRom, chr, usesChrRam, mirroring),
             66 => new Mapper66(prgRom, chr, usesChrRam, mirroring, programRam),
+            69 => new Mapper69(prgRom, chr, usesChrRam, mirroring, programRam),
             71 => new Mapper71(prgRom, chr, usesChrRam, mirroring, programRam),
             75 => new Mapper75(prgRom, chr, usesChrRam, mirroring),
             79 => new Mapper79(prgRom, chr, usesChrRam, mirroring, programRam),
+            90 => new Mapper90(prgRom, chr, usesChrRam, mirroring, programRam),
             118 => new Mapper4(
                 prgRom,
                 chr,
@@ -213,6 +264,7 @@ public sealed class Cartridge
             113 => new Mapper113(prgRom, chr, usesChrRam),
             228 => new Mapper228(prgRom, chr, usesChrRam),
             232 => new Mapper232(prgRom, chr, usesChrRam, mirroring, programRam),
+            240 => new Mapper240(prgRom, chr, usesChrRam, mirroring, programRam),
             _ => throw new NotSupportedException($"NES mapper {mapperNumber} is not implemented yet.")
         };
 
@@ -246,6 +298,12 @@ public sealed class Cartridge
         _mapper.TryPpuWriteNametable(address, value, nametableRam);
 
     internal bool IrqPending => _mapper.IrqPending;
+
+    internal float ExpansionAudioOutput => _mapper.ExpansionAudioOutput;
+
+    internal void ClockCpuCycle() => _mapper.ClockCpuCycle();
+
+    internal void ClockCpuWrite() => _mapper.ClockCpuWrite();
 
     internal void ClockScanline() => _mapper.ClockScanline();
 
@@ -360,11 +418,19 @@ public sealed class Cartridge
         var flags6 = header[6];
         var flags7 = header[7];
         var isNes20 = (flags7 & 0x0C) == 0x08;
-        // Archaic iNES images use bit pattern %01 in flags 7. Bytes 7-15
-        // were not yet defined and commonly contain signatures such as
-        // "DiskDude!", so neither the upper mapper nibble nor the later
-        // PRG-RAM/timing bytes are trustworthy in this format.
-        var isArchaicInes = (flags7 & 0x0C) == 0x04;
+        // Archaic iNES images either use bit pattern %01 in flags 7 or carry
+        // non-zero garbage in the old reserved tail. Bytes 7-15 commonly
+        // contain dumper signatures such as "DiskDude!" or "Ni0330", so
+        // neither the upper mapper nibble nor later PRG-RAM/timing bytes are
+        // trustworthy in this format.
+        var hasReservedTailGarbage =
+            header[12] != 0 ||
+            header[13] != 0 ||
+            header[14] != 0 ||
+            header[15] != 0;
+        var isArchaicInes =
+            (flags7 & 0x0C) == 0x04 ||
+            (!isNes20 && hasReservedTailGarbage);
         var mapperNumber = GetMapperNumber(header, isArchaicInes);
         var submapperNumber = GetSubmapperNumber(header);
         var hasTrainer = (flags6 & 0x04) != 0;
@@ -384,6 +450,30 @@ public sealed class Cartridge
         if (correctedMapper33Snrom)
         {
             mapperNumber = 1;
+            submapperNumber = 0;
+        }
+
+        // Super Magic Card mode 4 can only address 32 KiB of CHR. The
+        // well-known Mermaids of Atlantis conversion instead has the exact
+        // 64 KiB PRG/64 KiB CHR NINA-06 layout but was mislabeled mapper 8.
+        // Correct this impossible mapper-8 geometry to its mapper 79 board.
+        var correctedMapper8Nina06 =
+            !isNes20 &&
+            mapperNumber == 8 &&
+            prgLength == 65_536 &&
+            chrLength == 65_536;
+        if (correctedMapper8Nina06)
+        {
+            mapperNumber = 79;
+            submapperNumber = 0;
+        }
+
+        // Mapper 160 was an obsolete attempt to describe a behavior variant
+        // that is fully encompassed by the J.Y. Company mapper 90 ASIC.
+        var correctedMapper160JyCompany = mapperNumber == 160;
+        if (correctedMapper160JyCompany)
+        {
+            mapperNumber = 90;
             submapperNumber = 0;
         }
 
@@ -441,7 +531,7 @@ public sealed class Cartridge
         // The same malformed Super Black Onyx header also sets the VS-System
         // bit in byte 7. That byte is part of the bad mapper conversion rather
         // than an indication that this standard Famicom game needs VS hardware.
-        var consoleType = correctedMapper33Snrom ? 0 : flags7 & 0x03;
+        var consoleType = correctedMapper33Snrom || isArchaicInes ? 0 : flags7 & 0x03;
         var mapperSupported = IsMapperSupported(mapperNumber, submapperNumber);
         var timingSupported = timingMode is NesTimingMode.Ntsc or NesTimingMode.MultipleRegion;
         var inputSupported = defaultInputDevice is 0x00 or 0x01 or 0x2A;
@@ -458,6 +548,10 @@ public sealed class Cartridge
                 "This multicart may include Zapper games; standard-controller games are playable, but light-gun games are not.",
             _ when correctedMapper33Snrom =>
                 "The legacy mapper-33 header has an MMC1/SNROM CHR-RAM and battery layout, so it was loaded as mapper 1.",
+            _ when correctedMapper8Nina06 =>
+                "The legacy mapper-8 header has the 64 KiB PRG/64 KiB CHR NINA-06 layout, so it was loaded as mapper 79.",
+            _ when correctedMapper160JyCompany =>
+                "The obsolete mapper-160 header was loaded as the encompassing J.Y. Company mapper 90 implementation.",
             _ when isArchaicInes =>
                 "Compatible with the current local NTSC NES core. Undefined bytes in this archaic iNES header were ignored.",
             _ => null
@@ -631,6 +725,16 @@ internal interface IMapper
     void LoadState(BinaryReader reader);
 
     bool IrqPending => false;
+
+    float ExpansionAudioOutput => 0;
+
+    void ClockCpuCycle()
+    {
+    }
+
+    void ClockCpuWrite()
+    {
+    }
 
     void ClockScanline()
     {

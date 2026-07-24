@@ -34,7 +34,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 "Nintendo Entertainment System",
                 _library.NintendoFolder,
                 "Place NES homebrew in Games/Nintendo. PixelDeck will pick it up automatically.",
-                "Open Nintendo folder",
                 ["NES", "FDS"],
                 PixelNesVersionText,
                 () => SelectedLibrarySystem = LibrarySystem.Nintendo),
@@ -44,7 +43,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 "Super Nintendo Entertainment System",
                 _library.SuperNintendoFolder,
                 "Place Super Nintendo homebrew in Games/SuperNintendo. PixelDeck will pick it up automatically.",
-                "Open Super Nintendo folder",
                 ["SNES"],
                 PixelSnesVersionText,
                 () => SelectedLibrarySystem = LibrarySystem.SuperNintendo)
@@ -165,8 +163,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public string EmptyLibraryText => SelectedLibrary.EmptyText;
 
-    public string OpenLibraryFolderText => SelectedLibrary.OpenFolderText;
-
     public string GameCountText => LibraryOrganizer.FormatTitleCount(LibraryGames.Count);
 
     public string RecentSummaryText => RecentGames.Count switch
@@ -205,7 +201,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [NotifyPropertyChangedFor(nameof(SelectedLibraryFolder))]
     [NotifyPropertyChangedFor(nameof(LibrarySystemTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyLibraryText))]
-    [NotifyPropertyChangedFor(nameof(OpenLibraryFolderText))]
     [NotifyPropertyChangedFor(nameof(LibraryEmulatorVersionText))]
     private LibrarySystem selectedLibrarySystem = LibrarySystem.Nintendo;
 
@@ -520,18 +515,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         SelectedRecentIndex = SelectedRecentGame is null ? -1 : RecentGames.IndexOf(SelectedRecentGame);
         NotifyLibraryStateChanged();
         NotifyHomeStateChanged();
-    }
-
-    [RelayCommand]
-    private void OpenGamesFolder()
-    {
-        var folder = IsLibraryVisible ? SelectedLibraryFolder : GamesFolder;
-        Directory.CreateDirectory(folder);
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = folder,
-            UseShellExecute = true
-        });
     }
 
     [RelayCommand]
