@@ -112,6 +112,10 @@ public partial class MainWindow : Window
                 PlayNavigationTone();
                 eventArgs.Handled = true;
                 break;
+            case Key.Up when _navigationRegion == DashboardNavigationRegion.LibraryIndex:
+                MoveLibraryIndex(-1);
+                eventArgs.Handled = true;
+                break;
             case Key.Up when _navigationRegion == DashboardNavigationRegion.PageContent &&
                              viewModel.IsLibraryVisible &&
                              viewModel.SelectLibraryGameInAdjacentRow(-1, LibraryColumnCount):
@@ -120,6 +124,10 @@ public partial class MainWindow : Window
                 break;
             case Key.Up:
                 MoveUp(viewModel);
+                eventArgs.Handled = true;
+                break;
+            case Key.Down when _navigationRegion == DashboardNavigationRegion.LibraryIndex:
+                MoveLibraryIndex(1);
                 eventArgs.Handled = true;
                 break;
             case Key.Down when _navigationRegion == DashboardNavigationRegion.PageContent && viewModel.IsLibraryVisible:
@@ -150,6 +158,10 @@ public partial class MainWindow : Window
                 MoveLibraryTab(viewModel, 1);
                 eventArgs.Handled = true;
                 break;
+            case Key.Right when _navigationRegion == DashboardNavigationRegion.LibraryIndex:
+                ActivateLibraryIndex();
+                eventArgs.Handled = true;
+                break;
             case Key.Left when _navigationRegion == DashboardNavigationRegion.PageContent && viewModel.IsHomeVisible:
                 viewModel.SelectPreviousRecentGame();
                 ScrollSelectionIntoView(viewModel);
@@ -161,13 +173,32 @@ public partial class MainWindow : Window
                 eventArgs.Handled = true;
                 break;
             case Key.Left when _navigationRegion == DashboardNavigationRegion.PageContent && viewModel.IsLibraryVisible:
-                viewModel.SelectPreviousLibraryGame();
-                ScrollSelectionIntoView(viewModel);
+                if (GameList.IsSelectedGameInFirstColumn(LibraryColumnCount))
+                {
+                    FocusLibraryIndex();
+                }
+                else
+                {
+                    viewModel.SelectPreviousLibraryGame();
+                    ScrollSelectionIntoView(viewModel);
+                }
+
                 eventArgs.Handled = true;
                 break;
             case Key.Right when _navigationRegion == DashboardNavigationRegion.PageContent && viewModel.IsLibraryVisible:
                 viewModel.SelectNextLibraryGame();
                 ScrollSelectionIntoView(viewModel);
+                eventArgs.Handled = true;
+                break;
+            case Key.Escape when viewModel.IsLibraryVisible &&
+                                 _navigationRegion is DashboardNavigationRegion.PageContent or
+                                     DashboardNavigationRegion.LibraryIndex:
+                FocusLibraryTabs(viewModel);
+                PlayNavigationTone();
+                eventArgs.Handled = true;
+                break;
+            case Key.Enter when _navigationRegion == DashboardNavigationRegion.LibraryIndex:
+                ActivateLibraryIndex();
                 eventArgs.Handled = true;
                 break;
             case Key.Enter when _navigationRegion == DashboardNavigationRegion.PageContent:
@@ -223,9 +254,23 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (presses.HasFlag(GamepadButton.B) &&
+            viewModel.IsLibraryVisible &&
+            _navigationRegion is DashboardNavigationRegion.PageContent or
+                DashboardNavigationRegion.LibraryIndex)
+        {
+            FocusLibraryTabs(viewModel);
+            PlayNavigationTone();
+            return;
+        }
+
         if (presses.HasFlag(GamepadButton.DPadUp))
         {
-            if (_navigationRegion == DashboardNavigationRegion.PageContent &&
+            if (_navigationRegion == DashboardNavigationRegion.LibraryIndex)
+            {
+                MoveLibraryIndex(-1);
+            }
+            else if (_navigationRegion == DashboardNavigationRegion.PageContent &&
                 viewModel.IsLibraryVisible &&
                 viewModel.SelectLibraryGameInAdjacentRow(-1, LibraryColumnCount))
             {
@@ -241,7 +286,11 @@ public partial class MainWindow : Window
 
         if (presses.HasFlag(GamepadButton.DPadDown))
         {
-            if (_navigationRegion == DashboardNavigationRegion.PageContent && viewModel.IsLibraryVisible)
+            if (_navigationRegion == DashboardNavigationRegion.LibraryIndex)
+            {
+                MoveLibraryIndex(1);
+            }
+            else if (_navigationRegion == DashboardNavigationRegion.PageContent && viewModel.IsLibraryVisible)
             {
                 if (viewModel.SelectLibraryGameInAdjacentRow(1, LibraryColumnCount))
                 {
@@ -280,11 +329,36 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (_navigationRegion == DashboardNavigationRegion.LibraryIndex)
+        {
+            if (presses.HasFlag(GamepadButton.DPadRight) ||
+                presses.HasFlag(GamepadButton.A))
+            {
+                ActivateLibraryIndex();
+            }
+
+            return;
+        }
+
         if (presses.HasFlag(GamepadButton.DPadLeft))
         {
             if (viewModel.IsHomeVisible) viewModel.SelectPreviousRecentGame();
-            if (viewModel.IsLibraryVisible) viewModel.SelectPreviousLibraryGame();
-            ScrollSelectionIntoView(viewModel);
+            if (viewModel.IsLibraryVisible)
+            {
+                if (GameList.IsSelectedGameInFirstColumn(LibraryColumnCount))
+                {
+                    FocusLibraryIndex();
+                }
+                else
+                {
+                    viewModel.SelectPreviousLibraryGame();
+                    ScrollSelectionIntoView(viewModel);
+                }
+            }
+            else
+            {
+                ScrollSelectionIntoView(viewModel);
+            }
         }
 
         if (presses.HasFlag(GamepadButton.DPadRight))
@@ -369,12 +443,39 @@ public partial class MainWindow : Window
         PlayNavigationTone();
     }
 
+    private void FocusLibraryIndex()
+    {
+        if (GameList.EnterIndexNavigation())
+        {
+            _navigationRegion = DashboardNavigationRegion.LibraryIndex;
+            PlayNavigationTone();
+        }
+    }
+
+    private void MoveLibraryIndex(int direction)
+    {
+        if (GameList.MoveIndexSelection(direction))
+        {
+            PlayNavigationTone();
+        }
+    }
+
+    private void ActivateLibraryIndex()
+    {
+        if (GameList.ActivateSelectedSection())
+        {
+            _navigationRegion = DashboardNavigationRegion.PageContent;
+            PlayNavigationTone();
+        }
+    }
+
     private static int Wrap(int value, int count) => (value % count + count) % count;
 
     private static void SelectPage(MainViewModel viewModel, DashboardPage page) => viewModel.SelectedPage = page;
 
     private void FocusPrimaryTabs(MainViewModel viewModel)
     {
+        GameList.ExitIndexNavigation();
         _navigationRegion = DashboardNavigationRegion.PrimaryTabs;
         switch (viewModel.SelectedPage)
         {
@@ -395,6 +496,7 @@ public partial class MainWindow : Window
 
     private void FocusLibraryTabs(MainViewModel viewModel)
     {
+        GameList.ExitIndexNavigation();
         _navigationRegion = DashboardNavigationRegion.LibraryTabs;
         var selectedButton = LibrarySystemTabList
             .GetVisualDescendants()
@@ -407,6 +509,7 @@ public partial class MainWindow : Window
 
     private void FocusPageContent(MainViewModel viewModel)
     {
+        GameList.ExitIndexNavigation();
         _navigationRegion = DashboardNavigationRegion.PageContent;
         switch (viewModel.SelectedPage)
         {
@@ -727,6 +830,7 @@ public partial class MainWindow : Window
     private enum DashboardNavigationRegion
     {
         PageContent,
+        LibraryIndex,
         LibraryTabs,
         PrimaryTabs
     }

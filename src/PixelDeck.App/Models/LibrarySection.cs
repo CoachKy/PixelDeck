@@ -27,6 +27,61 @@ public static class LibraryOrganizer
         _ => $"{count} TITLES"
     };
 
+    public static int GetSectionIndex(
+        IReadOnlyList<LibrarySection> sections,
+        GameEntry? game)
+    {
+        if (game is null)
+        {
+            return -1;
+        }
+
+        for (var sectionIndex = 0; sectionIndex < sections.Count; sectionIndex++)
+        {
+            if (IndexOfReference(sections[sectionIndex].Games, game) >= 0)
+            {
+                return sectionIndex;
+            }
+        }
+
+        return -1;
+    }
+
+    public static bool IsGameInFirstColumn(
+        IReadOnlyList<LibrarySection> sections,
+        GameEntry? game,
+        int columnCount)
+    {
+        if (game is null || columnCount <= 0)
+        {
+            return false;
+        }
+
+        var sectionIndex = GetSectionIndex(sections, game);
+        if (sectionIndex < 0)
+        {
+            return false;
+        }
+
+        var gameIndex = IndexOfReference(sections[sectionIndex].Games, game);
+        return gameIndex >= 0 && gameIndex % columnCount == 0;
+    }
+
+    public static int MoveSectionIndex(int currentIndex, int direction, int sectionCount)
+    {
+        if (sectionCount <= 0)
+        {
+            return -1;
+        }
+
+        if (currentIndex < 0 || currentIndex >= sectionCount)
+        {
+            return 0;
+        }
+
+        return Math.Clamp(currentIndex + Math.Sign(direction), 0, sectionCount - 1);
+    }
+
     public static bool TryGetAdjacentGame(
         IReadOnlyList<LibrarySection> sections,
         GameEntry? currentGame,

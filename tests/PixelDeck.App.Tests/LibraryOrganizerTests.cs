@@ -54,6 +54,33 @@ public sealed class LibraryOrganizerTests
         Assert.False(LibraryOrganizer.TryGetAdjacentGame(sections, aGames[1], -1, 6, out _));
     }
 
+    [Fact]
+    public void IndexNavigation_FindsSectionsAndRecognizesTheGalleryLeftEdge()
+    {
+        var aGames = Enumerable.Range(0, 8).Select(index => CreateGame($"A{index}")).ToArray();
+        var bGame = CreateGame("B0");
+        var sections = LibraryOrganizer.CreateSections(aGames.Append(bGame));
+
+        Assert.Equal(0, LibraryOrganizer.GetSectionIndex(sections, aGames[6]));
+        Assert.Equal(1, LibraryOrganizer.GetSectionIndex(sections, bGame));
+        Assert.True(LibraryOrganizer.IsGameInFirstColumn(sections, aGames[0], 6));
+        Assert.True(LibraryOrganizer.IsGameInFirstColumn(sections, aGames[6], 6));
+        Assert.False(LibraryOrganizer.IsGameInFirstColumn(sections, aGames[5], 6));
+    }
+
+    [Theory]
+    [InlineData(0, -1, 3, 0)]
+    [InlineData(0, 1, 3, 1)]
+    [InlineData(2, 1, 3, 2)]
+    [InlineData(-1, 1, 3, 0)]
+    [InlineData(0, 1, 0, -1)]
+    public void MoveSectionIndex_ClampsAtIndexBoundaries(
+        int current,
+        int direction,
+        int count,
+        int expected) =>
+        Assert.Equal(expected, LibraryOrganizer.MoveSectionIndex(current, direction, count));
+
     private static GameEntry CreateGame(string title) => new(
         title,
         "Test System",

@@ -25,6 +25,9 @@ Game titles are resolved locally. PixelDeck prefers an exact SHA-1/CRC match fro
 | Action | Keyboard | XInput controller |
 | --- | --- | --- |
 | Browse games | Arrow keys | D-pad / left stick |
+| Open alphabetical index | Left from a gallery row's first game | D-pad left from a gallery row's first game |
+| Jump from index to games | Right / Enter | D-pad right / A |
+| Focus console switcher | Escape | B |
 | Launch selected game | Enter | A |
 | Refresh library | F5 | X |
 | Open games folder | Click button | Y |
@@ -35,7 +38,7 @@ Game titles are resolved locally. PixelDeck prefers an exact SHA-1/CRC match fro
 
 The dashboard always runs fullscreen; use its Quit page to close PixelDeck. Home shows up to five genuinely played games, including total active play time, session count, and last-played time. Play history stays local in `%LOCALAPPDATA%\PixelDeck\play-history.json`; no sample activity is generated.
 
-The Library uses one reusable six-column gallery for every console shelf. It counts titles, groups them into populated `#` and `A`-`Z` sections, sorts titles alphabetically inside each section, adds rows, and scrolls vertically as the collection grows. Library cards show each game's accumulated active play time. The heading totals play time for the currently selected Nintendo or Super Nintendo shelf, and the selected-game panel includes both total and last-played time.
+The Library uses one reusable six-column gallery for every console shelf. A compact `#`/`A`-`Z` index sits to the left of the games and the selected-game panel is narrowed on the right. Move left from the first card in a gallery row to enter the index, move vertically to choose a populated section, then press right or A to jump to its first title. B moves directly to the Nintendo/Super Nintendo switcher, where A returns to the gallery. The component counts titles, sorts them alphabetically inside each section, adds rows, and scrolls vertically as the collection grows. Library cards show each game's accumulated active play time. The heading totals play time for the currently selected console shelf, and the selected-game panel includes both total and last-played time.
 
 Quitting opens a confirmation dialog with Cancel selected by default. Use the directional controls to choose, A or Enter to confirm the focused choice, and B or Escape to cancel. The window close button uses the same confirmation.
 
