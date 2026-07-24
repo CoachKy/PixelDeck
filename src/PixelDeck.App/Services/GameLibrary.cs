@@ -36,12 +36,15 @@ public sealed class GameLibrary
             [".elf"] = new("Homebrew", "ELF", Color.Parse("#E4B63E"))
         };
 
+    private readonly RomTitleResolver _titleResolver;
+
     public GameLibrary(string? gamesFolder = null)
     {
         GamesFolder = gamesFolder is null ? ResolveGamesFolder() : Path.GetFullPath(gamesFolder);
         Directory.CreateDirectory(GamesFolder);
         NintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, NintendoFolderName)).FullName;
         SuperNintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, SuperNintendoFolderName)).FullName;
+        _titleResolver = new RomTitleResolver(GamesFolder);
     }
 
     public string GamesFolder { get; }
@@ -50,12 +53,15 @@ public sealed class GameLibrary
 
     public string SuperNintendoFolder { get; }
 
+    public string MetadataFolder => _titleResolver.CatalogFolder;
+
     public Task<IReadOnlyList<GameEntry>> ScanAsync(CancellationToken cancellationToken = default) =>
         Task.Run<IReadOnlyList<GameEntry>>(() => Scan(cancellationToken), cancellationToken);
 
     private IReadOnlyList<GameEntry> Scan(CancellationToken cancellationToken)
     {
         var results = new List<GameEntry>();
+        _titleResolver.RefreshCatalogs();
         var options = new EnumerationOptions
         {
             RecurseSubdirectories = true,
@@ -82,9 +88,16 @@ public sealed class GameLibrary
                 var screenshotCachePath = GetCachePath("screenshots", cacheKey, ".png");
                 var screenshotPath = FindScreenshot(file, screenshotCachePath);
                 var compatibility = InspectCompatibility(file.FullName, extension);
+                var fallbackTitle = CleanTitle(Path.GetFileNameWithoutExtension(file.Name));
+                var title = _titleResolver.Resolve(
+                    file,
+                    relativePath,
+                    extension,
+                    fallbackTitle,
+                    compatibility.CartridgeTitle);
 
                 results.Add(new GameEntry(
-                    CleanTitle(Path.GetFileNameWithoutExtension(file.Name)),
+                    title,
                     platform.Name,
                     platform.Code,
                     file.Name,
@@ -115,6 +128,7 @@ public sealed class GameLibrary
             }
         }
 
+        _titleResolver.SaveCache();
         return results
             .OrderBy(game => game.Platform)
             .ThenBy(game => game.Title)
@@ -170,7 +184,9 @@ public sealed class GameLibrary
                     0,
                     cartridge.IsSupported,
                     cartridge.CompatibilityMessage,
-                    mapText);
+                    mapText,
+                    false,
+                    cartridge.Title);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
             {
@@ -256,5 +272,6 @@ public sealed class GameLibrary
         bool IsSupported,
         string Message,
         string? CartridgeDescription,
-        bool IsLimited = false);
+        bool IsLimited = false,
+        string? CartridgeTitle = null);
 }

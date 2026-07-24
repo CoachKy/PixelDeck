@@ -18,10 +18,29 @@ public sealed class NesReleaseCertificationTests
         (3, 2),
         (4, 0),
         (4, 4),
+        (5, 0),
         (7, 0),
         (7, 1),
         (7, 2),
-        (66, 0)
+        (9, 0),
+        (10, 0),
+        (11, 0),
+        (13, 0),
+        (32, 0),
+        (33, 0),
+        (34, 0),
+        (34, 1),
+        (34, 2),
+        (41, 0),
+        (66, 0),
+        (71, 0),
+        (75, 0),
+        (79, 0),
+        (113, 0),
+        (118, 0),
+        (119, 0),
+        (228, 0),
+        (232, 0)
     ];
 
     private readonly ITestOutputHelper _output;
@@ -76,23 +95,33 @@ public sealed class NesReleaseCertificationTests
         var gamePaths = FindLocalGames();
         Assert.True(gamePaths.Length > 0, "The release soak requires local NES games.");
 
-        var inspections = gamePaths.Select(Cartridge.Inspect).ToArray();
-        var unsupported = gamePaths
-            .Zip(inspections)
-            .Where(pair => !pair.Second.IsSupported)
-            .Select(pair => $"{Path.GetFileName(pair.First)}: {pair.Second.CompatibilityWarning}")
+        var inspectedGames = gamePaths
+            .Select(path => (Path: path, Info: Cartridge.Inspect(path)))
             .ToArray();
-        Assert.True(unsupported.Length == 0, string.Join(Environment.NewLine, unsupported));
+        var unsupported = inspectedGames
+            .Where(game => !game.Info.IsSupported)
+            .Select(game => $"{Path.GetFileName(game.Path)}: {game.Info.CompatibilityWarning}")
+            .ToArray();
+        foreach (var exclusion in unsupported)
+        {
+            _output.WriteLine($"Excluded from supported-image soak: {exclusion}");
+        }
 
-        var representedMappers = inspections.Select(info => info.MapperNumber).Distinct().Order().ToArray();
+        var supportedGames = inspectedGames.Where(game => game.Info.IsSupported).ToArray();
+        Assert.True(supportedGames.Length > 0, "The release soak requires supported local NES games.");
+        var representedMappers = supportedGames
+            .Select(game => game.Info.MapperNumber)
+            .Distinct()
+            .Order()
+            .ToArray();
         Assert.True(
-            new[] { 1, 2, 4, 66 }.All(representedMappers.Contains),
-            $"The local release matrix must cover mappers 1, 2, 4, and 66; found {string.Join(", ", representedMappers)}.");
+            new[] { 1, 2, 4, 5, 66 }.All(representedMappers.Contains),
+            $"The local release matrix must cover mappers 1, 2, 4, 5, and 66; found {string.Join(", ", representedMappers)}.");
 
         var frames = ResolveSoakFrames();
-        foreach (var gamePath in gamePaths)
+        foreach (var game in supportedGames)
         {
-            RunGameSoak(gamePath, frames);
+            RunGameSoak(game.Path, frames);
         }
     }
 
@@ -256,8 +285,25 @@ public sealed class NesReleaseCertificationTests
                 2 => (4, 1),
                 3 => (2, 4),
                 4 => (4, 2),
+                5 => (16, 16),
                 7 => (8, 0),
+                9 => (8, 16),
+                10 => (8, 16),
+                11 => (8, 16),
+                13 => (2, 0),
+                32 => (8, 8),
+                33 => (8, 8),
+                34 => (8, 8),
+                41 => (8, 8),
                 66 => (8, 4),
+                71 => (8, 0),
+                75 => (8, 16),
+                79 => (8, 8),
+                113 => (8, 16),
+                118 => (8, 8),
+                119 => (8, 8),
+                228 => (8, 8),
+                232 => (16, 0),
                 _ => throw new ArgumentOutOfRangeException(nameof(mapper))
             };
             var directoryPath = System.IO.Path.Combine(

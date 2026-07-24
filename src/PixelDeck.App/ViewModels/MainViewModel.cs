@@ -26,6 +26,30 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _library = library;
         _playHistory = playHistory ?? PlayHistoryStore.Default;
         GamesFolder = _library.GamesFolder;
+        LibrarySystems =
+        [
+            new(
+                LibrarySystem.Nintendo,
+                "Nintendo",
+                "Nintendo Entertainment System",
+                _library.NintendoFolder,
+                "Place NES homebrew in Games/Nintendo. PixelDeck will pick it up automatically.",
+                "Open Nintendo folder",
+                ["NES", "FDS"],
+                PixelNesVersionText,
+                () => SelectedLibrarySystem = LibrarySystem.Nintendo),
+            new(
+                LibrarySystem.SuperNintendo,
+                "Super Nintendo",
+                "Super Nintendo Entertainment System",
+                _library.SuperNintendoFolder,
+                "Place Super Nintendo homebrew in Games/SuperNintendo. PixelDeck will pick it up automatically.",
+                "Open Super Nintendo folder",
+                ["SNES"],
+                PixelSnesVersionText,
+                () => SelectedLibrarySystem = LibrarySystem.SuperNintendo)
+        ];
+        LibrarySystems[0].IsSelected = true;
 
         ControllerSlots = Enumerable.Range(0, 4)
             .Select(index => new ControllerSlotOption(index, $"Controller {index + 1}"))
@@ -90,6 +114,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public ObservableCollection<GameEntry> LibraryGames { get; } = [];
 
+    public ObservableCollection<LibrarySection> LibrarySections { get; } = [];
+
     public ObservableCollection<RecentGameEntry> RecentGames { get; } = [];
 
     public string GamesFolder { get; }
@@ -104,6 +130,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public IReadOnlyList<NesOamCorruptionModeOption> NesOamCorruptionModes { get; }
 
+    public IReadOnlyList<LibrarySystemTab> LibrarySystems { get; }
+
     public string PixelDeckVersionText { get; } =
         FormatProductVersion("PixelDeck", typeof(MainViewModel).Assembly.GetName().Version);
 
@@ -113,9 +141,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     public string PixelSnesVersionText { get; } =
         FormatProductVersion("PixelSNES", typeof(SnesMachine).Assembly.GetName().Version);
 
-    public string LibraryEmulatorVersionText => SelectedLibrarySystem == LibrarySystem.Nintendo
-        ? PixelNesVersionText
-        : PixelSnesVersionText;
+    public string LibraryEmulatorVersionText => SelectedLibrary.EmulatorVersionText;
 
     public bool IsHomeVisible => SelectedPage == DashboardPage.Home;
 
@@ -125,10 +151,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public bool IsQuitVisible => SelectedPage == DashboardPage.Quit;
 
-    public bool IsNintendoSelected => SelectedLibrarySystem == LibrarySystem.Nintendo;
-
-    public bool IsSuperNintendoSelected => SelectedLibrarySystem == LibrarySystem.SuperNintendo;
-
     public bool HasGames => LibraryGames.Count > 0;
 
     public bool IsEmpty => !IsBusy && LibraryGames.Count == 0;
@@ -137,28 +159,15 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public bool IsHomeEmpty => !IsBusy && RecentGames.Count == 0;
 
-    public string SelectedLibraryFolder => SelectedLibrarySystem == LibrarySystem.Nintendo
-        ? _library.NintendoFolder
-        : _library.SuperNintendoFolder;
+    public string SelectedLibraryFolder => SelectedLibrary.Folder;
 
-    public string LibrarySystemTitle => SelectedLibrarySystem == LibrarySystem.Nintendo
-        ? "Nintendo Entertainment System"
-        : "Super Nintendo Entertainment System";
+    public string LibrarySystemTitle => SelectedLibrary.SystemTitle;
 
-    public string EmptyLibraryText => SelectedLibrarySystem == LibrarySystem.Nintendo
-        ? "Place NES homebrew in Games/Nintendo. PixelDeck will pick it up automatically."
-        : "Place Super Nintendo homebrew in Games/SuperNintendo. PixelDeck will pick it up automatically.";
+    public string EmptyLibraryText => SelectedLibrary.EmptyText;
 
-    public string OpenLibraryFolderText => SelectedLibrarySystem == LibrarySystem.Nintendo
-        ? "Open Nintendo folder"
-        : "Open Super Nintendo folder";
+    public string OpenLibraryFolderText => SelectedLibrary.OpenFolderText;
 
-    public string GameCountText => LibraryGames.Count switch
-    {
-        0 => "NO GAMES FOUND",
-        1 => "1 GAME FOUND",
-        _ => $"{LibraryGames.Count} GAMES FOUND"
-    };
+    public string GameCountText => LibraryOrganizer.FormatTitleCount(LibraryGames.Count);
 
     public string RecentSummaryText => RecentGames.Count switch
     {
@@ -193,8 +202,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private DashboardPage selectedPage = DashboardPage.Home;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsNintendoSelected))]
-    [NotifyPropertyChangedFor(nameof(IsSuperNintendoSelected))]
     [NotifyPropertyChangedFor(nameof(SelectedLibraryFolder))]
     [NotifyPropertyChangedFor(nameof(LibrarySystemTitle))]
     [NotifyPropertyChangedFor(nameof(EmptyLibraryText))]
@@ -350,7 +357,15 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     partial void OnSelectedSnesSelectButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
 
-    partial void OnSelectedLibrarySystemChanged(LibrarySystem value) => RefreshLibraryGames();
+    partial void OnSelectedLibrarySystemChanged(LibrarySystem value)
+    {
+        foreach (var librarySystem in LibrarySystems)
+        {
+            librarySystem.IsSelected = librarySystem.System == value;
+        }
+
+        RefreshLibraryGames();
+    }
 
     partial void OnSelectedIndexChanged(int value)
     {
@@ -362,8 +377,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     partial void OnSelectedGameChanged(GameEntry? value)
     {
+        foreach (var game in LibraryGames)
+        {
+            game.SetLibrarySelected(ReferenceEquals(game, value));
+        }
+
         if (value is null)
         {
+            if (SelectedIndex != -1)
+            {
+                SelectedIndex = -1;
+            }
+
             return;
         }
 
@@ -417,6 +442,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
             RecentGames.Clear();
             LibraryGames.Clear();
+            LibrarySections.Clear();
             DisposeGameScreenshots();
             Games.Clear();
             foreach (var game in discoveredGames)
@@ -520,12 +546,6 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private void ShowQuit() => SelectedPage = DashboardPage.Quit;
 
-    [RelayCommand]
-    private void ShowNintendoLibrary() => SelectedLibrarySystem = LibrarySystem.Nintendo;
-
-    [RelayCommand]
-    private void ShowSuperNintendoLibrary() => SelectedLibrarySystem = LibrarySystem.SuperNintendo;
-
     public GameEntry? GetSelectedGameForLaunch() => SelectedPage switch
     {
         DashboardPage.Home => SelectedRecentGame?.Game,
@@ -555,31 +575,19 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public bool SelectLibraryGameInAdjacentRow(int direction, int columnCount)
     {
-        if (LibraryGames.Count == 0 || direction == 0 || columnCount <= 0)
+        if (!LibraryOrganizer.TryGetAdjacentGame(
+                LibrarySections,
+                SelectedGame,
+                direction,
+                columnCount,
+                out var adjacentGame) ||
+            adjacentGame is null)
         {
             return false;
         }
 
-        var current = Math.Clamp(SelectedIndex, 0, LibraryGames.Count - 1);
-        var target = current + (Math.Sign(direction) * columnCount);
-        if (target < 0)
-        {
-            return false;
-        }
-
-        if (target >= LibraryGames.Count)
-        {
-            var nextRowStart = ((current / columnCount) + 1) * columnCount;
-            if (nextRowStart >= LibraryGames.Count)
-            {
-                return false;
-            }
-
-            target = LibraryGames.Count - 1;
-        }
-
-        SelectedIndex = target;
-        return target != current;
+        SelectedGame = adjacentGame;
+        return true;
     }
 
     public void SelectPreviousRecentGame()
@@ -615,14 +623,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     {
         var selection = preferredSelection ?? SelectedGame?.FullPath;
         LibraryGames.Clear();
+        LibrarySections.Clear();
 
-        var platformCodes = SelectedLibrarySystem == LibrarySystem.Nintendo
-            ? new[] { "NES", "FDS" }
-            : ["SNES"];
-
-        foreach (var game in Games.Where(game => platformCodes.Contains(game.PlatformCode, StringComparer.OrdinalIgnoreCase)))
+        var sections = LibraryOrganizer.CreateSections(
+            Games.Where(game =>
+                SelectedLibrary.PlatformCodes.Contains(game.PlatformCode, StringComparer.OrdinalIgnoreCase)));
+        foreach (var section in sections)
         {
-            LibraryGames.Add(game);
+            LibrarySections.Add(section);
+            foreach (var game in section.Games)
+            {
+                LibraryGames.Add(game);
+            }
         }
 
         SelectedGame = LibraryGames.FirstOrDefault(game =>
@@ -636,6 +648,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
         NotifyLibraryStateChanged();
     }
+
+    private LibrarySystemTab SelectedLibrary =>
+        LibrarySystems.First(librarySystem => librarySystem.System == SelectedLibrarySystem);
 
     private void NotifyLibraryStateChanged()
     {

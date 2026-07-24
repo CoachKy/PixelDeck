@@ -18,6 +18,7 @@ public sealed record GameEntry(
     private long _totalPlayTimeTicks;
     private int _sessionCount;
     private DateTime? _lastPlayedUtc;
+    private bool _isLibrarySelected;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -56,6 +57,8 @@ public sealed record GameEntry(
     public bool HasNoScreenshot => Screenshot is null;
 
     public bool CanLaunch => IsCoreSupported;
+
+    public bool IsLibrarySelected => _isLibrarySelected;
 
     public TimeSpan TotalPlayTime => TimeSpan.FromTicks(_totalPlayTimeTicks);
 
@@ -114,6 +117,17 @@ public sealed record GameEntry(
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastPlayedUtc)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PlayTimeText)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LastPlayedText)));
+    }
+
+    internal void SetLibrarySelected(bool isSelected)
+    {
+        if (_isLibrarySelected == isSelected)
+        {
+            return;
+        }
+
+        _isLibrarySelected = isSelected;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsLibrarySelected)));
     }
 
     public void LoadScreenshot()

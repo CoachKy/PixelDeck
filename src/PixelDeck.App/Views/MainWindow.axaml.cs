@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using PixelDeck.App.Audio;
 using PixelDeck.App.Input;
 using PixelDeck.App.Settings;
@@ -358,8 +359,12 @@ public partial class MainWindow : Window
 
     private void MoveLibraryTab(MainViewModel viewModel, int direction)
     {
-        var next = Wrap((int)viewModel.SelectedLibrarySystem + direction, Enum.GetValues<LibrarySystem>().Length);
-        viewModel.SelectedLibrarySystem = (LibrarySystem)next;
+        var current = viewModel.LibrarySystems
+            .Select((librarySystem, index) => (librarySystem, index))
+            .First(entry => entry.librarySystem.System == viewModel.SelectedLibrarySystem)
+            .index;
+        var next = Wrap(current + direction, viewModel.LibrarySystems.Count);
+        viewModel.SelectedLibrarySystem = viewModel.LibrarySystems[next].System;
         FocusLibraryTabs(viewModel);
         PlayNavigationTone();
     }
@@ -391,14 +396,13 @@ public partial class MainWindow : Window
     private void FocusLibraryTabs(MainViewModel viewModel)
     {
         _navigationRegion = DashboardNavigationRegion.LibraryTabs;
-        if (viewModel.IsNintendoSelected)
-        {
-            NintendoSystemTabButton.Focus();
-        }
-        else
-        {
-            SuperNintendoSystemTabButton.Focus();
-        }
+        var selectedButton = LibrarySystemTabList
+            .GetVisualDescendants()
+            .OfType<Button>()
+            .FirstOrDefault(button =>
+                button.DataContext is LibrarySystemTab librarySystem &&
+                librarySystem.System == viewModel.SelectedLibrarySystem);
+        selectedButton?.Focus();
     }
 
     private void FocusPageContent(MainViewModel viewModel)
@@ -465,6 +469,16 @@ public partial class MainWindow : Window
         }
     }
 
+    private void OnLibraryGallerySelectionChanged(object? sender, EventArgs eventArgs)
+    {
+        if (DataContext is MainViewModel { IsBusy: false })
+        {
+            PlayNavigationTone();
+        }
+    }
+
+    private void OnLibraryGalleryGameInvoked(object? sender, EventArgs eventArgs) => LaunchSelectedGame();
+
     private void PlayNavigationTone()
     {
         if (_dashboardSoundsEnabled)
@@ -474,8 +488,6 @@ public partial class MainWindow : Window
     }
 
     private void OnLaunchClick(object? sender, RoutedEventArgs eventArgs) => LaunchSelectedGame();
-
-    private void OnGameDoubleTapped(object? sender, TappedEventArgs eventArgs) => LaunchSelectedGame();
 
     private void OnRecentGameDoubleTapped(object? sender, TappedEventArgs eventArgs) => LaunchSelectedGame();
 
@@ -679,12 +691,29 @@ public partial class MainWindow : Window
         _watcher.EnableRaisingEvents = true;
     }
 
-    private void QueueLibraryRefresh(object sender, FileSystemEventArgs eventArgs) =>
+    private void QueueLibraryRefresh(object sender, FileSystemEventArgs eventArgs)
+    {
+        if (_watcher is not null)
+        {
+            var relativePath = Path.GetRelativePath(_watcher.Path, eventArgs.FullPath);
+            var segments = relativePath.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+            if (segments.Length > 0 &&
+                segments[0].Equals(".pixeldeck", StringComparison.OrdinalIgnoreCase) &&
+                (segments.Length < 2 ||
+                 !segments[1].Equals("metadata", StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+        }
+
         Dispatcher.UIThread.Post(() =>
         {
             _libraryRefreshTimer.Stop();
             _libraryRefreshTimer.Start();
         });
+    }
 
     private async void RefreshLibrary(object? sender, EventArgs eventArgs)
     {

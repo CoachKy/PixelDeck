@@ -134,6 +134,50 @@ public sealed class NesCartridgeTests
     }
 
     [Fact]
+    public void ArchaicInesGarbageDoesNotInventAMapperOrPalTiming()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var bytes = File.ReadAllBytes(image.Path);
+        "DiskDude!"u8.CopyTo(bytes.AsSpan(7, 9));
+        File.WriteAllBytes(image.Path, bytes);
+
+        var info = Cartridge.Inspect(image.Path);
+        var cartridge = Cartridge.Load(image.Path);
+
+        Assert.Equal(0, info.MapperNumber);
+        Assert.Equal(0, cartridge.MapperNumber);
+        Assert.Equal(NesTimingMode.Ntsc, info.TimingMode);
+        Assert.Equal(8_192, info.PrgRamSize);
+        Assert.True(info.IsSupported);
+        Assert.Contains("archaic iNES", info.CompatibilityWarning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void StandardInesKeepsARealUpperMapperNibble()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 64);
+
+        var info = Cartridge.Inspect(image.Path);
+
+        Assert.Equal(64, info.MapperNumber);
+        Assert.False(info.IsSupported);
+    }
+
+    [Fact]
+    public void ImpossibleLegacyMapper33ChrRamBatteryLayoutIsCorrectedToMmc1()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 33, battery: true, consoleType: 1);
+
+        var info = Cartridge.Inspect(image.Path);
+        var cartridge = Cartridge.Load(image.Path);
+
+        Assert.Equal(1, info.MapperNumber);
+        Assert.Equal(1, cartridge.MapperNumber);
+        Assert.True(info.IsSupported);
+        Assert.Contains("loaded as mapper 1", info.CompatibilityWarning, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void BatterySaveWithTheWrongSizeIsRejected()
     {
         using var image = TemporaryNesImage.Create(mapper: 1, battery: true);
@@ -222,7 +266,8 @@ public sealed class NesCartridgeTests
             int chrRamShift = 0,
             NesTimingMode timing = NesTimingMode.Ntsc,
             byte defaultInputDevice = 0,
-            bool exponentPrgSize = false)
+            bool exponentPrgSize = false,
+            byte consoleType = 0)
         {
             var directoryPath = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(),
@@ -240,7 +285,7 @@ public sealed class NesCartridgeTests
             image[3] = 0x1A;
             image[4] = exponentPrgSize ? (byte)(14 << 2) : (byte)1;
             image[6] = (byte)(((mapper & 0x0F) << 4) | (battery ? 0x02 : 0) | (trainer ? 0x04 : 0));
-            image[7] = (byte)((mapper & 0xF0) | (nes20 ? 0x08 : 0));
+            image[7] = (byte)((mapper & 0xF0) | (nes20 ? 0x08 : 0) | (consoleType & 0x03));
 
             if (nes20)
             {

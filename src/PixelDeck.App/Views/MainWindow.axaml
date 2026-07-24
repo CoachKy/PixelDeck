@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:PixelDeck.App.ViewModels"
         xmlns:model="using:PixelDeck.App.Models"
+        xmlns:views="using:PixelDeck.App.Views"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
@@ -276,27 +277,28 @@
                                LetterSpacing="-1.5" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="1"
-                            Margin="48,0,0,4"
-                            HorizontalAlignment="Left"
-                            VerticalAlignment="Bottom"
-                            Orientation="Horizontal"
-                            Spacing="24">
-                    <Button Name="NintendoSystemTabButton"
-                            Classes="system-tab"
-                            Classes.selected="{Binding IsNintendoSelected}"
-                            Command="{Binding ShowNintendoLibraryCommand}"
-                            Click="OnDashboardTabClick"
-                            GotFocus="OnLibraryTabGotFocus"
-                            Content="Nintendo" />
-                    <Button Name="SuperNintendoSystemTabButton"
-                            Classes="system-tab"
-                            Classes.selected="{Binding IsSuperNintendoSelected}"
-                            Command="{Binding ShowSuperNintendoLibraryCommand}"
-                            Click="OnDashboardTabClick"
-                            GotFocus="OnLibraryTabGotFocus"
-                            Content="Super Nintendo" />
-                </StackPanel>
+                <ItemsControl Name="LibrarySystemTabList"
+                              Grid.Column="1"
+                              Margin="48,0,0,4"
+                              HorizontalAlignment="Left"
+                              VerticalAlignment="Bottom"
+                              ItemsSource="{Binding LibrarySystems}">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <StackPanel Orientation="Horizontal" Spacing="24" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:LibrarySystemTab">
+                            <Button Classes="system-tab"
+                                    Classes.selected="{Binding IsSelected}"
+                                    Command="{Binding SelectCommand}"
+                                    Click="OnDashboardTabClick"
+                                    GotFocus="OnLibraryTabGotFocus"
+                                    Content="{Binding Label}" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
                 <StackPanel Grid.Column="2" VerticalAlignment="Bottom">
                     <TextBlock Text="{Binding StatusText}"
@@ -484,105 +486,12 @@
 
             <Grid Name="LibraryPage" Grid.Row="2" ColumnDefinitions="*,320" ColumnSpacing="26" ClipToBounds="True" Focusable="True" GotFocus="OnPageContentGotFocus" IsVisible="{Binding IsLibraryVisible}">
                 <Grid Grid.Column="0">
-                    <ListBox Name="GameList"
-                             Classes="gallery"
-                             ItemsSource="{Binding LibraryGames}"
-                             SelectedItem="{Binding SelectedGame, Mode=TwoWay}"
-                             SelectedIndex="{Binding SelectedIndex, Mode=TwoWay}"
-                             IsVisible="{Binding HasGames}"
-                             Background="Transparent"
-                             BorderThickness="0"
-                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                             ScrollViewer.VerticalScrollBarVisibility="Auto"
-                             SelectionChanged="OnDashboardSelectionChanged"
-                             DoubleTapped="OnGameDoubleTapped">
-                        <ListBox.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <UniformGrid Columns="6" />
-                            </ItemsPanelTemplate>
-                        </ListBox.ItemsPanel>
-                        <ListBox.ItemTemplate>
-                            <DataTemplate x:DataType="model:GameEntry">
-                                <Border Classes="game-card"
-                                        Height="330"
-                                        HorizontalAlignment="Stretch"
-                                        CornerRadius="12"
-                                        ClipToBounds="True">
-                                    <Grid RowDefinitions="210,*">
-                                        <Border Grid.Row="0">
-                                            <Border.Background>
-                                                <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
-                                                    <GradientStop Color="{Binding AccentColor}" Offset="0" />
-                                                    <GradientStop Color="#202B42" Offset="1" />
-                                                </LinearGradientBrush>
-                                            </Border.Background>
-                                            <Grid>
-                                                <Ellipse Width="240"
-                                                         Height="240"
-                                                         Margin="-100,-110,0,0"
-                                                         HorizontalAlignment="Left"
-                                                         VerticalAlignment="Top"
-                                                         Fill="#24FFFFFF" />
-                                                <TextBlock Text="{Binding PlatformCode}"
-                                                           IsVisible="{Binding HasNoScreenshot}"
-                                                           Margin="22"
-                                                           HorizontalAlignment="Left"
-                                                           VerticalAlignment="Bottom"
-                                                           FontSize="46"
-                                                           FontWeight="Black"
-                                                           Foreground="#F4FFFFFF"
-                                                           LetterSpacing="-1" />
-                                                <Image Source="{Binding Screenshot}"
-                                                       IsVisible="{Binding HasScreenshot}"
-                                                       Stretch="UniformToFill" />
-                                                <Border IsVisible="{Binding HasScreenshot}"
-                                                        Height="72"
-                                                        VerticalAlignment="Bottom">
-                                                    <Border.Background>
-                                                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
-                                                            <GradientStop Color="#00101A28" Offset="0" />
-                                                            <GradientStop Color="#B8101A28" Offset="1" />
-                                                        </LinearGradientBrush>
-                                                    </Border.Background>
-                                                </Border>
-                                                <Border Margin="18"
-                                                        Padding="8,5"
-                                                        HorizontalAlignment="Right"
-                                                        VerticalAlignment="Top"
-                                                        CornerRadius="5"
-                                                        Background="#6008121F">
-                                                    <TextBlock Text="{Binding LaunchBadgeText}"
-                                                               FontSize="9"
-                                                               FontWeight="Bold"
-                                                               LetterSpacing="1.2" />
-                                                </Border>
-                                            </Grid>
-                                        </Border>
-
-                                        <Border Grid.Row="1" Padding="19,15" Background="#E8121C2B">
-                                            <StackPanel VerticalAlignment="Center" Spacing="6">
-                                                <TextBlock Text="{Binding Title}"
-                                                           MaxLines="2"
-                                                           TextTrimming="CharacterEllipsis"
-                                                           FontSize="17"
-                                                           FontWeight="Bold"
-                                                           LineHeight="21" />
-                                                <TextBlock Text="{Binding Platform}"
-                                                           Foreground="#7F91A8"
-                                                           FontSize="11"
-                                                           TextTrimming="CharacterEllipsis" />
-                                                <TextBlock Text="{Binding PlayTimeText}"
-                                                           Foreground="#65B7FF"
-                                                           FontSize="10"
-                                                           FontWeight="Bold"
-                                                           LetterSpacing="0.6" />
-                                            </StackPanel>
-                                        </Border>
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
+                    <views:LibraryGallery Name="GameList"
+                                          Sections="{Binding LibrarySections}"
+                                          SelectedGame="{Binding SelectedGame, Mode=TwoWay}"
+                                          IsVisible="{Binding HasGames}"
+                                          SelectionChanged="OnLibraryGallerySelectionChanged"
+                                          GameInvoked="OnLibraryGalleryGameInvoked" />
 
                     <Border IsVisible="{Binding IsEmpty}"
                             Padding="42"

@@ -24,6 +24,8 @@ public sealed class NesMachineTests
         }
 
         var gameFilter = Environment.GetEnvironmentVariable("PIXELDECK_NES_GAME_FILTER");
+        var mapperFilter = ParseMapperFilter(
+            Environment.GetEnvironmentVariable("PIXELDECK_NES_MAPPER_FILTER"));
         var discoveredImages = Directory
             .EnumerateFiles(gamesFolder, "*.nes", SearchOption.AllDirectories)
             .Where(path =>
@@ -31,6 +33,9 @@ public sealed class NesMachineTests
                 Path.GetFileNameWithoutExtension(path).Contains(
                     gameFilter,
                     StringComparison.OrdinalIgnoreCase))
+            .Where(path =>
+                mapperFilter.Count == 0 ||
+                mapperFilter.Contains(Cartridge.Inspect(path).MapperNumber))
             .ToArray();
         var supportedImages = 0;
         var imagesWithAudio = 0;
@@ -140,7 +145,20 @@ public sealed class NesMachineTests
             yield break;
         }
 
-        foreach (var gamePath in Directory.EnumerateFiles(gamesFolder, "*.nes", SearchOption.AllDirectories))
+        var gameFilter = Environment.GetEnvironmentVariable("PIXELDECK_NES_GAME_FILTER");
+        var mapperFilter = ParseMapperFilter(
+            Environment.GetEnvironmentVariable("PIXELDECK_NES_MAPPER_FILTER"));
+
+        foreach (var gamePath in Directory
+                     .EnumerateFiles(gamesFolder, "*.nes", SearchOption.AllDirectories)
+                     .Where(path =>
+                         string.IsNullOrWhiteSpace(gameFilter) ||
+                         Path.GetFileNameWithoutExtension(path).Contains(
+                             gameFilter,
+                             StringComparison.OrdinalIgnoreCase))
+                     .Where(path =>
+                         mapperFilter.Count == 0 ||
+                         mapperFilter.Contains(Cartridge.Inspect(path).MapperNumber)))
         {
             var supported = false;
             try
@@ -185,6 +203,20 @@ public sealed class NesMachineTests
         var samples = new float[machine.BufferedAudioSampleCount];
         machine.ReadAudioSamples(samples);
         return samples.Length == 0 ? 0 : samples.Max(sample => Math.Abs(sample));
+    }
+
+    private static HashSet<int> ParseMapperFilter(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        return value
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => int.TryParse(item, out var mapper) ? mapper : -1)
+            .Where(mapper => mapper >= 0)
+            .ToHashSet();
     }
 
     private static void CaptureFrameWhenRequested(string gamePath, uint[] frame)

@@ -162,6 +162,7 @@ internal sealed class NesPpu
             AccessOamRow(_oamAddress >> 3);
         }
 
+        _cartridge.ClockPpuPosition(Scanline, Cycle, RenderingEnabled);
         ClockPpuBusAddress();
 
         if (_nmiPpuDelay > 0 && --_nmiPpuDelay == 0 &&
@@ -310,6 +311,7 @@ internal sealed class NesPpu
                 }
 
                 _control = value;
+                _cartridge.SetPpuControl(value);
                 _temporaryAddress = (ushort)((_temporaryAddress & 0xF3FF) | ((value & 0x03) << 10));
                 if (!nmiWasEnabled &&
                     (value & 0x80) != 0 &&
@@ -525,6 +527,7 @@ internal sealed class NesPpu
         Cycle = reader.ReadInt32();
         FrameReady = reader.ReadBoolean();
         NmiRequested = reader.ReadBoolean();
+        _cartridge.SetPpuControl(_control);
         _enhancedSpriteCacheDirty = true;
     }
 
@@ -898,18 +901,26 @@ internal sealed class NesPpu
             {
                 case 0:
                     LoadBackgroundRegisters();
-                    _nextBackgroundTile = ReadMemory(GetBackgroundNametableAddress());
+                    _nextBackgroundTile = ReadMemory(
+                        GetBackgroundNametableAddress(),
+                        PpuAccessKind.Background);
                     break;
                 case 2:
-                    var attribute = ReadMemory(GetBackgroundAttributeAddress());
+                    var attribute = ReadMemory(
+                        GetBackgroundAttributeAddress(),
+                        PpuAccessKind.Background);
                     var shift = ((_vramAddress >> 4) & 4) | (_vramAddress & 2);
                     _nextBackgroundAttribute = (byte)((attribute >> shift) & 0x03);
                     break;
                 case 4:
-                    _nextBackgroundPatternLow = ReadMemory(GetBackgroundPatternAddress(highPlane: false));
+                    _nextBackgroundPatternLow = ReadMemory(
+                        GetBackgroundPatternAddress(highPlane: false),
+                        PpuAccessKind.Background);
                     break;
                 case 6:
-                    _nextBackgroundPatternHigh = ReadMemory(GetBackgroundPatternAddress(highPlane: true));
+                    _nextBackgroundPatternHigh = ReadMemory(
+                        GetBackgroundPatternAddress(highPlane: true),
+                        PpuAccessKind.Background);
                     break;
                 case 7:
                     _vramAddress = IncrementHorizontal(_vramAddress);
@@ -1348,7 +1359,9 @@ internal sealed class NesPpu
 
     private byte ReadSpritePattern(int slot, bool highPlane)
     {
-        var value = ReadMemory(GetSpritePatternAddress(slot, highPlane));
+        var value = ReadMemory(
+            GetSpritePatternAddress(slot, highPlane),
+            PpuAccessKind.Sprite);
         return (_spriteAttributes[slot] & 0x40) != 0 ? ReverseBits(value) : value;
     }
 
@@ -1456,16 +1469,27 @@ internal sealed class NesPpu
     private void CopyVerticalPosition() =>
         _vramAddress = (ushort)((_vramAddress & 0x841F) | (_temporaryAddress & 0x7BE0));
 
-    private byte ReadMemory(ushort address)
+    private byte ReadMemory(
+        ushort address,
+        PpuAccessKind accessKind = PpuAccessKind.Cpu)
     {
         address &= 0x3FFF;
         if (address < 0x2000)
         {
-            return _cartridge.PpuRead(address);
+            return _cartridge.PpuRead(address, accessKind);
         }
 
         if (address < 0x3F00)
         {
+            if (_cartridge.TryPpuReadNametable(
+                    address,
+                    accessKind,
+                    _nametableRam,
+                    out var value))
+            {
+                return value;
+            }
+
             return _nametableRam[MapNametableAddress(address)];
         }
 
@@ -1482,7 +1506,10 @@ internal sealed class NesPpu
         }
         else if (address < 0x3F00)
         {
-            _nametableRam[MapNametableAddress(address)] = value;
+            if (!_cartridge.TryPpuWriteNametable(address, value, _nametableRam))
+            {
+                _nametableRam[MapNametableAddress(address)] = value;
+            }
         }
         else
         {

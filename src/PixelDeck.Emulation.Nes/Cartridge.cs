@@ -62,8 +62,25 @@ public sealed class Cartridge
         (2, 0 or 1 or 2) => true,
         (3, 0 or 1 or 2) => true,
         (4, 0 or 4) => true,
+        (5, 0) => true,
         (7, 0 or 1 or 2) => true,
+        (9, 0) => true,
+        (10, 0) => true,
+        (11, 0) => true,
+        (13, 0) => true,
+        (32, 0) => true,
+        (33, 0) => true,
+        (34, 0 or 1 or 2) => true,
+        (41, 0) => true,
         (66, 0) => true,
+        (71, 0) => true,
+        (75, 0) => true,
+        (79, 0) => true,
+        (113, 0) => true,
+        (118, 0) => true,
+        (119, 0) => true,
+        (228, 0) => true,
+        (232, 0) => true,
         _ => false
     };
 
@@ -114,7 +131,8 @@ public sealed class Cartridge
         var prgRom = image.AsSpan(offset, prgLength).ToArray();
         offset += prgLength;
         var usesChrRam = chrLength == 0;
-        var chrRamSize = Math.Max(info.ChrRamSize + info.ChrNvRamSize, 8_192);
+        var minimumChrRamSize = mapperNumber == 13 ? 16_384 : 8_192;
+        var chrRamSize = Math.Max(info.ChrRamSize + info.ChrNvRamSize, minimumChrRamSize);
         var chr = usesChrRam ? new byte[chrRamSize] : image.AsSpan(offset, chrLength).ToArray();
         var programRamSize = Math.Max(info.PrgRamSize + info.PrgNvRamSize, info.HasTrainer ? 8_192 : 0);
         var programRam = new CartridgeRam(programRamSize, info.HasBatteryBackedRam);
@@ -154,9 +172,47 @@ public sealed class Cartridge
                 usesChrRam,
                 mirroring,
                 programRam,
-                ResolveMmc3IrqRevision(info, mmc3IrqRevision)),
+                ResolveMmc3IrqRevision(info, mmc3IrqRevision),
+                Mmc3BoardVariant.Standard),
+            5 => new Mapper5(prgRom, chr, usesChrRam, programRam),
             7 => new Mapper7(prgRom, chr, usesChrRam, hasBusConflicts, programRam),
+            9 => new Mapper9And10(prgRom, chr, usesChrRam, mirroring, programRam, isMmc4: false),
+            10 => new Mapper9And10(prgRom, chr, usesChrRam, mirroring, programRam, isMmc4: true),
+            11 => new Mapper11(prgRom, chr, usesChrRam, mirroring, programRam),
+            13 => new Mapper13(prgRom, chr, mirroring),
+            32 => new Mapper32(prgRom, chr, usesChrRam, mirroring),
+            33 => new Mapper33(prgRom, chr, usesChrRam, programRam),
+            34 => new Mapper34(
+                prgRom,
+                chr,
+                usesChrRam,
+                mirroring,
+                programRam,
+                submapperNumber),
+            41 => new Mapper41(prgRom, chr),
             66 => new Mapper66(prgRom, chr, usesChrRam, mirroring, programRam),
+            71 => new Mapper71(prgRom, chr, usesChrRam, mirroring, programRam),
+            75 => new Mapper75(prgRom, chr, usesChrRam, mirroring),
+            79 => new Mapper79(prgRom, chr, usesChrRam, mirroring, programRam),
+            118 => new Mapper4(
+                prgRom,
+                chr,
+                usesChrRam,
+                mirroring,
+                programRam,
+                ResolveMmc3IrqRevision(info, mmc3IrqRevision),
+                Mmc3BoardVariant.TxSrom),
+            119 => new Mapper4(
+                prgRom,
+                chr,
+                usesChrRam,
+                mirroring,
+                programRam,
+                ResolveMmc3IrqRevision(info, mmc3IrqRevision),
+                Mmc3BoardVariant.Tqrom),
+            113 => new Mapper113(prgRom, chr, usesChrRam),
+            228 => new Mapper228(prgRom, chr, usesChrRam),
+            232 => new Mapper232(prgRom, chr, usesChrRam, mirroring, programRam),
             _ => throw new NotSupportedException($"NES mapper {mapperNumber} is not implemented yet.")
         };
 
@@ -174,13 +230,31 @@ public sealed class Cartridge
 
     internal byte PpuRead(ushort address) => _mapper.PpuRead(address);
 
+    internal byte PpuRead(ushort address, PpuAccessKind accessKind) =>
+        _mapper.PpuRead(address, accessKind);
+
     internal void PpuWrite(ushort address, byte value) => _mapper.PpuWrite(address, value);
+
+    internal bool TryPpuReadNametable(
+        ushort address,
+        PpuAccessKind accessKind,
+        byte[] nametableRam,
+        out byte value) =>
+        _mapper.TryPpuReadNametable(address, accessKind, nametableRam, out value);
+
+    internal bool TryPpuWriteNametable(ushort address, byte value, byte[] nametableRam) =>
+        _mapper.TryPpuWriteNametable(address, value, nametableRam);
 
     internal bool IrqPending => _mapper.IrqPending;
 
     internal void ClockScanline() => _mapper.ClockScanline();
 
     internal void ClockPpuAddress(ushort address) => _mapper.ClockPpuAddress(address);
+
+    internal void ClockPpuPosition(int scanline, int cycle, bool renderingEnabled) =>
+        _mapper.ClockPpuPosition(scanline, cycle, renderingEnabled);
+
+    internal void SetPpuControl(byte value) => _mapper.SetPpuControl(value);
 
     internal void SaveState(BinaryWriter writer)
     {
@@ -286,12 +360,33 @@ public sealed class Cartridge
         var flags6 = header[6];
         var flags7 = header[7];
         var isNes20 = (flags7 & 0x0C) == 0x08;
-        var mapperNumber = GetMapperNumber(header);
+        // Archaic iNES images use bit pattern %01 in flags 7. Bytes 7-15
+        // were not yet defined and commonly contain signatures such as
+        // "DiskDude!", so neither the upper mapper nibble nor the later
+        // PRG-RAM/timing bytes are trustworthy in this format.
+        var isArchaicInes = (flags7 & 0x0C) == 0x04;
+        var mapperNumber = GetMapperNumber(header, isArchaicInes);
         var submapperNumber = GetSubmapperNumber(header);
         var hasTrainer = (flags6 & 0x04) != 0;
         var hasBattery = (flags6 & 0x02) != 0;
         var prgLength = GetRomSize(header[4], (byte)(header[9] & 0x0F), isNes20, 16_384);
         var chrLength = GetRomSize(header[5], (byte)(header[9] >> 4), isNes20, 8_192);
+        // TC0190 cartridges use CHR ROM and have no battery-backed PRG RAM.
+        // A legacy Super Black Onyx mapper conversion is widely distributed
+        // with the impossible combination mapper 33 + CHR RAM + battery even
+        // though the underlying image is the MMC1/SNROM game. Correct that
+        // structurally identifiable legacy header without a filename/hash rule.
+        var correctedMapper33Snrom =
+            !isNes20 &&
+            mapperNumber == 33 &&
+            chrLength == 0 &&
+            hasBattery;
+        if (correctedMapper33Snrom)
+        {
+            mapperNumber = 1;
+            submapperNumber = 0;
+        }
+
         var minimumLength = 16L + (hasTrainer ? 512 : 0) + prgLength + chrLength;
         if (prgLength == 0 || fileLength < minimumLength)
         {
@@ -323,7 +418,7 @@ public sealed class Cartridge
         }
         else
         {
-            var prgRamUnits = header[8] == 0 ? 1 : header[8];
+            var prgRamUnits = isArchaicInes || header[8] == 0 ? 1 : header[8];
             // Legacy iNES defines zero as one 8 KiB unit. Many homebrew and
             // hardware-test NROM images rely on this work area even though the
             // original cartridge board is not described precisely by the header.
@@ -332,7 +427,9 @@ public sealed class Cartridge
             prgNvRamSize = hasBattery ? inferredPrgRamSize : 0;
             chrRamSize = chrLength == 0 ? 8_192 : 0;
             chrNvRamSize = 0;
-            timingMode = (header[9] & 1) != 0 ? NesTimingMode.Pal : NesTimingMode.Ntsc;
+            timingMode = !isArchaicInes && (header[9] & 1) != 0
+                ? NesTimingMode.Pal
+                : NesTimingMode.Ntsc;
             defaultInputDevice = 0;
         }
 
@@ -341,7 +438,10 @@ public sealed class Cartridge
             chrRamSize = 8_192;
         }
 
-        var consoleType = flags7 & 0x03;
+        // The same malformed Super Black Onyx header also sets the VS-System
+        // bit in byte 7. That byte is part of the bad mapper conversion rather
+        // than an indication that this standard Famicom game needs VS hardware.
+        var consoleType = correctedMapper33Snrom ? 0 : flags7 & 0x03;
         var mapperSupported = IsMapperSupported(mapperNumber, submapperNumber);
         var timingSupported = timingMode is NesTimingMode.Ntsc or NesTimingMode.MultipleRegion;
         var inputSupported = defaultInputDevice is 0x00 or 0x01 or 0x2A;
@@ -356,6 +456,10 @@ public sealed class Cartridge
                 $"This cartridge requires default input device ${defaultInputDevice:X2}, which is not implemented.",
             _ when limitedCompatibility =>
                 "This multicart may include Zapper games; standard-controller games are playable, but light-gun games are not.",
+            _ when correctedMapper33Snrom =>
+                "The legacy mapper-33 header has an MMC1/SNROM CHR-RAM and battery layout, so it was loaded as mapper 1.",
+            _ when isArchaicInes =>
+                "Compatible with the current local NTSC NES core. Undefined bytes in this archaic iNES header were ignored.",
             _ => null
         };
 
@@ -401,9 +505,14 @@ public sealed class Cartridge
 
     private static int GetRamSize(byte shift) => shift == 0 ? 0 : checked(64 << shift);
 
-    private static int GetMapperNumber(ReadOnlySpan<byte> header)
+    private static int GetMapperNumber(ReadOnlySpan<byte> header, bool isArchaicInes)
     {
-        var mapperNumber = (header[6] >> 4) | (header[7] & 0xF0);
+        var mapperNumber = header[6] >> 4;
+        if (!isArchaicInes)
+        {
+            mapperNumber |= header[7] & 0xF0;
+        }
+
         if ((header[7] & 0x0C) == 0x08)
         {
             mapperNumber |= (header[8] & 0x0F) << 8;
@@ -501,7 +610,21 @@ internal interface IMapper
 
     byte PpuRead(ushort address);
 
+    byte PpuRead(ushort address, PpuAccessKind accessKind) => PpuRead(address);
+
     void PpuWrite(ushort address, byte value);
+
+    bool TryPpuReadNametable(
+        ushort address,
+        PpuAccessKind accessKind,
+        byte[] nametableRam,
+        out byte value)
+    {
+        value = 0;
+        return false;
+    }
+
+    bool TryPpuWriteNametable(ushort address, byte value, byte[] nametableRam) => false;
 
     void SaveState(BinaryWriter writer);
 
@@ -516,6 +639,28 @@ internal interface IMapper
     void ClockPpuAddress(ushort address)
     {
     }
+
+    void ClockPpuPosition(int scanline, int cycle, bool renderingEnabled)
+    {
+    }
+
+    void SetPpuControl(byte value)
+    {
+    }
+}
+
+internal enum PpuAccessKind
+{
+    Cpu,
+    Background,
+    Sprite
+}
+
+internal enum Mmc3BoardVariant
+{
+    Standard,
+    TxSrom,
+    Tqrom
 }
 
 internal sealed class Mapper0(
@@ -913,9 +1058,13 @@ internal sealed class Mapper4(
     bool chrIsRam,
     NametableMirroring initialMirroring,
     CartridgeRam programRam,
-    Mmc3IrqRevision irqRevision) : IMapper
+    Mmc3IrqRevision irqRevision,
+    Mmc3BoardVariant boardVariant) : IMapper
 {
     private readonly byte[] _registers = new byte[8];
+    private readonly byte[] _tqromChrRam = boardVariant == Mmc3BoardVariant.Tqrom
+        ? new byte[8_192]
+        : [];
     private byte _bankSelect;
     private readonly bool _fourScreen = initialMirroring == NametableMirroring.FourScreen;
     private NametableMirroring _mirroring = initialMirroring;
@@ -992,7 +1141,7 @@ internal sealed class Mapper4(
                 _prgRamEnabled = (value & 0x80) != 0;
                 _prgRamWriteProtected = (value & 0x40) != 0;
             }
-            else if (!_fourScreen)
+            else if (!_fourScreen && boardVariant != Mmc3BoardVariant.TxSrom)
             {
                 _mirroring = (value & 1) == 0 ? NametableMirroring.Vertical : NametableMirroring.Horizontal;
             }
@@ -1020,14 +1169,61 @@ internal sealed class Mapper4(
         }
     }
 
-    public byte PpuRead(ushort address) => chr[MapChrAddress(address)];
+    public byte PpuRead(ushort address)
+    {
+        var bank = GetChrBank(address);
+        if (boardVariant == Mmc3BoardVariant.Tqrom && (bank & 0x40) != 0)
+        {
+            return _tqromChrRam[((bank & 0x07) * 1_024) + (address & 0x03FF)];
+        }
+
+        return chr[MapChrRomAddress(address, bank)];
+    }
 
     public void PpuWrite(ushort address, byte value)
     {
-        if (chrIsRam)
+        var bank = GetChrBank(address);
+        if (boardVariant == Mmc3BoardVariant.Tqrom && (bank & 0x40) != 0)
         {
-            chr[MapChrAddress(address)] = value;
+            _tqromChrRam[((bank & 0x07) * 1_024) + (address & 0x03FF)] = value;
         }
+        else if (chrIsRam)
+        {
+            chr[MapChrRomAddress(address, bank)] = value;
+        }
+    }
+
+    public bool TryPpuReadNametable(
+        ushort address,
+        PpuAccessKind accessKind,
+        byte[] nametableRam,
+        out byte value)
+    {
+        if (boardVariant != Mmc3BoardVariant.TxSrom)
+        {
+            value = 0;
+            return false;
+        }
+
+        var normalized = (ushort)((address - 0x2000) & 0x0FFF);
+        var bank = GetChrBank((ushort)(normalized & 0x0FFF));
+        var offset = (bank & 0x80) != 0 ? 0x0400 : 0;
+        value = nametableRam[offset + (normalized & 0x03FF)];
+        return true;
+    }
+
+    public bool TryPpuWriteNametable(ushort address, byte value, byte[] nametableRam)
+    {
+        if (boardVariant != Mmc3BoardVariant.TxSrom)
+        {
+            return false;
+        }
+
+        var normalized = (ushort)((address - 0x2000) & 0x0FFF);
+        var bank = GetChrBank((ushort)(normalized & 0x0FFF));
+        var offset = (bank & 0x80) != 0 ? 0x0400 : 0;
+        nametableRam[offset + (normalized & 0x03FF)] = value;
+        return true;
     }
 
     public void ClockScanline()
@@ -1090,6 +1286,7 @@ internal sealed class Mapper4(
         Mapper0.WriteArray(writer, _registers);
         writer.Write(chrIsRam);
         if (chrIsRam) Mapper0.WriteArray(writer, chr);
+        if (boardVariant == Mmc3BoardVariant.Tqrom) Mapper0.WriteArray(writer, _tqromChrRam);
         writer.Write(_bankSelect);
         writer.Write((int)_mirroring);
         writer.Write(_prgRamEnabled);
@@ -1113,6 +1310,7 @@ internal sealed class Mapper4(
         }
 
         if (chrIsRam) Mapper0.ReadArray(reader, chr);
+        if (boardVariant == Mmc3BoardVariant.Tqrom) Mapper0.ReadArray(reader, _tqromChrRam);
         _bankSelect = reader.ReadByte();
         _mirroring = (NametableMirroring)reader.ReadInt32();
         _prgRamEnabled = reader.ReadBoolean();
@@ -1130,7 +1328,7 @@ internal sealed class Mapper4(
         }
     }
 
-    private int MapChrAddress(ushort address)
+    private int GetChrBank(ushort address)
     {
         var slot = address / 1_024;
         var inverted = (_bankSelect & 0x80) != 0;
@@ -1159,7 +1357,17 @@ internal sealed class Mapper4(
             };
         }
 
+        return bank;
+    }
+
+    private int MapChrRomAddress(ushort address, int bank)
+    {
         var bankCount = Math.Max(1, chr.Length / 1_024);
+        if (boardVariant == Mmc3BoardVariant.Tqrom)
+        {
+            bank &= ~0x40;
+        }
+
         return ((bank % bankCount) * 1_024) + (address & 0x03FF);
     }
 }

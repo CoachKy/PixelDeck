@@ -1,0 +1,154 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:model="using:PixelDeck.App.Models"
+             xmlns:views="using:PixelDeck.App.Views"
+             x:Class="PixelDeck.App.Views.LibraryGallery"
+             x:Name="Gallery"
+             x:DataType="views:LibraryGallery"
+             Focusable="True"
+             Background="Transparent">
+    <UserControl.Styles>
+        <Style Selector="Border.game-card">
+            <Setter Property="BorderBrush" Value="#24FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="BoxShadow" Value="0 14 32 0 #50000000" />
+        </Style>
+        <Style Selector="Border.game-card:pointerover">
+            <Setter Property="BorderBrush" Value="#90FFFFFF" />
+        </Style>
+        <Style Selector="Border.game-card.selected">
+            <Setter Property="BorderBrush" Value="#FFFFFFFF" />
+            <Setter Property="BorderThickness" Value="3" />
+            <Setter Property="BoxShadow" Value="0 18 45 0 #90000000" />
+        </Style>
+    </UserControl.Styles>
+
+    <ScrollViewer Name="GalleryScrollViewer"
+                  HorizontalScrollBarVisibility="Disabled"
+                  VerticalScrollBarVisibility="Auto">
+        <ItemsControl ItemsSource="{Binding Sections, ElementName=Gallery}">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <StackPanel />
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="model:LibrarySection">
+                    <StackPanel Margin="0,0,0,28">
+                        <Grid Margin="0,0,14,14" ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                            <TextBlock Text="{Binding Label}"
+                                       Foreground="#F7F9FC"
+                                       FontSize="28"
+                                       FontWeight="Black" />
+                            <TextBlock Grid.Column="1"
+                                       Text="{Binding TitleCountText}"
+                                       VerticalAlignment="Center"
+                                       Foreground="#65B7FF"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       LetterSpacing="1.2" />
+                            <Border Grid.Column="2"
+                                    Height="1"
+                                    Margin="4,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Background="#24FFFFFF" />
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding Games}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="6" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="model:GameEntry">
+                                    <Border Classes="game-card"
+                                            Classes.selected="{Binding IsLibrarySelected}"
+                                            Height="330"
+                                            Margin="0,0,14,16"
+                                            HorizontalAlignment="Stretch"
+                                            CornerRadius="12"
+                                            ClipToBounds="True"
+                                            Tapped="OnGameCardTapped"
+                                            DoubleTapped="OnGameCardDoubleTapped">
+                                        <Grid RowDefinitions="210,*">
+                                            <Border Grid.Row="0">
+                                                <Border.Background>
+                                                    <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                                                        <GradientStop Color="{Binding AccentColor}" Offset="0" />
+                                                        <GradientStop Color="#202B42" Offset="1" />
+                                                    </LinearGradientBrush>
+                                                </Border.Background>
+                                                <Grid>
+                                                    <Ellipse Width="240"
+                                                             Height="240"
+                                                             Margin="-100,-110,0,0"
+                                                             HorizontalAlignment="Left"
+                                                             VerticalAlignment="Top"
+                                                             Fill="#24FFFFFF" />
+                                                    <TextBlock Text="{Binding PlatformCode}"
+                                                               IsVisible="{Binding HasNoScreenshot}"
+                                                               Margin="22"
+                                                               HorizontalAlignment="Left"
+                                                               VerticalAlignment="Bottom"
+                                                               FontSize="46"
+                                                               FontWeight="Black"
+                                                               Foreground="#F4FFFFFF"
+                                                               LetterSpacing="-1" />
+                                                    <Image Source="{Binding Screenshot}"
+                                                           IsVisible="{Binding HasScreenshot}"
+                                                           Stretch="UniformToFill" />
+                                                    <Border IsVisible="{Binding HasScreenshot}"
+                                                            Height="72"
+                                                            VerticalAlignment="Bottom">
+                                                        <Border.Background>
+                                                            <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                                                                <GradientStop Color="#00101A28" Offset="0" />
+                                                                <GradientStop Color="#B8101A28" Offset="1" />
+                                                            </LinearGradientBrush>
+                                                        </Border.Background>
+                                                    </Border>
+                                                    <Border Margin="18"
+                                                            Padding="8,5"
+                                                            HorizontalAlignment="Right"
+                                                            VerticalAlignment="Top"
+                                                            CornerRadius="5"
+                                                            Background="#6008121F">
+                                                        <TextBlock Text="{Binding LaunchBadgeText}"
+                                                                   FontSize="9"
+                                                                   FontWeight="Bold"
+                                                                   LetterSpacing="1.2" />
+                                                    </Border>
+                                                </Grid>
+                                            </Border>
+
+                                            <Border Grid.Row="1" Padding="19,15" Background="#E8121C2B">
+                                                <StackPanel VerticalAlignment="Center" Spacing="6">
+                                                    <TextBlock Text="{Binding Title}"
+                                                               MaxLines="2"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               FontSize="17"
+                                                               FontWeight="Bold"
+                                                               LineHeight="21" />
+                                                    <TextBlock Text="{Binding Platform}"
+                                                               Foreground="#7F91A8"
+                                                               FontSize="11"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding PlayTimeText}"
+                                                               Foreground="#65B7FF"
+                                                               FontSize="10"
+                                                               FontWeight="Bold"
+                                                               LetterSpacing="0.6" />
+                                                </StackPanel>
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </ScrollViewer>
+</UserControl>

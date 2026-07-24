@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using PixelDeck.App.Services;
 
 namespace PixelDeck.App.Tests;
@@ -116,11 +117,143 @@ public sealed class GameLibraryTests
 
             var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
 
+            Assert.Equal("PIXELDECK HOMEBREW", game.Title);
             Assert.Equal("Super Nintendo Entertainment System", game.Platform);
             Assert.Equal("LOROM", game.MapperText);
             Assert.Equal("READY", game.LaunchBadgeText);
             Assert.True(game.CanLaunch);
             Assert.Contains("S-DSP stereo audio are active", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_UsesAValidatedNintendoHeaderTitleForNesImages()
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var image = CreateNesImage(mapper: 0);
+            WriteNintendoHeaderTitle(image, "PIXEL ADVENTURE");
+            await File.WriteAllBytesAsync(Path.Combine(testRoot, "A1B2C3D4.nes"), image);
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("PIXEL ADVENTURE", game.Title);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_DoesNotLetALegacyNintendoHeaderReplaceAReadableFilename()
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var image = CreateNesImage(mapper: 0);
+            WriteNintendoHeaderTitle(image, "ABBREVIATED");
+            await File.WriteAllBytesAsync(Path.Combine(testRoot, "Readable Game Name.nes"), image);
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("Readable Game Name", game.Title);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_UsesAnOfflineDatTitleAndInvalidatesTheFilenameCache()
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var image = CreateNesImage(mapper: 0);
+            var gamePath = Path.Combine(testRoot, "not-the-real-title.nes");
+            await File.WriteAllBytesAsync(gamePath, image);
+            var library = new GameLibrary(testRoot);
+
+            var filenameGame = Assert.Single(await library.ScanAsync());
+            Assert.Equal("not-the-real-title", filenameGame.Title);
+
+            var payloadSha1 = Convert.ToHexString(SHA1.HashData(image.AsSpan(16)));
+            await File.WriteAllTextAsync(
+                Path.Combine(library.MetadataFolder, "Nintendo - Nintendo Entertainment System.dat"),
+                $$"""
+                clrmamepro (
+                    name "Nintendo - Nintendo Entertainment System"
+                )
+                game (
+                    name "Catalog Title (USA)"
+                    description "Catalog Title (USA)"
+                    rom (
+                        name "Catalog Title (USA).nes"
+                        size {{image.Length - 16}}
+                        sha1 {{payloadSha1}}
+                    )
+                )
+                """);
+
+            var catalogGame = Assert.Single(await library.ScanAsync());
+
+            Assert.Equal("Catalog Title (USA)", catalogGame.Title);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Theory]
+    [InlineData(".xml")]
+    [InlineData(".json")]
+    public async Task ScanAsync_AcceptsXmlAndJsonOfflineCatalogs(string catalogExtension)
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var image = CreateNesImage(mapper: 0);
+            await File.WriteAllBytesAsync(Path.Combine(testRoot, "unknown.nes"), image);
+            var library = new GameLibrary(testRoot);
+            var sha1 = Convert.ToHexString(SHA1.HashData(image));
+            var catalog = catalogExtension == ".xml"
+                ? $$"""
+                    <datafile>
+                      <game name="Structured Catalog Title">
+                        <description>Structured Catalog Title</description>
+                        <rom name="game.nes" size="{{image.Length}}" sha1="{{sha1}}" />
+                      </game>
+                    </datafile>
+                    """
+                : $$"""
+                    {
+                      "games": [
+                        {
+                          "title": "Structured Catalog Title",
+                          "sha1": "{{sha1}}"
+                        }
+                      ]
+                    }
+                    """;
+            await File.WriteAllTextAsync(
+                Path.Combine(library.MetadataFolder, "catalog" + catalogExtension),
+                catalog);
+
+            var game = Assert.Single(await library.ScanAsync());
+
+            Assert.Equal("Structured Catalog Title", game.Title);
         }
         finally
         {
@@ -284,6 +417,25 @@ public sealed class GameLibraryTests
         image[header + 0x3C] = 0x00;
         image[header + 0x3D] = 0x80;
         return image;
+    }
+
+    private static void WriteNintendoHeaderTitle(byte[] image, string title)
+    {
+        var titleBytes = System.Text.Encoding.ASCII.GetBytes(title);
+        Assert.InRange(titleBytes.Length, 2, 16);
+
+        var nintendoHeader = image.AsSpan(16 + 16_384 - 32, 32);
+        titleBytes.CopyTo(nintendoHeader.Slice(16 - titleBytes.Length, titleBytes.Length));
+        nintendoHeader[0x16] = 1;
+        nintendoHeader[0x17] = (byte)(titleBytes.Length - 1);
+
+        var validationSum = 0;
+        for (var index = 0x12; index < 0x19; index++)
+        {
+            validationSum = (validationSum + nintendoHeader[index]) & 0xFF;
+        }
+
+        nintendoHeader[0x19] = unchecked((byte)-validationSum);
     }
 
     private static void DeleteTestDirectory(string testRoot)
