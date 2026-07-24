@@ -15,7 +15,8 @@
         Height="800"
         MinWidth="960"
         MinHeight="620"
-        WindowState="Maximized"
+        WindowState="FullScreen"
+        WindowDecorations="None"
         WindowStartupLocation="CenterScreen"
         Background="#08111F">
 

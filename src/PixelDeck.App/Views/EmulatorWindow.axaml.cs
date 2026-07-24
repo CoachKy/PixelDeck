@@ -23,9 +23,11 @@ public partial class EmulatorWindow : Window
     private readonly DispatcherTimer _inputTimer;
     private readonly WindowsGamepad _gamepad = new();
     private readonly HashSet<Key> _pressedKeys = [];
+    private readonly List<Action> _stateMenuActions = [];
     private readonly object _machineLock = new();
     private readonly object _presentationLock = new();
     private GameEntry? _game;
+    private SaveStateCatalog? _saveStateCatalog;
     private Task? _emulationTask;
     private NesMachine? _nesMachine;
     private SnesMachine? _snesMachine;
@@ -36,6 +38,7 @@ public partial class EmulatorWindow : Window
     private volatile bool _isPaused;
     private bool _screenshotSaved;
     private int _menuIndex;
+    private PauseMenuMode _pauseMenuMode;
     private int _playbackRateMultiplier = 1;
     private uint[]? _presentationPixels;
     private int _presentationFrameNumber;
@@ -55,11 +58,18 @@ public partial class EmulatorWindow : Window
         : this()
     {
         _game = game;
+        _saveStateCatalog = new SaveStateCatalog(Path.ChangeExtension(game.ScreenshotCachePath, ".state"));
     }
 
-    private string SaveStatePath => Path.ChangeExtension(_game!.ScreenshotCachePath, ".state");
+    private Button[] MainMenuButtons =>
+        [ResumeButton, SaveStateButton, LoadStateButton, ResetGameButton, QuitGameButton];
 
-    private Button[] MenuButtons => [ResumeButton, SaveStateButton, LoadStateButton, ResetGameButton, QuitGameButton];
+    private Button[] ActiveMenuButtons => _pauseMenuMode == PauseMenuMode.Main
+        ? MainMenuButtons
+        : StateSlotMenuPanel.Children.OfType<Button>().ToArray();
+
+    private SaveStateCatalog StateCatalog => _saveStateCatalog
+        ?? throw new InvalidOperationException("The save-state catalog is not initialized.");
 
     private void OnOpened(object? sender, EventArgs eventArgs)
     {
@@ -306,7 +316,7 @@ public partial class EmulatorWindow : Window
             if (newPresses.HasFlag(GamepadButton.DPadUp)) MoveMenuSelection(-1);
             if (newPresses.HasFlag(GamepadButton.DPadDown)) MoveMenuSelection(1);
             if (newPresses.HasFlag(GamepadButton.A)) ExecuteSelectedMenuAction();
-            if (newPresses.HasFlag(GamepadButton.B)) SetPaused(false);
+            if (newPresses.HasFlag(GamepadButton.B)) HandlePauseBack();
             return;
         }
 
@@ -355,7 +365,15 @@ public partial class EmulatorWindow : Window
     {
         if (eventArgs.Key == Key.Escape)
         {
-            SetPaused(!_isPaused);
+            if (_isPaused)
+            {
+                HandlePauseBack();
+            }
+            else
+            {
+                SetPaused(true);
+            }
+
             eventArgs.Handled = true;
             return;
         }
@@ -418,11 +436,13 @@ public partial class EmulatorWindow : Window
 
         if (paused)
         {
-            UpdateStateAvailability();
-            SetMenuSelection(0);
+            ShowMainPauseMenu();
         }
         else
         {
+            _pauseMenuMode = PauseMenuMode.Main;
+            MainPauseMenuPanel.IsVisible = true;
+            StateSlotMenuScroll.IsVisible = false;
             Focus();
         }
     }
@@ -449,13 +469,19 @@ public partial class EmulatorWindow : Window
 
     private void MoveMenuSelection(int direction)
     {
-        var buttons = MenuButtons;
+        var buttons = ActiveMenuButtons;
+        if (buttons.Length == 0)
+        {
+            return;
+        }
+
         for (var attempts = 0; attempts < buttons.Length; attempts++)
         {
             _menuIndex = (_menuIndex + direction + buttons.Length) % buttons.Length;
             if (buttons[_menuIndex].IsEffectivelyEnabled)
             {
                 buttons[_menuIndex].Focus();
+                buttons[_menuIndex].BringIntoView();
                 return;
             }
         }
@@ -463,23 +489,41 @@ public partial class EmulatorWindow : Window
 
     private void SetMenuSelection(int index)
     {
-        _menuIndex = index;
-        if (!MenuButtons[_menuIndex].IsEffectivelyEnabled)
+        var buttons = ActiveMenuButtons;
+        if (buttons.Length == 0)
+        {
+            _menuIndex = -1;
+            return;
+        }
+
+        _menuIndex = Math.Clamp(index, 0, buttons.Length - 1);
+        if (!buttons[_menuIndex].IsEffectivelyEnabled)
         {
             MoveMenuSelection(1);
             return;
         }
 
-        MenuButtons[_menuIndex].Focus();
+        buttons[_menuIndex].Focus();
+        buttons[_menuIndex].BringIntoView();
     }
 
     private void ExecuteSelectedMenuAction()
     {
+        if (_pauseMenuMode != PauseMenuMode.Main)
+        {
+            if (_menuIndex >= 0 && _menuIndex < _stateMenuActions.Count)
+            {
+                _stateMenuActions[_menuIndex]();
+            }
+
+            return;
+        }
+
         switch (_menuIndex)
         {
             case 0: Resume(); break;
-            case 1: SaveState(); break;
-            case 2: LoadState(); break;
+            case 1: OpenSaveStateMenu(); break;
+            case 2: OpenLoadStateMenu(); break;
             case 3: ResetGame(); break;
             case 4: Close(); break;
         }
@@ -487,7 +531,145 @@ public partial class EmulatorWindow : Window
 
     private void Resume() => SetPaused(false);
 
-    private void SaveState()
+    private void HandlePauseBack()
+    {
+        if (_pauseMenuMode == PauseMenuMode.Main)
+        {
+            Resume();
+            return;
+        }
+
+        if (_pauseMenuMode == PauseMenuMode.ConfirmOverwrite)
+        {
+            OpenSaveStateMenu();
+        }
+        else
+        {
+            ShowMainPauseMenu();
+        }
+    }
+
+    private void ShowMainPauseMenu(bool preserveStatus = false)
+    {
+        _pauseMenuMode = PauseMenuMode.Main;
+        PauseHeadingText.Text = "Paused";
+        MainPauseMenuPanel.IsVisible = true;
+        StateSlotMenuScroll.IsVisible = false;
+        StateSlotMenuPanel.Children.Clear();
+        _stateMenuActions.Clear();
+        UpdateStateAvailability(preserveStatus);
+        SetMenuSelection(0);
+    }
+
+    private void OpenSaveStateMenu()
+    {
+        try
+        {
+            var slots = StateCatalog.GetSlots();
+            BeginStateSlotMenu(PauseMenuMode.SaveSlots, "Save state");
+            AddStateSlotMenuChoice(
+                slots.Count == 0 ? "Save new state slot" : "New state slot",
+                SaveNewState);
+            foreach (var slot in slots)
+            {
+                var capturedSlot = slot;
+                AddStateSlotMenuChoice(
+                    capturedSlot.MenuText,
+                    () => OpenOverwriteConfirmation(capturedSlot));
+            }
+
+            StateStatusText.Text = slots.Count == 0
+                ? "NO SAVED STATES YET"
+                : "SELECT A SLOT TO OVERWRITE, OR CREATE A NEW ONE";
+            SetMenuSelection(0);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StateStatusText.Text = $"STATE LIST FAILED  ·  {exception.Message}".ToUpperInvariant();
+        }
+    }
+
+    private void OpenLoadStateMenu()
+    {
+        try
+        {
+            var slots = StateCatalog.GetSlots();
+            if (slots.Count == 0)
+            {
+                UpdateStateAvailability();
+                return;
+            }
+
+            BeginStateSlotMenu(PauseMenuMode.LoadSlots, "Load state");
+            foreach (var slot in slots)
+            {
+                var capturedSlot = slot;
+                AddStateSlotMenuChoice(capturedSlot.MenuText, () => LoadState(capturedSlot));
+            }
+
+            StateStatusText.Text = "SELECT A STATE TO LOAD";
+            SetMenuSelection(0);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StateStatusText.Text = $"STATE LIST FAILED  ·  {exception.Message}".ToUpperInvariant();
+        }
+    }
+
+    private void OpenOverwriteConfirmation(SaveStateSlot slot)
+    {
+        BeginStateSlotMenu(PauseMenuMode.ConfirmOverwrite, $"Overwrite slot {slot.Number}?");
+        AddStateSlotMenuChoice("Cancel", OpenSaveStateMenu);
+        AddStateSlotMenuChoice(
+            $"Overwrite slot {slot.Number}",
+            () => SaveState(slot),
+            danger: true);
+        StateStatusText.Text = "THE PREVIOUS STATE IN THIS SLOT WILL BE REPLACED";
+        SetMenuSelection(0);
+    }
+
+    private void BeginStateSlotMenu(PauseMenuMode mode, string heading)
+    {
+        _pauseMenuMode = mode;
+        PauseHeadingText.Text = heading;
+        MainPauseMenuPanel.IsVisible = false;
+        StateSlotMenuScroll.IsVisible = true;
+        StateSlotMenuScroll.Offset = Vector.Zero;
+        StateSlotMenuPanel.Children.Clear();
+        _stateMenuActions.Clear();
+    }
+
+    private void AddStateSlotMenuChoice(string label, Action action, bool danger = false)
+    {
+        var button = new Button
+        {
+            Content = label,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Stretch
+        };
+        button.Classes.Add("guide-item");
+        if (danger)
+        {
+            button.Classes.Add("danger");
+        }
+
+        button.Click += (_, _) => action();
+        StateSlotMenuPanel.Children.Add(button);
+        _stateMenuActions.Add(action);
+    }
+
+    private void SaveNewState()
+    {
+        try
+        {
+            SaveState(StateCatalog.CreateNextSlot());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StateStatusText.Text = $"SAVE FAILED  ·  {exception.Message}".ToUpperInvariant();
+        }
+    }
+
+    private void SaveState(SaveStateSlot slot)
     {
         try
         {
@@ -497,9 +679,10 @@ public partial class EmulatorWindow : Window
                 state = SaveMachineState();
             }
 
-            CrashSafeFile.WriteAllBytes(SaveStatePath, state);
-            StateStatusText.Text = $"STATE SAVED  ·  {DateTime.Now:h:mm tt}".ToUpperInvariant();
-            UpdateStateAvailability(preserveStatus: true);
+            CrashSafeFile.WriteAllBytes(slot.Path, state);
+            StateStatusText.Text =
+                $"SLOT {slot.Number} SAVED  ·  {DateTime.Now:h:mm tt}".ToUpperInvariant();
+            ShowMainPauseMenu(preserveStatus: true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -507,14 +690,14 @@ public partial class EmulatorWindow : Window
         }
     }
 
-    private void LoadState()
+    private void LoadState(SaveStateSlot slot)
     {
         try
         {
-            var candidates = CrashSafeFile.GetReadCandidates(SaveStatePath);
+            var candidates = CrashSafeFile.GetReadCandidates(slot.Path);
             if (candidates.Count == 0)
             {
-                throw new FileNotFoundException("No saved state is available.", SaveStatePath);
+                throw new FileNotFoundException("No saved state is available.", slot.Path);
             }
 
             byte[] rollbackState;
@@ -536,13 +719,14 @@ public partial class EmulatorWindow : Window
                         frame = GetCurrentMachineFrame();
                     }
 
-                    if (!string.Equals(candidate, SaveStatePath, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(candidate, slot.Path, StringComparison.OrdinalIgnoreCase))
                     {
-                        CrashSafeFile.CommitTemporary(SaveStatePath);
+                        CrashSafeFile.CommitTemporary(slot.Path);
                     }
 
                     PresentFrame(frame, 0);
-                    StateStatusText.Text = "STATE LOADED";
+                    StateStatusText.Text = $"SLOT {slot.Number} LOADED";
+                    ShowMainPauseMenu(preserveStatus: true);
                     return;
                 }
                 catch (Exception exception) when (
@@ -596,19 +780,27 @@ public partial class EmulatorWindow : Window
 
     private void UpdateStateAvailability(bool preserveStatus = false)
     {
-        var exists = _game is not null && CrashSafeFile.Exists(SaveStatePath);
-        LoadStateButton.IsEnabled = exists;
-        if (!preserveStatus)
+        try
         {
-            StateStatusText.Text = exists
-                ? $"SAVED STATE  ·  {File.GetLastWriteTime(GetAvailableSaveStatePath()):MMM d, h:mm tt}".ToUpperInvariant()
-                : "NO SAVED STATE YET";
+            IReadOnlyList<SaveStateSlot> slots = _game is null ? [] : StateCatalog.GetSlots();
+            LoadStateButton.IsEnabled = slots.Count > 0;
+            if (!preserveStatus)
+            {
+                StateStatusText.Text = slots.Count == 0
+                    ? "NO SAVED STATES YET"
+                    : $"{slots.Count} SAVED {(slots.Count == 1 ? "STATE" : "STATES")}  ·  " +
+                      $"LAST {slots.Max(slot => slot.LastWriteTime):MMM d, h:mm tt}".ToUpperInvariant();
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            LoadStateButton.IsEnabled = false;
+            if (!preserveStatus)
+            {
+                StateStatusText.Text = $"STATE LIST FAILED  ·  {exception.Message}".ToUpperInvariant();
+            }
         }
     }
-
-    private string GetAvailableSaveStatePath() => File.Exists(SaveStatePath)
-        ? SaveStatePath
-        : CrashSafeFile.GetTemporaryPath(SaveStatePath);
 
     private bool HasMachine => _nesMachine is not null || _snesMachine is not null;
 
@@ -733,9 +925,9 @@ public partial class EmulatorWindow : Window
 
     private void OnResumeClick(object? sender, RoutedEventArgs eventArgs) => Resume();
 
-    private void OnSaveStateClick(object? sender, RoutedEventArgs eventArgs) => SaveState();
+    private void OnSaveStateClick(object? sender, RoutedEventArgs eventArgs) => OpenSaveStateMenu();
 
-    private void OnLoadStateClick(object? sender, RoutedEventArgs eventArgs) => LoadState();
+    private void OnLoadStateClick(object? sender, RoutedEventArgs eventArgs) => OpenLoadStateMenu();
 
     private void OnResetGameClick(object? sender, RoutedEventArgs eventArgs) => ResetGame();
 
@@ -761,5 +953,13 @@ public partial class EmulatorWindow : Window
         }
 
         return false;
+    }
+
+    private enum PauseMenuMode
+    {
+        Main,
+        SaveSlots,
+        LoadSlots,
+        ConfirmOverwrite
     }
 }

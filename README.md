@@ -26,13 +26,12 @@ To use local artwork, place a `.png`, `.jpg`, `.jpeg`, `.webp`, or `.bmp` beside
 | Launch selected game | Enter | A |
 | Refresh library | F5 | X |
 | Open games folder | Click button | Y |
-| Toggle fullscreen | F11 | Menu |
 | Jump to Home / Library / Settings / Quit | F1 / F2 / F3 / F4 | - |
 | Quick-switch dashboard tabs | - | Left / right bumper |
 | Move between content, console tabs, and dashboard tabs | Up / Down | D-pad / left stick |
 | Quit from the Quit page | Enter | A |
 
-Home shows up to five genuinely played games, including total active play time, session count, and last-played time. Play history stays local in `%LOCALAPPDATA%\PixelDeck\play-history.json`; no sample activity is generated.
+The dashboard always runs fullscreen; use its Quit page to close PixelDeck. Home shows up to five genuinely played games, including total active play time, session count, and last-played time. Play history stays local in `%LOCALAPPDATA%\PixelDeck\play-history.json`; no sample activity is generated.
 
 The Library is a six-column gallery that adds rows and scrolls vertically as the collection grows. Library cards show each game's accumulated active play time. The heading totals play time for the currently selected Nintendo or Super Nintendo shelf, and the selected-game panel includes both total and last-played time.
 
@@ -40,7 +39,7 @@ Quitting opens a confirmation dialog with Cancel selected by default. Use the di
 
 The Settings page selects XInput controller 1-4 and provides separate mappings for Nintendo (A, B, Start, Select) and Super Nintendo (A, B, X, Y, L, R, Start, Select). Right Trigger is reserved in both systems: hold it for 2X play speed and release it to return immediately to normal speed. Nintendo also has an optional `Remove 8-sprite limit` enhancement. It renders sprites beyond the original console's per-scanline limit while leaving the hardware-accurate behavior as the default. NES accuracy controls select the common RP2C02G or an early RP2C02B-or-older PPU, opt into deterministic electrical OAM decay, and choose a stable or collision-prone CPU/PPU OAM phase. Settings are stored locally in `%LOCALAPPDATA%\PixelDeck\settings.json`.
 
-Inside the emulator, the Xbox/Guide button opens the pause menu. Escape and View + Menu are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save states are cartridge-validated and stored locally beneath `Games/.pixeldeck`.
+Inside the emulator, the Xbox/Guide button opens the pause menu. Escape and View + Menu are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save opens a per-game slot list with a new-slot choice and overwrite confirmation for existing slots. Load lists the game's existing slots and remains disabled when none exist. Legacy single-state files are preserved as numbered slots. Save states are cartridge-validated and stored locally beneath `Games/.pixeldeck`.
 
 ## NES core status
 

@@ -182,10 +182,6 @@ public partial class MainWindow : Window
                 _ = viewModel.RefreshAsync();
                 eventArgs.Handled = true;
                 break;
-            case Key.F11:
-                ToggleFullscreen();
-                eventArgs.Handled = true;
-                break;
         }
     }
 
@@ -224,11 +220,6 @@ public partial class MainWindow : Window
         {
             QuickSwitchPage(viewModel, 1);
             return;
-        }
-
-        if (presses.HasFlag(GamepadButton.Start))
-        {
-            ToggleFullscreen();
         }
 
         if (presses.HasFlag(GamepadButton.DPadUp))
@@ -481,9 +472,6 @@ public partial class MainWindow : Window
             _dashboardSounds.PlayNavigation();
         }
     }
-
-    private void ToggleFullscreen() =>
-        WindowState = WindowState == WindowState.FullScreen ? WindowState.Normal : WindowState.FullScreen;
 
     private void OnLaunchClick(object? sender, RoutedEventArgs eventArgs) => LaunchSelectedGame();
 

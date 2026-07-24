@@ -58,19 +58,33 @@
                                    FontSize="11"
                                    FontWeight="Bold"
                                    LetterSpacing="2.2" />
-                        <TextBlock Text="Paused"
+                        <TextBlock Name="PauseHeadingText"
+                                   Text="Paused"
                                    FontSize="38"
                                    FontWeight="Black"
                                    LetterSpacing="-1" />
                     </StackPanel>
 
-                    <StackPanel Grid.Row="1" VerticalAlignment="Center" Spacing="8">
-                        <Button Name="ResumeButton" Classes="guide-item" Content="Resume" Click="OnResumeClick" />
-                        <Button Name="SaveStateButton" Classes="guide-item" Content="Save state" Click="OnSaveStateClick" />
-                        <Button Name="LoadStateButton" Classes="guide-item" Content="Load state" Click="OnLoadStateClick" />
-                        <Button Name="ResetGameButton" Classes="guide-item" Content="Reset game" Click="OnResetGameClick" />
-                        <Button Name="QuitGameButton" Classes="guide-item danger" Content="Quit game" Click="OnQuitGameClick" />
-                    </StackPanel>
+                    <Grid Grid.Row="1">
+                        <StackPanel Name="MainPauseMenuPanel"
+                                    VerticalAlignment="Center"
+                                    Spacing="8">
+                            <Button Name="ResumeButton" Classes="guide-item" Content="Resume" Click="OnResumeClick" />
+                            <Button Name="SaveStateButton" Classes="guide-item" Content="Save state" Click="OnSaveStateClick" />
+                            <Button Name="LoadStateButton" Classes="guide-item" Content="Load state" Click="OnLoadStateClick" />
+                            <Button Name="ResetGameButton" Classes="guide-item" Content="Reset game" Click="OnResetGameClick" />
+                            <Button Name="QuitGameButton" Classes="guide-item danger" Content="Quit game" Click="OnQuitGameClick" />
+                        </StackPanel>
+
+                        <ScrollViewer Name="StateSlotMenuScroll"
+                                      IsVisible="False"
+                                      VerticalAlignment="Center"
+                                      MaxHeight="620"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Name="StateSlotMenuPanel" Spacing="8" />
+                        </ScrollViewer>
+                    </Grid>
 
                     <TextBlock Name="StateStatusText"
                                Grid.Row="2"
