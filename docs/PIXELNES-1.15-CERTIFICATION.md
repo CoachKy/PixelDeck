@@ -1,8 +1,9 @@
 # PixelNES 1.15 certification
 
-PixelNES `1.15.021` is the MMC5 expansion-audio feature generation. The
+PixelNES `1.15.022` is the MMC5 expansion-audio feature generation. The
 feature number remains 15, while iteration 21 continues the cumulative
-PixelNES implementation count with adaptive host/audio pacing.
+PixelNES implementation count with adaptive host/audio pacing and iteration
+22 adds collection-wide compatibility evidence.
 
 ## Compatibility envelope
 
@@ -11,8 +12,8 @@ This release retains the PixelNES 1.14 contract:
 - NTSC timing and two standard NES controllers.
 - The same 53 mapper/submapper variants across mappers
   0/1/2/3/4/5/7/8/9/10/11/13/15/19/21/22/23/32/33/34/41/64/66/69/71/75/79/90/113/118/119/228/232/240.
-- The July 24 collection snapshot of 822 valid local NES images continues to
-  resolve to implemented, launchable mapper and console configurations.
+- The July 25 collection snapshot of 818 local files (814 unique images)
+  resolves to implemented, launchable mapper and console configurations.
 
 The complete mapper table and legacy-header policy remain recorded in
 [PixelNES 1.12 certification](PIXELNES-1.12-CERTIFICATION.md). PixelNES
@@ -87,10 +88,18 @@ Validation completed on July 25, 2026:
 | --- | ---: |
 | Focused MMC5 mapper/audio regressions | 5/5 pass |
 | Adaptive pacing regressions in Debug and Release | 4/4 pass |
-| Deterministic Debug suite excluding local ROM walks | 234/234 pass |
+| Deterministic Release suite excluding local ROM walks | 241/241 pass |
 | River City Ransom 602-frame Debug route | Pass |
 | Blargg CPU/APU/PPU and MMC3 pinned catalog | 66/66 ROMs pass |
 | Windows/Linux x64/Raspberry Pi ARM64 build gates | Pass |
+| 818-image, 600-frame collection routes | 730 pass, 88 review warnings |
+| Collection-route failures / unsupported / invalid | 0 / 0 / 0 |
+| Exact collection save-state replays / dropped audio | 818/818 / 0 |
+| Slowest collection core / largest p99 frame | 304.9 FPS / 8.829 ms |
+
+The collection runner and interpretation of its bounded evidence are
+documented in
+[the PixelNES compatibility laboratory guide](PIXELNES-COMPATIBILITY-LAB.md).
 
 ## Remaining limits
 
@@ -110,4 +119,10 @@ Run the opt-in full local release certification with:
 
 ```powershell
 ./scripts/Test-PixelNesRelease.ps1
+```
+
+Run the non-stopping collection-wide compatibility audit with:
+
+```powershell
+./scripts/Test-PixelNesCompatibility.ps1
 ```

@@ -509,7 +509,8 @@ public partial class EmulatorWindow : Window
 
         if (_audioOutput is not null)
         {
-            _audioOutput.IsPaused = _isPaused || enabled;
+            _audioOutput.PlaybackRate = multiplier;
+            _audioOutput.IsPaused = _isPaused;
         }
 
         lock (_machineLock)

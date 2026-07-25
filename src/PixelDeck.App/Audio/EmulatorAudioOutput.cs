@@ -61,6 +61,11 @@ internal sealed class EmulatorAudioOutput : IDisposable
         set => _provider.IsPaused = value;
     }
 
+    public int PlaybackRate
+    {
+        set => _provider.PlaybackRate = value;
+    }
+
     public void Dispose()
     {
         _provider.ClearMachine();
@@ -75,7 +80,10 @@ internal sealed class EmulatorAudioOutput : IDisposable
         private SnesMachine? _snesMachine;
         private int _isPaused;
         private int _hasStarted;
+        private int _playbackRate = 1;
+        private int _sourceFramePhase;
         private long _underrunSampleCount;
+        private float[] _rateSourceBuffer = new float[8_192];
 
         public EmulatorSampleProvider(NesMachine machine)
         {
@@ -96,6 +104,18 @@ internal sealed class EmulatorAudioOutput : IDisposable
         public bool IsPaused
         {
             set => Volatile.Write(ref _isPaused, value ? 1 : 0);
+        }
+
+        public int PlaybackRate
+        {
+            set
+            {
+                var normalizedRate = value >= 2 ? 2 : 1;
+                if (Interlocked.Exchange(ref _playbackRate, normalizedRate) != normalizedRate)
+                {
+                    Volatile.Write(ref _sourceFramePhase, 0);
+                }
+            }
         }
 
         public void SetMachine(NesMachine machine)
@@ -132,16 +152,10 @@ internal sealed class EmulatorAudioOutput : IDisposable
             var samplesRead = 0;
             if (Volatile.Read(ref _isPaused) == 0)
             {
-                var nesMachine = Volatile.Read(ref _nesMachine);
-                var snesMachine = Volatile.Read(ref _snesMachine);
-                if (nesMachine is not null)
-                {
-                    samplesRead = nesMachine.ReadAudioSamples(destination);
-                }
-                else if (snesMachine is not null)
-                {
-                    samplesRead = snesMachine.ReadAudioSamples(destination);
-                }
+                var playbackRate = Volatile.Read(ref _playbackRate);
+                samplesRead = playbackRate == 1
+                    ? ReadMachineSamples(destination)
+                    : ReadRateConvertedSamples(destination, playbackRate);
 
                 if (samplesRead > 0)
                 {
@@ -156,6 +170,41 @@ internal sealed class EmulatorAudioOutput : IDisposable
 
             destination[samplesRead..].Clear();
             return count;
+        }
+
+        private int ReadRateConvertedSamples(Span<float> destination, int playbackRate)
+        {
+            var requiredValues = PlaybackRateAudioConverter.GetRequiredSourceValueCount(
+                destination.Length,
+                WaveFormat.Channels,
+                playbackRate);
+            if (_rateSourceBuffer.Length < requiredValues)
+            {
+                Array.Resize(ref _rateSourceBuffer, requiredValues);
+            }
+
+            var sourceValues = ReadMachineSamples(_rateSourceBuffer.AsSpan(0, requiredValues));
+            var phase = Volatile.Read(ref _sourceFramePhase);
+            var convertedValues = PlaybackRateAudioConverter.Convert(
+                _rateSourceBuffer.AsSpan(0, sourceValues),
+                destination,
+                WaveFormat.Channels,
+                playbackRate,
+                ref phase);
+            Volatile.Write(ref _sourceFramePhase, phase);
+            return convertedValues;
+        }
+
+        private int ReadMachineSamples(Span<float> destination)
+        {
+            var nesMachine = Volatile.Read(ref _nesMachine);
+            if (nesMachine is not null)
+            {
+                return nesMachine.ReadAudioSamples(destination);
+            }
+
+            var snesMachine = Volatile.Read(ref _snesMachine);
+            return snesMachine?.ReadAudioSamples(destination) ?? 0;
         }
     }
 }

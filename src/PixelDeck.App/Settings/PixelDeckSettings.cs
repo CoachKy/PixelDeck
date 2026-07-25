@@ -27,7 +27,7 @@ public sealed class PixelDeckSettings
 
     public GamepadButton PlayerTwoSelectButton { get; set; } = GamepadButton.Back;
 
-    public bool RemoveNesSpriteLimit { get; set; }
+    public bool RemoveNesSpriteLimit { get; set; } = true;
 
     public bool HideNesHorizontalOverscan { get; set; } = true;
 

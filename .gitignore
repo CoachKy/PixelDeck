@@ -25,3 +25,6 @@
 
 # Local cross-platform publish output used for release validation.
 /artifacts/validation/*
+
+# Per-ROM compatibility reports and captures contain local collection details.
+/artifacts/nes-compatibility/*
