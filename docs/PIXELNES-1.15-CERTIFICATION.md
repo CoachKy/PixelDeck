@@ -1,8 +1,8 @@
 # PixelNES 1.15 certification
 
-PixelNES `1.15.020` is the MMC5 expansion-audio feature generation. The
-feature number remains 15, while iteration 20 continues the cumulative
-PixelNES implementation count with a development-build performance fix.
+PixelNES `1.15.021` is the MMC5 expansion-audio feature generation. The
+feature number remains 15, while iteration 21 continues the cumulative
+PixelNES implementation count with adaptive host/audio pacing.
 
 ## Compatibility envelope
 
@@ -50,6 +50,19 @@ The synthetic worst-case 300-frame renderer gate passes in Debug, and the
 local 602-frame River City Ransom mapper-4 smoke route completes comfortably
 faster than real time. Release builds retain their existing headroom.
 
+## Adaptive host/audio pacing
+
+The frontend retains the NES's `60.0988` Hz absolute frame deadline and uses
+the buffered 48 kHz audio duration as a slow secondary timing reference.
+Normal-speed Windows playback targets 40 ms of core-side audio, ignores an
+8 ms deadband, smooths callback jitter, and bounds host-wait correction to
+0.5% in either direction. The correction changes only how long the host waits
+between complete frames; CPU, PPU, APU, mapper, and sample work per frame are
+unchanged.
+
+Unavailable audio and 2X fast-forward use the exact uncorrected frame
+interval. Pause resets accumulated feedback before playback resumes.
+
 ## Reference implementations
 
 The implementation was behaviorally cross-checked against:
@@ -73,7 +86,9 @@ Validation completed on July 25, 2026:
 | Gate | Result |
 | --- | ---: |
 | Focused MMC5 mapper/audio regressions | 5/5 pass |
-| Deterministic suite excluding local ROM walks | 215/215 pass |
+| Adaptive pacing regressions in Debug and Release | 4/4 pass |
+| Deterministic Debug suite excluding local ROM walks | 234/234 pass |
+| River City Ransom 602-frame Debug route | Pass |
 | Blargg CPU/APU/PPU and MMC3 pinned catalog | 66/66 ROMs pass |
 | Windows/Linux x64/Raspberry Pi ARM64 build gates | Pass |
 

@@ -27,6 +27,7 @@ public partial class EmulatorWindow : Window
     private readonly List<Action> _stateMenuActions = [];
     private readonly object _machineLock = new();
     private readonly object _presentationLock = new();
+    private readonly AudioBufferSynchronizer _audioBufferSynchronizer = new();
     private GameEntry? _game;
     private SaveStateCatalog? _saveStateCatalog;
     private Task? _emulationTask;
@@ -150,6 +151,7 @@ public partial class EmulatorWindow : Window
             {
                 if (_isPaused)
                 {
+                    _audioBufferSynchronizer.Reset();
                     nextFrameAt = clock.Elapsed;
                     await Task.Delay(16, cancellationToken);
                     continue;
@@ -195,7 +197,7 @@ public partial class EmulatorWindow : Window
                     nextFrameAt = clock.Elapsed;
                 }
 
-                nextFrameAt += TimeSpan.FromSeconds(1 / (MachineFramesPerSecond * currentRate));
+                nextFrameAt += GetFrameInterval(currentRate);
                 var remaining = nextFrameAt - clock.Elapsed;
                 if (remaining > TimeSpan.FromMilliseconds(1))
                 {
@@ -861,6 +863,20 @@ public partial class EmulatorWindow : Window
         ?? throw new InvalidOperationException("The emulator is not running.");
 
     private double MachineFramesPerSecond => _snesMachine?.FramesPerSecond ?? 60.0988;
+
+    private TimeSpan GetFrameInterval(int playbackRate)
+    {
+        var useNesAudioClock =
+            _nesMachine is not null &&
+            _audioOutput?.IsAvailable == true;
+        return _audioBufferSynchronizer.GetFrameInterval(
+            MachineFramesPerSecond,
+            playbackRate,
+            useNesAudioClock,
+            _nesMachine?.BufferedAudioSampleCount ?? 0,
+            NesMachine.AudioSampleRate,
+            channels: 1);
+    }
 
     private void LoadMachine()
     {
