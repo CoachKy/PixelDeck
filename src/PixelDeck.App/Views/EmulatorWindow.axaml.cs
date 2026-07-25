@@ -21,7 +21,8 @@ public partial class EmulatorWindow : Window
     private WriteableBitmap? _frameBitmap;
     private readonly CancellationTokenSource _cancellation = new();
     private readonly DispatcherTimer _inputTimer;
-    private readonly WindowsGamepad _gamepad = new();
+    private readonly GamepadReader _gamepad = new();
+    private readonly GamepadReader _playerTwoGamepad = new();
     private readonly HashSet<Key> _pressedKeys = [];
     private readonly List<Action> _stateMenuActions = [];
     private readonly object _machineLock = new();
@@ -34,7 +35,9 @@ public partial class EmulatorWindow : Window
     private EmulatorAudioOutput? _audioOutput;
     private Stopwatch? _playSession;
     private GamepadButton _previousGamepadButtons;
+    private GamepadButton _previousPlayerTwoGamepadButtons;
     private bool _pauseChordHeld;
+    private bool _playerTwoPauseChordHeld;
     private volatile bool _isPaused;
     private bool _screenshotSaved;
     private int _menuIndex;
@@ -80,7 +83,9 @@ public partial class EmulatorWindow : Window
                 throw new InvalidOperationException("No game was selected.");
             }
 
-            _gamepad.UserIndex = PixelDeckSettingsStore.Current.ControllerIndex;
+            var settings = PixelDeckSettingsStore.Current;
+            _gamepad.UserIndex = settings.ControllerIndex;
+            _playerTwoGamepad.UserIndex = settings.PlayerTwoControllerIndex;
             LoadMachine();
             _frameBitmap = new WriteableBitmap(
                 new PixelSize(MachineWidth, MachineHeight),
@@ -296,12 +301,25 @@ public partial class EmulatorWindow : Window
 
     private void PollInput(object? sender, EventArgs eventArgs)
     {
-        var gamepad = _gamepad.ReadButtons();
-        var newPresses = gamepad & ~_previousGamepadButtons;
-        var pauseChord = gamepad.HasFlag(GamepadButton.Back) && gamepad.HasFlag(GamepadButton.Start);
-        var pauseRequested = newPresses.HasFlag(GamepadButton.Guide) || (pauseChord && !_pauseChordHeld);
-        _pauseChordHeld = pauseChord;
-        _previousGamepadButtons = gamepad;
+        var playerOneGamepad = _gamepad.ReadButtons();
+        var playerTwoGamepad = _playerTwoGamepad.ReadButtons();
+        var playerOneNewPresses = playerOneGamepad & ~_previousGamepadButtons;
+        var playerTwoNewPresses = playerTwoGamepad & ~_previousPlayerTwoGamepadButtons;
+        var playerOnePauseChord =
+            playerOneGamepad.HasFlag(GamepadButton.Back) &&
+            playerOneGamepad.HasFlag(GamepadButton.Start);
+        var playerTwoPauseChord =
+            playerTwoGamepad.HasFlag(GamepadButton.Back) &&
+            playerTwoGamepad.HasFlag(GamepadButton.Start);
+        var pauseRequested =
+            playerOneNewPresses.HasFlag(GamepadButton.Guide) ||
+            playerTwoNewPresses.HasFlag(GamepadButton.Guide) ||
+            (playerOnePauseChord && !_pauseChordHeld) ||
+            (playerTwoPauseChord && !_playerTwoPauseChordHeld);
+        _pauseChordHeld = playerOnePauseChord;
+        _playerTwoPauseChordHeld = playerTwoPauseChord;
+        _previousGamepadButtons = playerOneGamepad;
+        _previousPlayerTwoGamepadButtons = playerTwoGamepad;
 
         if (pauseRequested)
         {
@@ -309,10 +327,14 @@ public partial class EmulatorWindow : Window
             return;
         }
 
-        SetFastForward(!_isPaused && gamepad.HasFlag(GamepadButton.RightTrigger));
+        SetFastForward(
+            !_isPaused &&
+            (playerOneGamepad.HasFlag(GamepadButton.RightTrigger) ||
+             playerTwoGamepad.HasFlag(GamepadButton.RightTrigger)));
 
         if (_isPaused)
         {
+            var newPresses = playerOneNewPresses | playerTwoNewPresses;
             if (newPresses.HasFlag(GamepadButton.DPadUp)) MoveMenuSelection(-1);
             if (newPresses.HasFlag(GamepadButton.DPadDown)) MoveMenuSelection(1);
             if (newPresses.HasFlag(GamepadButton.A)) ExecuteSelectedMenuAction();
@@ -330,35 +352,55 @@ public partial class EmulatorWindow : Window
             var settings = PixelDeckSettingsStore.Current;
             if (_nesMachine is not null)
             {
-                var buttons = NesButton.None;
-                if (_pressedKeys.Contains(Key.Z) || gamepad.HasFlag(settings.AButton)) buttons |= NesButton.A;
-                if (_pressedKeys.Contains(Key.X) || gamepad.HasFlag(settings.BButton)) buttons |= NesButton.B;
-                if (_pressedKeys.Contains(Key.Enter) || gamepad.HasFlag(settings.StartButton)) buttons |= NesButton.Start;
-                if (_pressedKeys.Contains(Key.LeftShift) || _pressedKeys.Contains(Key.RightShift) || gamepad.HasFlag(settings.SelectButton)) buttons |= NesButton.Select;
-                if (_pressedKeys.Contains(Key.Up) || gamepad.HasFlag(GamepadButton.DPadUp)) buttons |= NesButton.Up;
-                if (_pressedKeys.Contains(Key.Down) || gamepad.HasFlag(GamepadButton.DPadDown)) buttons |= NesButton.Down;
-                if (_pressedKeys.Contains(Key.Left) || gamepad.HasFlag(GamepadButton.DPadLeft)) buttons |= NesButton.Left;
-                if (_pressedKeys.Contains(Key.Right) || gamepad.HasFlag(GamepadButton.DPadRight)) buttons |= NesButton.Right;
-                _nesMachine.SetControllerState(1, buttons);
+                var playerOneButtons =
+                    GamepadInputMapper.ToNesButtons(playerOneGamepad, settings) |
+                    ReadNesKeyboardButtons();
+                var playerTwoButtons = GamepadInputMapper.ToNesButtons(playerTwoGamepad, settings);
+                _nesMachine.SetControllerState(1, playerOneButtons);
+                _nesMachine.SetControllerState(2, playerTwoButtons);
             }
             else if (_snesMachine is not null)
             {
-                var buttons = SnesButton.None;
-                if (_pressedKeys.Contains(Key.Z) || gamepad.HasFlag(settings.SnesAButton)) buttons |= SnesButton.A;
-                if (_pressedKeys.Contains(Key.X) || gamepad.HasFlag(settings.SnesBButton)) buttons |= SnesButton.B;
-                if (_pressedKeys.Contains(Key.A) || gamepad.HasFlag(settings.SnesXButton)) buttons |= SnesButton.X;
-                if (_pressedKeys.Contains(Key.S) || gamepad.HasFlag(settings.SnesYButton)) buttons |= SnesButton.Y;
-                if (_pressedKeys.Contains(Key.Q) || gamepad.HasFlag(settings.SnesLButton)) buttons |= SnesButton.L;
-                if (_pressedKeys.Contains(Key.W) || gamepad.HasFlag(settings.SnesRButton)) buttons |= SnesButton.R;
-                if (_pressedKeys.Contains(Key.Enter) || gamepad.HasFlag(settings.SnesStartButton)) buttons |= SnesButton.Start;
-                if (_pressedKeys.Contains(Key.LeftShift) || _pressedKeys.Contains(Key.RightShift) || gamepad.HasFlag(settings.SnesSelectButton)) buttons |= SnesButton.Select;
-                if (_pressedKeys.Contains(Key.Up) || gamepad.HasFlag(GamepadButton.DPadUp)) buttons |= SnesButton.Up;
-                if (_pressedKeys.Contains(Key.Down) || gamepad.HasFlag(GamepadButton.DPadDown)) buttons |= SnesButton.Down;
-                if (_pressedKeys.Contains(Key.Left) || gamepad.HasFlag(GamepadButton.DPadLeft)) buttons |= SnesButton.Left;
-                if (_pressedKeys.Contains(Key.Right) || gamepad.HasFlag(GamepadButton.DPadRight)) buttons |= SnesButton.Right;
-                _snesMachine.SetControllerState(1, buttons);
+                var playerOneButtons =
+                    GamepadInputMapper.ToSnesButtons(playerOneGamepad, settings) |
+                    ReadSnesKeyboardButtons();
+                var playerTwoButtons = GamepadInputMapper.ToSnesButtons(playerTwoGamepad, settings);
+                _snesMachine.SetControllerState(1, playerOneButtons);
+                _snesMachine.SetControllerState(2, playerTwoButtons);
             }
         }
+    }
+
+    private NesButton ReadNesKeyboardButtons()
+    {
+        var buttons = NesButton.None;
+        if (_pressedKeys.Contains(Key.Z)) buttons |= NesButton.A;
+        if (_pressedKeys.Contains(Key.X)) buttons |= NesButton.B;
+        if (_pressedKeys.Contains(Key.Enter)) buttons |= NesButton.Start;
+        if (_pressedKeys.Contains(Key.LeftShift) || _pressedKeys.Contains(Key.RightShift)) buttons |= NesButton.Select;
+        if (_pressedKeys.Contains(Key.Up)) buttons |= NesButton.Up;
+        if (_pressedKeys.Contains(Key.Down)) buttons |= NesButton.Down;
+        if (_pressedKeys.Contains(Key.Left)) buttons |= NesButton.Left;
+        if (_pressedKeys.Contains(Key.Right)) buttons |= NesButton.Right;
+        return buttons;
+    }
+
+    private SnesButton ReadSnesKeyboardButtons()
+    {
+        var buttons = SnesButton.None;
+        if (_pressedKeys.Contains(Key.Z)) buttons |= SnesButton.A;
+        if (_pressedKeys.Contains(Key.X)) buttons |= SnesButton.B;
+        if (_pressedKeys.Contains(Key.A)) buttons |= SnesButton.X;
+        if (_pressedKeys.Contains(Key.S)) buttons |= SnesButton.Y;
+        if (_pressedKeys.Contains(Key.Q)) buttons |= SnesButton.L;
+        if (_pressedKeys.Contains(Key.W)) buttons |= SnesButton.R;
+        if (_pressedKeys.Contains(Key.Enter)) buttons |= SnesButton.Start;
+        if (_pressedKeys.Contains(Key.LeftShift) || _pressedKeys.Contains(Key.RightShift)) buttons |= SnesButton.Select;
+        if (_pressedKeys.Contains(Key.Up)) buttons |= SnesButton.Up;
+        if (_pressedKeys.Contains(Key.Down)) buttons |= SnesButton.Down;
+        if (_pressedKeys.Contains(Key.Left)) buttons |= SnesButton.Left;
+        if (_pressedKeys.Contains(Key.Right)) buttons |= SnesButton.Right;
+        return buttons;
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs eventArgs)
@@ -426,7 +468,9 @@ public partial class EmulatorWindow : Window
         lock (_machineLock)
         {
             _nesMachine?.SetControllerState(1, NesButton.None);
+            _nesMachine?.SetControllerState(2, NesButton.None);
             _snesMachine?.SetControllerState(1, SnesButton.None);
+            _snesMachine?.SetControllerState(2, SnesButton.None);
             if (paused)
             {
                 _nesMachine?.ClearAudioSamples();

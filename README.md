@@ -20,9 +20,19 @@ To use local artwork, place a `.png`, `.jpg`, `.jpeg`, `.webp`, or `.bmp` beside
 
 Game titles are resolved locally. PixelDeck prefers an exact SHA-1/CRC match from an offline catalog in `Games/.pixeldeck/metadata`, then a cartridge's embedded title, and uses the filename only when neither source can identify the image. Standard ClrMamePro `.dat` and Logiqx XML catalogs are supported, as is PixelDeck's small JSON catalog format. NES matching checks both the complete iNES file and its headerless PRG/CHR payload, while SNES matching checks both copier-headered and headerless forms. Resolved results are cached in `Games/.pixeldeck/title-cache.json`, so unchanged games are not rehashed on every refresh. PixelDeck never contacts a naming server. See [ROM title metadata](docs/ROM-TITLE-METADATA.md) for details.
 
+### Raspberry Pi ARM64
+
+Create a framework-dependent Raspberry Pi build from the repository root:
+
+```powershell
+dotnet publish src/PixelDeck.App/PixelDeck.App.csproj -c Release -r linux-arm64 --self-contained false -o publish/linux-arm64
+```
+
+Copy the published directory and the `Games` directory to a 64-bit Raspberry Pi desktop with the .NET 10 runtime, then launch `PixelDeck.App` from that directory. SDL3 and its ARM64 native library are included in the publish. DualSense and Xbox-compatible controllers can use USB or an operating-system Bluetooth pairing. If Linux sees a controller but PixelDeck does not, give the desktop user read access to the distribution's input devices through its normal udev/input-group configuration, reconnect the controller, and restart PixelDeck. The ARM64 publish is build-validated; final display, audio, Bluetooth, thermal, and frame-pacing certification still requires a run on the target Pi.
+
 ## Controls
 
-| Action | Keyboard | XInput controller |
+| Action | Keyboard | Controller |
 | --- | --- | --- |
 | Browse games | Arrow keys | D-pad / left stick |
 | Open alphabetical index | Left from a gallery row's first game | D-pad left from a gallery row's first game |
@@ -41,9 +51,11 @@ The Library uses one reusable six-column gallery for every console shelf. A comp
 
 Quitting opens a confirmation dialog with Cancel selected by default. Use the directional controls to choose, A or Enter to confirm the focused choice, and B or Escape to cancel. The window close button uses the same confirmation.
 
-The Settings page selects XInput controller 1-4 and provides separate mappings for Nintendo (A, B, Start, Select) and Super Nintendo (A, B, X, Y, L, R, Start, Select). Right Trigger is reserved in both systems: hold it for 2X play speed and release it to return immediately to normal speed. Nintendo also has an optional `Remove 8-sprite limit` enhancement. It renders sprites beyond the original console's per-scanline limit while leaving the hardware-accurate behavior as the default. NES accuracy controls select the common RP2C02G or an early RP2C02B-or-older PPU, opt into deterministic electrical OAM decay, and choose a stable or collision-prone CPU/PPU OAM phase. Settings are stored locally in `%LOCALAPPDATA%\PixelDeck\settings.json`.
+The Settings page selects distinct Player 1 and Player 2 controllers from four stable runtime slots and provides shared mappings for Nintendo (A, B, Start, Select) and Super Nintendo (A, B, X, Y, L, R, Start, Select). PixelDeck uses SDL's standardized gamepad layer on Windows and Linux, including Raspberry Pi ARM64, so Xbox-compatible and PlayStation DualSense controllers can be mixed. Face-button labels show both layouts, such as South (A / Cross), and Settings displays each detected controller's name and the active input backend. XInput remains a Windows fallback if SDL cannot initialize. The dashboard header continuously shows how many controllers are connected, while Settings reports the readiness of the assigned P1 and P2 slots. Existing slots stay stable while PixelDeck is running, including through ordinary hot-plug changes.
 
-Inside the emulator, the Xbox/Guide button opens the pause menu. Escape and View + Menu are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save opens a per-game slot list with a new-slot choice and overwrite confirmation for existing slots. Load lists the game's existing slots and remains disabled when none exist. Legacy single-state files are preserved as numbered slots. Save states are cartridge-validated and stored locally beneath `Games/.pixeldeck`.
+Both local controller ports are active during NES and SNES gameplay; Player 1 controls the dashboard, while either controller can open and operate the in-game pause menu. Right Trigger / R2 is reserved in both systems: hold it on either controller for 2X play speed and release it to return immediately to normal speed. Nintendo also has an optional `Remove 8-sprite limit` enhancement. It renders sprites beyond the original console's per-scanline limit while leaving the hardware-accurate behavior as the default. NES accuracy controls select the common RP2C02G or an early RP2C02B-or-older PPU, opt into deterministic electrical OAM decay, and choose a stable or collision-prone CPU/PPU OAM phase. Settings are stored locally in `%LOCALAPPDATA%\PixelDeck\settings.json`.
+
+Inside the emulator, the controller's system button (Xbox Guide or PlayStation PS) opens the pause menu. Escape and Select + Start (View + Menu or Create + Options) are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save opens a per-game slot list with a new-slot choice and overwrite confirmation for existing slots. Load lists the game's existing slots and remains disabled when none exist. Legacy single-state files are preserved as numbered slots. Save states are cartridge-validated and stored locally beneath `Games/.pixeldeck`.
 
 ## NES core status
 

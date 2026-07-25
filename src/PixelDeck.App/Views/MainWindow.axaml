@@ -231,6 +231,13 @@
                                FontSize="11"
                                FontWeight="Bold"
                                LetterSpacing="1.8" />
+                    <TextBlock Text="{Binding ConnectedControllerCountText}"
+                               Margin="0,4,0,0"
+                               HorizontalAlignment="Right"
+                               Foreground="#65B7FF"
+                               FontSize="10"
+                               FontWeight="Bold"
+                               LetterSpacing="1.1" />
                 </StackPanel>
             </Grid>
 
@@ -619,18 +626,28 @@
                         Background="#B00C1727">
                     <StackPanel Spacing="18">
                         <StackPanel Spacing="6">
-                            <TextBlock Text="ACTIVE CONTROLLER"
+                            <TextBlock Text="ACTIVE CONTROLLERS"
                                        Foreground="#6BB9FF"
                                        FontSize="10"
                                        FontWeight="Bold"
                                        LetterSpacing="1.8" />
-                            <TextBlock Text="Choose the XInput controller PixelDeck uses for player one."
+                            <TextBlock Text="Choose separate controllers for each player."
                                        Foreground="#8FA0B5"
                                        FontSize="13"
                                        TextWrapping="Wrap"
                                        LineHeight="19" />
+                            <TextBlock Text="{Binding ControllerInputBackendText}"
+                                       Foreground="#65B7FF"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       LetterSpacing="1.1" />
                         </StackPanel>
 
+                        <TextBlock Text="PLAYER ONE"
+                                   Foreground="#718399"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   LetterSpacing="1.3" />
                         <ComboBox Name="ControllerSlotPicker"
                                   ItemsSource="{Binding ControllerSlots}"
                                   SelectedItem="{Binding SelectedControllerSlot, Mode=TwoWay}"
@@ -643,8 +660,25 @@
                             </ComboBox.ItemTemplate>
                         </ComboBox>
 
+                        <TextBlock Text="PLAYER TWO"
+                                   Foreground="#718399"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   LetterSpacing="1.3" />
+                        <ComboBox Name="PlayerTwoControllerSlotPicker"
+                                  ItemsSource="{Binding ControllerSlots}"
+                                  SelectedItem="{Binding SelectedPlayerTwoControllerSlot, Mode=TwoWay}"
+                                  HorizontalAlignment="Stretch"
+                                  MinHeight="42">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="vm:ControllerSlotOption">
+                                    <TextBlock Text="{Binding Label}" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+
                         <Border Height="1" Background="#18FFFFFF" />
-                        <TextBlock Text="The selected controller is used by both the dashboard and emulator. The Xbox button always opens the in-game menu."
+                        <TextBlock Text="Player one controls the dashboard. Both controllers use the mappings shown here, and either controller's system/Guide button opens the in-game menu."
                                    Foreground="#718399"
                                    FontSize="12"
                                    TextWrapping="Wrap"

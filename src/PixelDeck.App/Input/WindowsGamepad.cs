@@ -53,6 +53,20 @@ internal sealed class WindowsGamepad
 
     public bool IsConnected => TryReadState(out _);
 
+    public static GamepadConnections ReadConnections()
+    {
+        var connectedMask = 0;
+        for (var userIndex = 0; userIndex < 4; userIndex++)
+        {
+            if (TryReadState(userIndex, out _))
+            {
+                connectedMask |= 1 << userIndex;
+            }
+        }
+
+        return new GamepadConnections(connectedMask);
+    }
+
     public GamepadButton ReadNewPresses()
     {
         return ReadNewPresses(out _);
@@ -170,13 +184,18 @@ internal sealed class WindowsGamepad
 
     private bool TryReadState(out XInputState state)
     {
+        return TryReadState(UserIndex, out state);
+    }
+
+    private static bool TryReadState(int userIndex, out XInputState state)
+    {
         state = default;
-        if (!OperatingSystem.IsWindows() || UserIndex is < 0 or > 3)
+        if (!OperatingSystem.IsWindows() || userIndex is < 0 or > 3)
         {
             return false;
         }
 
-        return (ExtendedGetState?.Invoke((uint)UserIndex, out state) ?? XInputGetState((uint)UserIndex, out state)) == 0;
+        return (ExtendedGetState?.Invoke((uint)userIndex, out state) ?? XInputGetState((uint)userIndex, out state)) == 0;
     }
 
     private static XInputGetStateDelegate? LoadExtendedGetState()

@@ -18,7 +18,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _gamepadTimer;
     private readonly DispatcherTimer _libraryRefreshTimer;
     private readonly DashboardSoundPlayer _dashboardSounds = new();
-    private readonly WindowsGamepad _gamepad = new();
+    private readonly GamepadReader _gamepad = new();
+    private readonly GamepadReader _playerTwoGamepad = new();
     private readonly HeldButtonRepeater _libraryIndexVerticalRepeater =
         new(GamepadButton.DPadUp | GamepadButton.DPadDown);
     private FileSystemWatcher? _watcher;
@@ -57,7 +58,8 @@ public partial class MainWindow : Window
         await viewModel.RefreshAsync();
         ConfigureWatcher(viewModel.GamesFolder);
         _gamepad.UserIndex = viewModel.SelectedControllerSlot.Index;
-        viewModel.UpdateControllerStatus(_gamepad.IsConnected);
+        _playerTwoGamepad.UserIndex = viewModel.SelectedPlayerTwoControllerSlot.Index;
+        UpdateControllerConnections(viewModel);
         _clockTimer.Start();
         _gamepadTimer.Start();
         FocusPageContent(viewModel);
@@ -235,7 +237,8 @@ public partial class MainWindow : Window
         }
 
         _gamepad.UserIndex = viewModel.SelectedControllerSlot.Index;
-        viewModel.UpdateControllerStatus(_gamepad.IsConnected);
+        _playerTwoGamepad.UserIndex = viewModel.SelectedPlayerTwoControllerSlot.Index;
+        UpdateControllerConnections(viewModel);
         var presses = _gamepad.ReadNewPresses(out var buttons);
 
         if (_isQuitConfirmationVisible)
@@ -389,6 +392,22 @@ public partial class MainWindow : Window
         {
             ActivatePageContent(viewModel);
         }
+    }
+
+    private static void UpdateControllerConnections(MainViewModel viewModel)
+    {
+        var manager = GamepadManager.Shared;
+        var connections = manager.ReadConnections();
+        var controllerNames = Enumerable
+            .Range(0, GamepadManager.MaximumControllers)
+            .Select(manager.GetControllerName)
+            .ToArray();
+        viewModel.UpdateControllerStatus(
+            connections.IsConnected(viewModel.SelectedControllerSlot.Index),
+            connections.IsConnected(viewModel.SelectedPlayerTwoControllerSlot.Index),
+            connections.Count,
+            controllerNames,
+            manager.BackendName);
     }
 
     private void MoveUp(MainViewModel viewModel)

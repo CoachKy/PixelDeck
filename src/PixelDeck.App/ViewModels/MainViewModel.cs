@@ -54,17 +54,17 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             .ToArray();
         ControllerButtons =
         [
-            new(GamepadButton.A, "A"),
-            new(GamepadButton.B, "B"),
-            new(GamepadButton.X, "X"),
-            new(GamepadButton.Y, "Y"),
-            new(GamepadButton.LeftShoulder, "Left bumper"),
-            new(GamepadButton.RightShoulder, "Right bumper"),
+            new(GamepadButton.A, "South (A / Cross)"),
+            new(GamepadButton.B, "East (B / Circle)"),
+            new(GamepadButton.X, "West (X / Square)"),
+            new(GamepadButton.Y, "North (Y / Triangle)"),
+            new(GamepadButton.LeftShoulder, "Left bumper / L1"),
+            new(GamepadButton.RightShoulder, "Right bumper / R1"),
             new(GamepadButton.LeftTrigger, "Left trigger"),
             new(GamepadButton.LeftThumb, "Left stick click"),
             new(GamepadButton.RightThumb, "Right stick click"),
-            new(GamepadButton.Start, "Menu / Start"),
-            new(GamepadButton.Back, "View / Back")
+            new(GamepadButton.Start, "Start / Menu / Options"),
+            new(GamepadButton.Back, "Select / View / Create")
         ];
         Mmc3IrqRevisions =
         [
@@ -85,6 +85,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
         var settings = PixelDeckSettingsStore.Current;
         selectedControllerSlot = ControllerSlots[settings.ControllerIndex];
+        selectedPlayerTwoControllerSlot = ControllerSlots[settings.PlayerTwoControllerIndex];
         selectedNintendoAButton = FindButton(settings.AButton, GamepadButton.A);
         selectedNintendoBButton = FindButton(settings.BButton, GamepadButton.X);
         selectedNintendoStartButton = FindButton(settings.StartButton, GamepadButton.Start);
@@ -226,10 +227,19 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private string clockText = DateTime.Now.ToString("h:mm tt").ToUpperInvariant();
 
     [ObservableProperty]
-    private string controllerStatusText = "CHECKING CONTROLLER";
+    private string controllerStatusText = "CHECKING CONTROLLERS";
+
+    [ObservableProperty]
+    private string connectedControllerCountText = "CHECKING CONTROLLERS";
+
+    [ObservableProperty]
+    private string controllerInputBackendText = "INITIALIZING GAMEPAD INPUT";
 
     [ObservableProperty]
     private ControllerSlotOption selectedControllerSlot;
+
+    [ObservableProperty]
+    private ControllerSlotOption selectedPlayerTwoControllerSlot;
 
     [ObservableProperty]
     private ControllerButtonOption selectedNintendoAButton;
@@ -287,10 +297,11 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     partial void OnSelectedControllerSlotChanged(ControllerSlotOption value)
     {
-        PixelDeckSettingsStore.Current.ControllerIndex = value.Index;
-        PixelDeckSettingsStore.Save();
-        ControllerStatusText = "CHECKING CONTROLLER";
+        SaveControllerSlots(playerOneChanged: true);
     }
+
+    partial void OnSelectedPlayerTwoControllerSlotChanged(ControllerSlotOption value) =>
+        SaveControllerSlots(playerOneChanged: false);
 
     partial void OnSelectedNintendoAButtonChanged(ControllerButtonOption value) => SaveNintendoButtonSettings();
 
@@ -595,10 +606,35 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public void UpdateClock() => ClockText = DateTime.Now.ToString("h:mm tt").ToUpperInvariant();
 
-    public void UpdateControllerStatus(bool isConnected) =>
-        ControllerStatusText = isConnected
-            ? $"CONTROLLER {SelectedControllerSlot.Index + 1} CONNECTED"
-            : $"CONTROLLER {SelectedControllerSlot.Index + 1} NOT CONNECTED";
+    public void UpdateControllerStatus(
+        bool playerOneConnected,
+        bool playerTwoConnected,
+        int connectedControllerCount,
+        IReadOnlyList<string?> controllerNames,
+        string backendName)
+    {
+        ControllerStatusText =
+            $"P1 C{SelectedControllerSlot.Index + 1} {(playerOneConnected ? "CONNECTED" : "NOT CONNECTED")}" +
+            $"  /  P2 C{SelectedPlayerTwoControllerSlot.Index + 1} " +
+            $"{(playerTwoConnected ? "CONNECTED" : "NOT CONNECTED")}";
+        ConnectedControllerCountText = FormatConnectedControllerCount(connectedControllerCount);
+        ControllerInputBackendText = $"{backendName.ToUpperInvariant()} GAMEPAD INPUT";
+
+        for (var index = 0; index < ControllerSlots.Count; index++)
+        {
+            var name = index < controllerNames.Count ? controllerNames[index] : null;
+            ControllerSlots[index].Label = string.IsNullOrWhiteSpace(name)
+                ? $"Controller {index + 1} — Not connected"
+                : $"Controller {index + 1} — {name}";
+        }
+    }
+
+    internal static string FormatConnectedControllerCount(int count) => count switch
+    {
+        <= 0 => "NO CONTROLLERS CONNECTED",
+        1 => "1 CONTROLLER CONNECTED",
+        _ => $"{count} CONTROLLERS CONNECTED"
+    };
 
     public void Dispose() => DisposeGameScreenshots();
 
@@ -661,6 +697,48 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private ControllerButtonOption FindButton(GamepadButton button, GamepadButton fallback) =>
         ControllerButtons.FirstOrDefault(option => option.Button == button)
         ?? ControllerButtons.First(option => option.Button == fallback);
+
+    private bool _isUpdatingControllerSlots;
+
+    private void SaveControllerSlots(bool playerOneChanged)
+    {
+        if (_isUpdatingControllerSlots)
+        {
+            return;
+        }
+
+        _isUpdatingControllerSlots = true;
+        try
+        {
+            var settings = PixelDeckSettingsStore.Current;
+            if (SelectedControllerSlot.Index == SelectedPlayerTwoControllerSlot.Index)
+            {
+                if (playerOneChanged)
+                {
+                    var replacement = settings.ControllerIndex == SelectedControllerSlot.Index
+                        ? (SelectedControllerSlot.Index + 1) % ControllerSlots.Count
+                        : settings.ControllerIndex;
+                    SelectedPlayerTwoControllerSlot = ControllerSlots[replacement];
+                }
+                else
+                {
+                    var replacement = settings.PlayerTwoControllerIndex == SelectedPlayerTwoControllerSlot.Index
+                        ? (SelectedPlayerTwoControllerSlot.Index + 1) % ControllerSlots.Count
+                        : settings.PlayerTwoControllerIndex;
+                    SelectedControllerSlot = ControllerSlots[replacement];
+                }
+            }
+
+            settings.ControllerIndex = SelectedControllerSlot.Index;
+            settings.PlayerTwoControllerIndex = SelectedPlayerTwoControllerSlot.Index;
+            PixelDeckSettingsStore.Save();
+            ControllerStatusText = "CHECKING CONTROLLERS";
+        }
+        finally
+        {
+            _isUpdatingControllerSlots = false;
+        }
+    }
 
     private void SaveNintendoButtonSettings()
     {
@@ -762,7 +840,19 @@ public enum LibrarySystem
     SuperNintendo
 }
 
-public sealed record ControllerSlotOption(int Index, string Label);
+public sealed partial class ControllerSlotOption : ObservableObject
+{
+    public ControllerSlotOption(int index, string label)
+    {
+        Index = index;
+        this.label = label;
+    }
+
+    public int Index { get; }
+
+    [ObservableProperty]
+    private string label;
+}
 
 public sealed record ControllerButtonOption(GamepadButton Button, string Label);
 

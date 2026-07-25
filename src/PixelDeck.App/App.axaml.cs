@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using PixelDeck.App.Input;
 using PixelDeck.App.Services;
 using PixelDeck.App.ViewModels;
 using PixelDeck.App.Views;
@@ -18,6 +19,7 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            desktop.Exit += static (_, _) => GamepadManager.Shutdown();
             var directGamePath = GetDirectGamePath(desktop.Args);
             if (directGamePath is not null)
             {

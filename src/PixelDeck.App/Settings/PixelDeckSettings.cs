@@ -9,6 +9,8 @@ public sealed class PixelDeckSettings
 {
     public int ControllerIndex { get; set; }
 
+    public int PlayerTwoControllerIndex { get; set; } = 1;
+
     public GamepadButton AButton { get; set; } = GamepadButton.A;
 
     public GamepadButton BButton { get; set; } = GamepadButton.X;
@@ -89,6 +91,12 @@ public static class PixelDeckSettingsStore
             var settings = JsonSerializer.Deserialize<PixelDeckSettings>(File.ReadAllText(SettingsPath), JsonOptions)
                 ?? new PixelDeckSettings();
             settings.ControllerIndex = Math.Clamp(settings.ControllerIndex, 0, 3);
+            settings.PlayerTwoControllerIndex = Math.Clamp(settings.PlayerTwoControllerIndex, 0, 3);
+            if (settings.PlayerTwoControllerIndex == settings.ControllerIndex)
+            {
+                settings.PlayerTwoControllerIndex = (settings.ControllerIndex + 1) % 4;
+            }
+
             if (!Enum.IsDefined(settings.Mmc3IrqRevision))
             {
                 settings.Mmc3IrqRevision = Mmc3IrqRevision.Auto;

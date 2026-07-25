@@ -6,10 +6,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.8.36</Version>
-    <AssemblyVersion>0.8.36.0</AssemblyVersion>
-    <FileVersion>0.8.36.0</FileVersion>
-    <InformationalVersion>0.8.36</InformationalVersion>
+    <Version>0.9.39</Version>
+    <AssemblyVersion>0.9.39.0</AssemblyVersion>
+    <FileVersion>0.9.39.0</FileVersion>
+    <InformationalVersion>0.9.39</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +24,9 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.0" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="SDL3-CS" Version="3.4.12.3" />
+    <PackageReference Include="SDL3-CS.Linux" Version="3.4.12.1" />
+    <PackageReference Include="SDL3-CS.Windows" Version="3.4.12.1" />
   </ItemGroup>
 
   <ItemGroup>
