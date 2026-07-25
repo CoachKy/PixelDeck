@@ -44,6 +44,27 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void VersionTenStateMigratesToTheCurrentCore()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var machine = SnesMachine.Load(gamePath);
+            machine.RunFrame();
+            var versionTenState = machine.SaveState(stateVersion: 10);
+            var expectedFrame = machine.RunFrame().ToArray();
+
+            machine.LoadState(versionTenState);
+
+            Assert.Equal(expectedFrame, machine.RunFrame().ToArray());
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void EightBitAccumulatorTransfersItsFullHiddenValueToSixteenBitIndexes()
     {
         var gamePath = CreateSyntheticLoRom(
@@ -278,6 +299,148 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void AutomaticControllerReadReportsBusyUntilTheHardwareWindowEnds()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.SetControllerState(1, SnesButton.B | SnesButton.Start);
+            bus.Write(0x004200, 0x01);
+
+            bus.BeginFrame();
+            // VBlank begins after 225 1,364-master-clock scanlines.
+            bus.Clock(51_150);
+
+            Assert.Equal(1, bus.Read(0x004212) & 1);
+            Assert.Equal(0, bus.Read(0x004218));
+            Assert.Equal(0, bus.Read(0x004219));
+
+            bus.Clock(703);
+            Assert.Equal(1, bus.Read(0x004212) & 1);
+            bus.Clock(1);
+
+            Assert.Equal(0, bus.Read(0x004212) & 1);
+            Assert.Equal(0, bus.Read(0x004218));
+            Assert.Equal(0x90, bus.Read(0x004219));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void CpuMathUnitCompletesMultiplicationAndDivisionOverHardwareCycles()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+
+            bus.Write(0x004202, 13);
+            bus.Write(0x004203, 7);
+            Assert.Equal(0, bus.Read(0x004216));
+            bus.Clock(7);
+            Assert.Equal(14, bus.Read(0x004214));
+            bus.Clock(1);
+            Assert.Equal(91, bus.Read(0x004216));
+            Assert.Equal(0, bus.Read(0x004217));
+
+            bus.Write(0x004204, 0xE8);
+            bus.Write(0x004205, 0x03);
+            bus.Write(0x004206, 7);
+            Assert.Equal(0xE8, bus.Read(0x004216));
+            Assert.Equal(0x03, bus.Read(0x004217));
+            bus.Clock(16);
+
+            Assert.Equal(142, bus.Read(0x004214));
+            Assert.Equal(0, bus.Read(0x004215));
+            Assert.Equal(6, bus.Read(0x004216));
+            Assert.Equal(0, bus.Read(0x004217));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void BusStateRestoresInFlightMathAndAutomaticControllerTiming()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.Write(0x004202, 13);
+            bus.Write(0x004203, 7);
+            bus.Clock(3);
+
+            using var mathState = SaveBusState(bus);
+            bus.Clock(5);
+            Assert.Equal(91, bus.Read(0x004216));
+            LoadBusState(bus, mathState);
+            bus.Clock(5);
+            Assert.Equal(91, bus.Read(0x004216));
+
+            bus = new SnesBus(cartridge);
+            bus.SetControllerState(1, SnesButton.B | SnesButton.Start);
+            bus.Write(0x004200, 0x01);
+            bus.BeginFrame();
+            bus.Clock(51_150);
+            bus.Clock(100);
+            Assert.Equal(1, bus.Read(0x004212) & 1);
+
+            using var controllerState = SaveBusState(bus);
+            bus.Clock(604);
+            Assert.Equal(0x90, bus.Read(0x004219));
+            LoadBusState(bus, controllerState);
+            bus.Clock(603);
+            Assert.Equal(1, bus.Read(0x004212) & 1);
+            bus.Clock(1);
+            Assert.Equal(0x90, bus.Read(0x004219));
+
+            using var legacyState = SaveBusState(bus, stateVersion: 10);
+            bus.SetControllerState(1, SnesButton.None);
+            bus.Clock(1_000);
+            LoadBusState(bus, legacyState, stateVersion: 10);
+            Assert.Equal(0x90, bus.Read(0x004219));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void WrIoFallingEdgeLatchesCountersAndDisablesSoftwareRelatch()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.BeginFrame();
+            bus.Clock(17);
+
+            bus.Write(0x004201, 0x7F);
+            bus.Clock(17);
+            bus.Read(0x002137);
+
+            Assert.Equal(0x7F, bus.Read(0x004213));
+            Assert.Equal(25, bus.Read(0x00213C));
+            Assert.Equal(0x43, bus.Read(0x00213F));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void AutomaticControllerRegistersRemainLatchedWhenAutoReadIsDisabled()
     {
         var gamePath = CreateSyntheticLoRom();
@@ -292,6 +455,35 @@ public sealed class SnesMachineTests
 
             Assert.Equal(0, bus.Read(0x004218));
             Assert.Equal(0, bus.Read(0x004219));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void SoftwareLatchCapturesTheCurrentHorizontalAndVerticalCounters()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+            bus.BeginFrame();
+            bus.Clock(17);
+            bus.Read(0x002137);
+            bus.Clock(300);
+
+            Assert.Equal(25, bus.Read(0x00213C));
+            Assert.Equal(24, bus.Read(0x00213C));
+            Assert.Equal(0, bus.Read(0x00213D));
+            Assert.Equal(0, bus.Read(0x00213D));
+            Assert.Equal(0x43, bus.Read(0x00213F));
+
+            bus.Read(0x002137);
+            Assert.Equal(134, bus.Read(0x00213C));
+            Assert.Equal(1, bus.Read(0x00213D));
         }
         finally
         {
@@ -417,7 +609,12 @@ public sealed class SnesMachineTests
                     failures.Add($"{gameName} did not execute CPU cycles.");
                 }
 
-                if (IsKnownSample(gameName))
+                // A deliberately shortened collection sweep is a crash/path
+                // audit, not a replacement for each game's established boot
+                // gate. Only demand its full scene/audio evidence once the
+                // requested frame budget reaches that game's normal gate.
+                if (IsKnownSample(gameName) &&
+                    frameCount >= RequiredBootFrames(gameName))
                 {
                     if (machine.BrkCount != 0 ||
                         machine.CopCount != 0 ||
@@ -467,6 +664,8 @@ public sealed class SnesMachineTests
         if (gamePaths.Length > 0)
         {
             Assert.True(supportedImages > 0, "At least one local SNES image should use a supported standard map mode.");
+            _output.WriteLine(
+                $"{supportedImages} of {gamePaths.Length} local SNES images used the current supported cartridge envelope.");
         }
 
         Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
@@ -502,6 +701,9 @@ public sealed class SnesMachineTests
         var fileConfirmed = false;
         var playerConfirmed = false;
         var overworldConfirmed = false;
+        var fileSelectFrames = 0;
+        var fileSelectSkyRendered = false;
+        var fileSelectCursorRendered = false;
         var playerModeFrames = 0;
         var overworldFrames = 0;
         var reachedGameplay = false;
@@ -513,7 +715,10 @@ public sealed class SnesMachineTests
                 titleStartPulse = 6;
                 titleStarted = true;
             }
-            else if (modeBeforeFrame == 0x08 && !fileConfirmed)
+            else if (
+                modeBeforeFrame == 0x08 &&
+                fileSelectFrames >= 30 &&
+                !fileConfirmed)
             {
                 fileConfirmPulse = 6;
                 fileConfirmed = true;
@@ -550,6 +755,17 @@ public sealed class SnesMachineTests
                 previousGameMode = gameMode;
             }
 
+            if (gameMode == 0x08)
+            {
+                fileSelectFrames++;
+                var currentFrame = machine.CurrentFrame;
+                fileSelectSkyRendered |=
+                    currentFrame[(32 * machine.Width) + 128] == 0xFF9CE6E6u;
+                fileSelectCursorRendered |= ContainsSuperMarioWorldFileCursor(
+                    currentFrame,
+                    machine.Width);
+            }
+
             if (gameMode == 0x14)
             {
                 reachedGameplay = true;
@@ -564,6 +780,8 @@ public sealed class SnesMachineTests
         Assert.Equal(0, machine.BrkCount);
         Assert.Equal(0, machine.CopCount);
         Assert.Equal(ushort.MaxValue, machine.ApuFirstUnsupportedAddress);
+        Assert.True(fileSelectSkyRendered, "Super Mario World's file-select sky rendered black.");
+        Assert.True(fileSelectCursorRendered, "Super Mario World's blinking file cursor never rendered.");
         // Super Mario World's normal in-level game mode.
         Assert.Equal(0x14, machine.PeekMemory(0x7E0100));
 
@@ -690,6 +908,12 @@ public sealed class SnesMachineTests
             $"(X {startingX} -> {endingX}, lock=${machine.PeekMemory(0x7E009D):X2}, " +
             $"mode=${machine.PeekMemory(0x7E0100):X2}, " +
             $"modes={string.Join(",", gameModeTransitions)}).");
+
+        machine.SetControllerState(1, SnesButton.None);
+        var gameplayState = machine.SaveState();
+        var expectedNextFrame = machine.RunFrame().ToArray();
+        machine.LoadState(gameplayState);
+        Assert.Equal(expectedNextFrame, machine.RunFrame().ToArray());
     }
 
     [Fact]
@@ -862,6 +1086,58 @@ public sealed class SnesMachineTests
         gameName.Contains("Mega Man X", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Super Mario Kart", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Super Mario World", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsSuperMarioWorldFileCursor(
+        ReadOnlySpan<uint> frame,
+        int width)
+    {
+        for (var y = 105; y < 155; y++)
+        {
+            for (var x = 45; x < 80; x++)
+            {
+                var color = frame[(y * width) + x];
+                if (((color >> 16) & 0xFF) >= 0xC0 &&
+                    ((color >> 8) & 0xFF) < 0x70 &&
+                    (color & 0xFF) < 0x70)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static MemoryStream SaveBusState(
+        SnesBus bus,
+        int stateVersion = 11)
+    {
+        var state = new MemoryStream();
+        using (var writer = new BinaryWriter(
+                   state,
+                   System.Text.Encoding.UTF8,
+                   leaveOpen: true))
+        {
+            bus.SaveState(writer, stateVersion);
+        }
+
+        state.Position = 0;
+        return state;
+    }
+
+    private static void LoadBusState(
+        SnesBus bus,
+        MemoryStream state,
+        int stateVersion = 11)
+    {
+        state.Position = 0;
+        using var reader = new BinaryReader(
+            state,
+            System.Text.Encoding.UTF8,
+            leaveOpen: true);
+        bus.LoadState(reader, stateVersion);
+        Assert.Equal(state.Length, state.Position);
+    }
 
     private static string CreateSyntheticLoRom(
         byte[]? program = null,

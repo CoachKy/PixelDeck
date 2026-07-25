@@ -3,9 +3,9 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>0.9.10</Version>
-    <AssemblyVersion>0.9.10.0</AssemblyVersion>
-    <FileVersion>0.9.10.0</FileVersion>
-    <InformationalVersion>0.9.10</InformationalVersion>
+    <Version>0.11.13</Version>
+    <AssemblyVersion>0.11.13.0</AssemblyVersion>
+    <FileVersion>0.11.13.0</FileVersion>
+    <InformationalVersion>0.11.13</InformationalVersion>
   </PropertyGroup>
 </Project>

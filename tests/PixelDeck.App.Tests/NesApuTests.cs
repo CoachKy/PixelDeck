@@ -95,7 +95,7 @@ public sealed class NesApuTests
         apu.WriteRegister(0x4013, 0x00);
         apu.WriteRegister(0x4015, 0x10);
 
-        apu.Clock(1);
+        apu.Clock(2);
         Assert.True(apu.DmcDmaPending);
         apu.CompleteDmcDma(0xFF);
         apu.Clock(9_999);
@@ -161,6 +161,8 @@ public sealed class NesApuTests
         apu.WriteRegister(0x4015, 0x10);
 
         apu.Clock(1);
+        Assert.False(apu.DmcDmaPending);
+        apu.Clock(1);
 
         Assert.True(apu.DmcDmaPending);
         Assert.Equal(0xC000, apu.DmcDmaAddress);
@@ -174,6 +176,27 @@ public sealed class NesApuTests
 
         apu.WriteRegister(0x4015, 0x00);
         Assert.False(apu.IrqPending);
+    }
+
+    [Fact]
+    public void DmcInitialDmaRequestFollowsTheApuPhase()
+    {
+        var evenPhase = new NesApu();
+        evenPhase.WriteRegister(0x4015, 0x10);
+
+        evenPhase.Clock(1);
+        Assert.False(evenPhase.DmcDmaPending);
+        evenPhase.Clock(1);
+        Assert.True(evenPhase.DmcDmaPending);
+
+        var oddPhase = new NesApu();
+        oddPhase.Clock(1);
+        oddPhase.WriteRegister(0x4015, 0x10);
+
+        oddPhase.Clock(2);
+        Assert.False(oddPhase.DmcDmaPending);
+        oddPhase.Clock(1);
+        Assert.True(oddPhase.DmcDmaPending);
     }
 
     [Fact]

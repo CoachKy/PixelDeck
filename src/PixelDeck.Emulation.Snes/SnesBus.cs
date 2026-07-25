@@ -21,6 +21,8 @@ public enum SnesButton : ushort
 internal sealed class SnesBus
 {
     private const int MasterClocksPerScanline = 1_364;
+    private const int MasterClocksPerCpuCycle = 6;
+    private const int AutomaticControllerReadMasterClocks = 4_224;
 
     private static readonly byte[][] DmaPatterns =
     [
@@ -62,8 +64,16 @@ internal sealed class SnesBus
     private ushort _controllerShiftTwo;
     private ushort _automaticControllerOne;
     private ushort _automaticControllerTwo;
+    private ushort _pendingAutomaticControllerOne;
+    private ushort _pendingAutomaticControllerTwo;
+    private int _automaticControllerReadRemainingMasterClocks;
     private bool _controllerStrobe;
     private bool _hdmaInitialized;
+    private byte _pio = 0xFF;
+    private int _mathClockRemainder;
+    private byte _multiplyCyclesRemaining;
+    private byte _divisionCyclesRemaining;
+    private uint _mathShift;
     private byte _openBus;
 
     public SnesBus(SnesCartridge cartridge)
@@ -71,6 +81,8 @@ internal sealed class SnesBus
         _cartridge = cartridge;
         _dsp1 = cartridge.HasDsp1 ? new SnesDsp1() : null;
         Ppu = new SnesPpu();
+        Ppu.IsPal = cartridge.Info.IsPal;
+        Ppu.CounterLatchEnabled = (_pio & 0x80) != 0;
     }
 
     public SnesPpu Ppu { get; }
@@ -242,13 +254,14 @@ internal sealed class SnesBus
 
     public void Clock(int cpuCycles)
     {
-        var masterClocks = Math.Max(1, cpuCycles) * 6;
+        var masterClocks = Math.Max(1, cpuCycles) * MasterClocksPerCpuCycle;
         _apu.ClockMasterClocks(masterClocks);
         while (masterClocks > 0)
         {
             var clocksToEndOfScanline = MasterClocksPerScanline - _masterClockRemainder;
             var elapsed = Math.Min(masterClocks, clocksToEndOfScanline);
             CheckHorizontalIrq(_masterClockRemainder, _masterClockRemainder + elapsed);
+            AdvanceTimedCpuOperations(elapsed);
             _masterClockRemainder += elapsed;
             masterClocks -= elapsed;
 
@@ -344,7 +357,9 @@ internal sealed class SnesBus
         }
     }
 
-    internal void SaveState(BinaryWriter writer)
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 11);
+
+    internal void SaveState(BinaryWriter writer, int stateVersion)
     {
         writer.Write(_wram);
         writer.Write(_dmaRegisters);
@@ -369,17 +384,33 @@ internal sealed class SnesBus
         writer.Write(_controllerShiftTwo);
         writer.Write(_automaticControllerOne);
         writer.Write(_automaticControllerTwo);
+        if (stateVersion >= 11)
+        {
+            writer.Write(_pendingAutomaticControllerOne);
+            writer.Write(_pendingAutomaticControllerTwo);
+            writer.Write(_automaticControllerReadRemainingMasterClocks);
+        }
         writer.Write(_controllerStrobe);
         writer.Write(_hdmaInitialized);
+        if (stateVersion >= 11)
+        {
+            writer.Write(_pio);
+            writer.Write(_mathClockRemainder);
+            writer.Write(_multiplyCyclesRemaining);
+            writer.Write(_divisionCyclesRemaining);
+            writer.Write(_mathShift);
+        }
         writer.Write(_openBus);
         foreach (var value in _hdmaTerminated) writer.Write(value);
         foreach (var value in _hdmaDoTransfer) writer.Write(value);
         _dsp1?.SaveState(writer);
         _apu.SaveState(writer);
-        Ppu.SaveState(writer);
+        Ppu.SaveState(writer, stateVersion);
     }
 
-    internal void LoadState(BinaryReader reader)
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 11);
+
+    internal void LoadState(BinaryReader reader, int stateVersion)
     {
         reader.ReadExactly(_wram);
         reader.ReadExactly(_dmaRegisters);
@@ -404,14 +435,44 @@ internal sealed class SnesBus
         _controllerShiftTwo = reader.ReadUInt16();
         _automaticControllerOne = reader.ReadUInt16();
         _automaticControllerTwo = reader.ReadUInt16();
+        if (stateVersion >= 11)
+        {
+            _pendingAutomaticControllerOne = reader.ReadUInt16();
+            _pendingAutomaticControllerTwo = reader.ReadUInt16();
+            _automaticControllerReadRemainingMasterClocks = reader.ReadInt32();
+        }
+        else
+        {
+            _pendingAutomaticControllerOne = _automaticControllerOne;
+            _pendingAutomaticControllerTwo = _automaticControllerTwo;
+            _automaticControllerReadRemainingMasterClocks = 0;
+        }
         _controllerStrobe = reader.ReadBoolean();
         _hdmaInitialized = reader.ReadBoolean();
+        if (stateVersion >= 11)
+        {
+            _pio = reader.ReadByte();
+            _mathClockRemainder = reader.ReadInt32();
+            _multiplyCyclesRemaining = reader.ReadByte();
+            _divisionCyclesRemaining = reader.ReadByte();
+            _mathShift = reader.ReadUInt32();
+        }
+        else
+        {
+            _pio = 0xFF;
+            _mathClockRemainder = 0;
+            _multiplyCyclesRemaining = 0;
+            _divisionCyclesRemaining = 0;
+            _mathShift = 0;
+        }
         _openBus = reader.ReadByte();
         for (var index = 0; index < 8; index++) _hdmaTerminated[index] = reader.ReadBoolean();
         for (var index = 0; index < 8; index++) _hdmaDoTransfer[index] = reader.ReadBoolean();
         _dsp1?.LoadState(reader);
         _apu.LoadState(reader);
-        Ppu.LoadState(reader);
+        Ppu.LoadState(reader, stateVersion);
+        Ppu.IsPal = _cartridge.Info.IsPal;
+        Ppu.CounterLatchEnabled = (_pio & 0x80) != 0;
         FrameReady = false;
     }
 
@@ -498,6 +559,16 @@ internal sealed class SnesBus
             return _apu.ReadOutputPort((address - 0x2140) & 3);
         }
 
+        if (address == 0x2137)
+        {
+            if ((_pio & 0x80) != 0)
+            {
+                LatchPpuCounters();
+            }
+
+            return _openBus;
+        }
+
         return address switch
         {
             0x2180 => _wram[_wramAddress++ & 0x1FFFF],
@@ -542,8 +613,10 @@ internal sealed class SnesBus
             0x4211 => ReadIrqFlag(),
             0x4212 => (byte)(
                 (_vblank ? 0x80 : 0) |
-                (_masterClockRemainder >= 1_096 ? 0x40 : 0) |
+                (_masterClockRemainder is <= 2 or >= 1_096 ? 0x40 : 0) |
+                (_automaticControllerReadRemainingMasterClocks > 0 ? 0x01 : 0) |
                 (_openBus & 0x3E)),
+            0x4213 => _pio,
             0x4214 => (byte)_divisionQuotient,
             0x4215 => (byte)(_divisionQuotient >> 8),
             0x4216 => (byte)_multiplyOrRemainder,
@@ -571,12 +644,24 @@ internal sealed class SnesBus
                 {
                     _nmiPending = true;
                 }
+                if ((value & 0x01) == 0)
+                {
+                    _automaticControllerReadRemainingMasterClocks = 0;
+                }
+                break;
+            case 0x4201:
+                if ((_pio & 0x80) != 0 && (value & 0x80) == 0)
+                {
+                    LatchPpuCounters();
+                }
+                _pio = value;
+                Ppu.CounterLatchEnabled = (value & 0x80) != 0;
                 break;
             case 0x4202:
                 _wrmpya = value;
                 break;
             case 0x4203:
-                _multiplyOrRemainder = (ushort)(_wrmpya * value);
+                BeginMultiplication(value);
                 break;
             case 0x4204:
                 _wrdiv = (ushort)((_wrdiv & 0xFF00) | value);
@@ -585,16 +670,7 @@ internal sealed class SnesBus
                 _wrdiv = (ushort)((_wrdiv & 0x00FF) | (value << 8));
                 break;
             case 0x4206:
-                if (value == 0)
-                {
-                    _divisionQuotient = 0xFFFF;
-                    _multiplyOrRemainder = _wrdiv;
-                }
-                else
-                {
-                    _divisionQuotient = (ushort)(_wrdiv / value);
-                    _multiplyOrRemainder = (ushort)(_wrdiv % value);
-                }
+                BeginDivision(value);
                 break;
             case 0x4207:
                 _horizontalTimer = (ushort)((_horizontalTimer & 0x0100) | value);
@@ -788,8 +864,14 @@ internal sealed class SnesBus
 
     private void LatchAutomaticControllers()
     {
-        _automaticControllerOne = EncodeAutomaticController(Volatile.Read(ref _controllerOne));
-        _automaticControllerTwo = EncodeAutomaticController(Volatile.Read(ref _controllerTwo));
+        _automaticControllerOne = 0;
+        _automaticControllerTwo = 0;
+        _pendingAutomaticControllerOne =
+            EncodeAutomaticController(Volatile.Read(ref _controllerOne));
+        _pendingAutomaticControllerTwo =
+            EncodeAutomaticController(Volatile.Read(ref _controllerTwo));
+        _automaticControllerReadRemainingMasterClocks =
+            AutomaticControllerReadMasterClocks;
     }
 
     private static ushort EncodeAutomaticController(ushort serialButtons)
@@ -834,8 +916,99 @@ internal sealed class SnesBus
             shift = (ushort)((shift >> 1) | 0x8000);
         }
 
-        return (byte)((_openBus & 0xFC) | value);
+        return player == 2
+            ? (byte)((_openBus & 0xE0) | 0x1C | value)
+            : (byte)((_openBus & 0xFC) | value);
     }
+
+    private void AdvanceTimedCpuOperations(int masterClocks)
+    {
+        if (_automaticControllerReadRemainingMasterClocks > 0)
+        {
+            _automaticControllerReadRemainingMasterClocks -= masterClocks;
+            if (_automaticControllerReadRemainingMasterClocks <= 0)
+            {
+                _automaticControllerReadRemainingMasterClocks = 0;
+                _automaticControllerOne = _pendingAutomaticControllerOne;
+                _automaticControllerTwo = _pendingAutomaticControllerTwo;
+            }
+        }
+
+        if (_multiplyCyclesRemaining == 0 && _divisionCyclesRemaining == 0)
+        {
+            _mathClockRemainder = 0;
+            return;
+        }
+
+        _mathClockRemainder += masterClocks;
+        while (_mathClockRemainder >= MasterClocksPerCpuCycle &&
+               (_multiplyCyclesRemaining > 0 || _divisionCyclesRemaining > 0))
+        {
+            _mathClockRemainder -= MasterClocksPerCpuCycle;
+            StepMathUnit();
+        }
+    }
+
+    private void BeginMultiplication(byte multiplier)
+    {
+        _multiplyOrRemainder = 0;
+        if (_multiplyCyclesRemaining > 0 || _divisionCyclesRemaining > 0)
+        {
+            return;
+        }
+
+        _divisionQuotient = (ushort)((multiplier << 8) | _wrmpya);
+        _mathShift = multiplier;
+        _mathClockRemainder = 0;
+        _multiplyCyclesRemaining = 8;
+    }
+
+    private void BeginDivision(byte divisor)
+    {
+        _multiplyOrRemainder = _wrdiv;
+        if (_multiplyCyclesRemaining > 0 || _divisionCyclesRemaining > 0)
+        {
+            return;
+        }
+
+        _mathShift = (uint)divisor << 16;
+        _mathClockRemainder = 0;
+        _divisionCyclesRemaining = 16;
+    }
+
+    private void StepMathUnit()
+    {
+        if (_multiplyCyclesRemaining > 0)
+        {
+            _multiplyCyclesRemaining--;
+            if ((_divisionQuotient & 1) != 0)
+            {
+                _multiplyOrRemainder =
+                    (ushort)(_multiplyOrRemainder + _mathShift);
+            }
+
+            _divisionQuotient >>= 1;
+            _mathShift <<= 1;
+        }
+
+        if (_divisionCyclesRemaining > 0)
+        {
+            _divisionCyclesRemaining--;
+            _divisionQuotient <<= 1;
+            _mathShift >>= 1;
+            if (_multiplyOrRemainder >= _mathShift)
+            {
+                _multiplyOrRemainder =
+                    (ushort)(_multiplyOrRemainder - _mathShift);
+                _divisionQuotient |= 1;
+            }
+        }
+    }
+
+    private void LatchPpuCounters() =>
+        Ppu.LatchCounters(
+            (ushort)(_masterClockRemainder / 4),
+            (ushort)_scanline);
 
     private byte ReadNmiFlag()
     {

@@ -4,7 +4,7 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 9;
+    private const int SaveStateVersion = 11;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
@@ -138,8 +138,17 @@ public sealed class SnesMachine
 
     public void Reset() => _cpu.Reset();
 
-    public byte[] SaveState()
+    public byte[] SaveState() => SaveState(SaveStateVersion);
+
+    internal byte[] SaveState(int stateVersion)
     {
+        if (stateVersion is not (10 or SaveStateVersion))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(stateVersion),
+                "PixelSNES can only write the current state or its v10 migration fixture.");
+        }
+
         using var payloadStream = new MemoryStream();
         using (var payloadWriter = new BinaryWriter(
                    payloadStream,
@@ -148,7 +157,7 @@ public sealed class SnesMachine
         {
             Cartridge.SaveState(payloadWriter);
             _cpu.SaveState(payloadWriter);
-            _bus.SaveState(payloadWriter);
+            _bus.SaveState(payloadWriter, stateVersion);
             payloadWriter.Flush();
         }
 
@@ -157,7 +166,7 @@ public sealed class SnesMachine
         using var stream = new MemoryStream(payload.Length + SaveStateChecksumLength + 12);
         using var writer = new BinaryWriter(stream);
         writer.Write(SaveStateMagic);
-        writer.Write(SaveStateVersion);
+        writer.Write(stateVersion);
         writer.Write(payload.Length);
         writer.Write(payload);
         writer.Write(checksum);
@@ -184,7 +193,13 @@ public sealed class SnesMachine
         using var stream = new MemoryStream(state.ToArray(), writable: false);
         using var reader = new BinaryReader(stream);
 
-        if (reader.ReadUInt32() != SaveStateMagic || reader.ReadInt32() != SaveStateVersion)
+        if (reader.ReadUInt32() != SaveStateMagic)
+        {
+            throw new InvalidDataException("This is not a compatible PixelDeck SNES save state.");
+        }
+
+        var stateVersion = reader.ReadInt32();
+        if (stateVersion is not (10 or SaveStateVersion))
         {
             throw new InvalidDataException("This is not a compatible PixelDeck SNES save state.");
         }
@@ -217,7 +232,7 @@ public sealed class SnesMachine
         using var payloadReader = new BinaryReader(payloadStream);
         Cartridge.LoadState(payloadReader);
         _cpu.LoadState(payloadReader);
-        _bus.LoadState(payloadReader);
+        _bus.LoadState(payloadReader, stateVersion);
         if (payloadStream.Position != payloadStream.Length)
         {
             throw new InvalidDataException(

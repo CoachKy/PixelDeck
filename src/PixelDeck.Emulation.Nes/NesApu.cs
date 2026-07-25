@@ -68,7 +68,7 @@ internal sealed class NesApu
         _pulseTwo.SetEnabled(false);
         _triangle.SetEnabled(false);
         _noise.SetEnabled(false);
-        _dmc.SetEnabled(false);
+        _dmc.SetEnabled(false, _cpuCycle);
 
         if (!softReset)
         {
@@ -117,9 +117,11 @@ internal sealed class NesApu
         }
     }
 
-    public byte ReadStatus()
+    public byte ReadStatus(byte cpuOpenBus = 0)
     {
-        var status = (byte)0;
+        // Status bit 5 is not driven by the APU and therefore retains the
+        // corresponding value from the CPU's external data bus.
+        var status = (byte)(cpuOpenBus & 0x20);
         if (_pulseOne.LengthCounter > 0) status |= 0x01;
         if (_pulseTwo.LengthCounter > 0) status |= 0x02;
         if (_triangle.LengthCounter > 0) status |= 0x04;
@@ -155,7 +157,7 @@ internal sealed class NesApu
                 _pulseTwo.SetEnabled((value & 0x02) != 0);
                 _triangle.SetEnabled((value & 0x04) != 0);
                 _noise.SetEnabled((value & 0x08) != 0);
-                _dmc.SetEnabled((value & 0x10) != 0);
+                _dmc.SetEnabled((value & 0x10) != 0, _cpuCycle);
                 break;
             case 0x4017:
                 _frameIrqInhibit = (value & 0x40) != 0;
@@ -880,6 +882,7 @@ internal sealed class NesApu
         private byte _bitsRemaining = 8;
         private bool _silence = true;
         private bool _dmaPending;
+        private int _transferStartDelay;
 
         public bool IrqPending { get; private set; }
 
@@ -917,7 +920,7 @@ internal sealed class NesApu
             }
         }
 
-        public void SetEnabled(bool enabled)
+        public void SetEnabled(bool enabled, long cpuCycle)
         {
             _enabled = enabled;
             IrqPending = false;
@@ -925,16 +928,35 @@ internal sealed class NesApu
             {
                 _bytesRemaining = 0;
                 _dmaPending = false;
+                _transferStartDelay = 0;
             }
             else if (_bytesRemaining == 0)
             {
                 RestartSample();
+                // Enabling an empty DMC channel does not request the first
+                // fetch immediately. The DMA request appears after two or
+                // three CPU clocks according to the current APU phase.
+                if (_sampleBuffer < 0)
+                {
+                    _transferStartDelay = (cpuCycle & 1) == 0 ? 2 : 3;
+                }
             }
         }
 
         public void ClockTimer()
         {
-            FillSampleBuffer();
+            if (_transferStartDelay > 0)
+            {
+                if (--_transferStartDelay == 0)
+                {
+                    FillSampleBuffer();
+                }
+            }
+            else
+            {
+                FillSampleBuffer();
+            }
+
             if (_timer > 0)
             {
                 _timer--;
@@ -1021,6 +1043,7 @@ internal sealed class NesApu
             writer.Write(_bitsRemaining);
             writer.Write(_silence);
             writer.Write(_dmaPending);
+            writer.Write(_transferStartDelay);
             writer.Write(IrqPending);
         }
 
@@ -1041,6 +1064,7 @@ internal sealed class NesApu
             _bitsRemaining = reader.ReadByte();
             _silence = reader.ReadBoolean();
             _dmaPending = reader.ReadBoolean();
+            _transferStartDelay = reader.ReadInt32();
             IrqPending = reader.ReadBoolean();
         }
 

@@ -770,7 +770,16 @@ internal sealed class Cpu6502
         }
 
         var dmaStartedAt = TotalCycles;
+        var enableInternalIoReads =
+            (haltedReadAddress & 0xFFE0) == 0x4000;
         var skipRepeatedInputReads = haltedReadAddress is 0x4016 or 0x4017;
+        var skipFirstInputClock =
+            enableInternalIoReads &&
+            hasDmcDma &&
+            skipRepeatedInputReads &&
+            (_bus.Apu.DmcDmaAddress & 0x001F) ==
+            (haltedReadAddress & 0x001F);
+        var previousReadAddress = haltedReadAddress;
         var oamAddress = 0;
         var oamWriteReady = false;
         byte oamValue = 0;
@@ -779,7 +788,11 @@ internal sealed class Cpu6502
 
         // A DMA unit can only halt the CPU on a read cycle. The attempted CPU
         // read is repeated once as the halt cycle.
-        _ = _bus.Read(haltedReadAddress);
+        if (!skipFirstInputClock)
+        {
+            _ = _bus.Read(haltedReadAddress);
+        }
+
         IdleCycle();
         dmcHaltNeeded = false;
 
@@ -790,7 +803,10 @@ internal sealed class Cpu6502
             {
                 if (hasDmcDma && !dmcHaltNeeded && !dmcDummyNeeded)
                 {
-                    var value = _bus.Read(_bus.Apu.DmcDmaAddress);
+                    var value = _bus.ReadForDma(
+                        _bus.Apu.DmcDmaAddress,
+                        enableInternalIoReads,
+                        ref previousReadAddress);
                     IdleCycle();
                     _bus.Apu.CompleteDmcDma(value);
                     hasDmcDma = false;
@@ -798,7 +814,10 @@ internal sealed class Cpu6502
                 else if (hasOamDma)
                 {
                     AdvanceDmcDmaPhase(ref dmcHaltNeeded, ref dmcDummyNeeded);
-                    oamValue = _bus.Read((ushort)((oamPage << 8) | oamAddress));
+                    oamValue = _bus.ReadForDma(
+                        (ushort)((oamPage << 8) | oamAddress),
+                        enableInternalIoReads,
+                        ref previousReadAddress);
                     IdleCycle();
                     oamWriteReady = true;
                 }

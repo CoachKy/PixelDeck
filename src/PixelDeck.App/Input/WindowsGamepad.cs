@@ -55,7 +55,12 @@ internal sealed class WindowsGamepad
 
     public GamepadButton ReadNewPresses()
     {
-        var buttons = ReadButtons();
+        return ReadNewPresses(out _);
+    }
+
+    public GamepadButton ReadNewPresses(out GamepadButton buttons)
+    {
+        buttons = ReadButtons();
         var newPresses = buttons & ~_previousButtons;
         _previousButtons = buttons;
         return newPresses;

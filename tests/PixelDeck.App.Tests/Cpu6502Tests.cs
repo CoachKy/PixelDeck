@@ -65,7 +65,9 @@ public sealed class Cpu6502Tests
         cpu.Step();
 
         Assert.Equal(4, cpu.Step());
-        Assert.Equal(7, cpu.Step());
+        // The phase-delayed initial request lands on a three-cycle DMC
+        // fetch for this instruction alignment.
+        Assert.Equal(6, cpu.Step());
     }
 
     [Fact]

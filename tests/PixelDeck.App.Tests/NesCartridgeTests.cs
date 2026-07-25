@@ -271,6 +271,68 @@ public sealed class NesCartridgeTests
     }
 
     [Fact]
+    public void CpuIoReadsPreserveTheExternalOpenBusPins()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var bus = new NesBus(Cartridge.Load(image.Path));
+        bus.SetControllerState(1, NesButton.A);
+        bus.Write(0x4016, 0x01);
+        bus.Write(0x4016, 0x00);
+
+        bus.Write(0x0000, 0xA0);
+
+        Assert.Equal(0xA0, bus.Read(0x4000));
+        Assert.Equal(0xA1, bus.Read(0x4016));
+    }
+
+    [Fact]
+    public void ApuStatusUsesBitFiveWithoutReplacingTheExternalOpenBus()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var bus = new NesBus(Cartridge.Load(image.Path));
+        bus.Write(0x0000, 0xA0);
+
+        Assert.Equal(0x20, bus.Read(0x4015));
+        Assert.Equal(0xA0, bus.Read(0x4000));
+    }
+
+    [Fact]
+    public void ConsecutiveDmaControllerSelectDoesNotDeleteAnotherButton()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var bus = new NesBus(Cartridge.Load(image.Path));
+        bus.SetControllerState(1, NesButton.B);
+        bus.Write(0x4016, 0x01);
+        bus.Write(0x4016, 0x00);
+
+        Assert.Equal(0, bus.Read(0x4016) & 1);
+        var previousReadAddress = (ushort)0x4016;
+        _ = bus.ReadForDma(
+            0xC016,
+            enableInternalIoReads: true,
+            ref previousReadAddress);
+
+        Assert.Equal(1, bus.Read(0x4016) & 1);
+    }
+
+    [Fact]
+    public void DmaInternalApuStatusReadClearsTheFrameIrq()
+    {
+        using var image = TemporaryNesImage.Create(mapper: 0);
+        var bus = new NesBus(Cartridge.Load(image.Path));
+        bus.Apu.Clock(29_827);
+        Assert.True(bus.Apu.IrqPending);
+
+        var previousReadAddress = (ushort)0x4014;
+        _ = bus.ReadForDma(
+            0xC015,
+            enableInternalIoReads: true,
+            ref previousReadAddress);
+
+        Assert.False(bus.Apu.IrqPending);
+    }
+
+    [Fact]
     public void InvalidSaveStateRollsBackWithoutChangingTheRunningMachine()
     {
         using var image = TemporaryNesImage.Create(mapper: 0);

@@ -66,6 +66,20 @@ public sealed class SnesPpuTests
     }
 
     [Fact]
+    public void SubscreenColorMathUsesFixedColorForTransparentPixels()
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        ppu.WriteRegister(0x2130, 0x02);
+        ppu.WriteRegister(0x2131, 0x20);
+        ppu.WriteRegister(0x2132, 0x5F);
+
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFF00FF00u, ppu.FrameBuffer[0]);
+    }
+
+    [Fact]
     public void Mode2UsesBg3OffsetsAfterTheFirstVisibleTileColumn()
     {
         var ppu = new SnesPpu();
@@ -146,6 +160,28 @@ public sealed class SnesPpuTests
     }
 
     [Fact]
+    public void HorizontalScrollWritesPreserveAllThreeFineOffsetBits()
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        WriteColor(ppu, 1, 0x001F);
+        WriteColor(ppu, 2, 0x03E0);
+        ppu.WriteRegister(0x210B, 0x01);
+        WriteVramWord(ppu, 0x0000, 0x0000);
+        WriteSplitFourBitTile(ppu, 0x1000, 0, 1, 2);
+        ppu.WriteRegister(0x2105, 0x01);
+        ppu.WriteRegister(0x212C, 0x01);
+
+        // A normal two-byte write of four should retain bit two in the
+        // horizontal-only PPU2 latch and begin in the tile's green half.
+        ppu.WriteRegister(0x210D, 4);
+        ppu.WriteRegister(0x210D, 0);
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFF00FF00u, ppu.FrameBuffer[0]);
+    }
+
+    [Fact]
     public void Mode3DirectColorBypassesCgram()
     {
         var ppu = new SnesPpu();
@@ -188,7 +224,23 @@ public sealed class SnesPpuTests
 
         ppu.RenderScanline(0);
 
-        Assert.Equal(0xFF730000u, ppu.FrameBuffer[0]);
+        Assert.Equal(0xFFE60000u, ppu.FrameBuffer[0]);
+    }
+
+    [Fact]
+    public void Mode7RepeatOneWrapsWhileRepeatTwoIsTransparent()
+    {
+        var wrappingPpu = CreateMode7RepeatPpu(repeat: 1);
+        var transparentPpu = CreateMode7RepeatPpu(repeat: 2);
+
+        wrappingPpu.RenderScanline(0);
+        transparentPpu.RenderScanline(0);
+
+        // An 8x identity scale places x=128 at coordinate 1024, just beyond
+        // the Mode 7 map. Repeat mode one wraps that coordinate; mode two
+        // emits transparent color zero.
+        Assert.Equal(0xFF00FF00u, wrappingPpu.FrameBuffer[128]);
+        Assert.Equal(0xFF000000u, transparentPpu.FrameBuffer[128]);
     }
 
     [Fact]
@@ -342,6 +394,104 @@ public sealed class SnesPpuTests
         Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[31 * SnesPpu.Width]);
     }
 
+    [Fact]
+    public void VramReadsUseTheHardwarePrefetchLatch()
+    {
+        var ppu = new SnesPpu();
+        WriteVramWord(ppu, 0, 0x2211);
+        WriteVramWord(ppu, 1, 0x4433);
+        // Increment after the high-byte port, as used for word reads.
+        ppu.WriteRegister(0x2115, 0x80);
+        ppu.WriteRegister(0x2116, 0);
+        ppu.WriteRegister(0x2117, 0);
+
+        Assert.Equal(0x11, ppu.ReadRegister(0x2139));
+        Assert.Equal(0x22, ppu.ReadRegister(0x213A));
+        // The first incrementing access prefetches the current word before
+        // incrementing, so it is observed once more.
+        Assert.Equal(0x11, ppu.ReadRegister(0x2139));
+        Assert.Equal(0x22, ppu.ReadRegister(0x213A));
+        Assert.Equal(0x33, ppu.ReadRegister(0x2139));
+        Assert.Equal(0x44, ppu.ReadRegister(0x213A));
+    }
+
+    [Fact]
+    public void VramReadLatchAndAddressRoundTripThroughSaveState()
+    {
+        var ppu = new SnesPpu();
+        WriteVramWord(ppu, 0, 0x2211);
+        WriteVramWord(ppu, 1, 0x4433);
+        ppu.WriteRegister(0x2115, 0x80);
+        ppu.WriteRegister(0x2116, 0);
+        ppu.WriteRegister(0x2117, 0);
+        Assert.Equal(0x11, ppu.ReadRegister(0x2139));
+        Assert.Equal(0x22, ppu.ReadRegister(0x213A));
+
+        using var state = new MemoryStream();
+        using (var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            ppu.SaveState(writer);
+        }
+
+        Assert.Equal(0x11, ppu.ReadRegister(0x2139));
+        Assert.Equal(0x22, ppu.ReadRegister(0x213A));
+        state.Position = 0;
+        using (var reader = new BinaryReader(state, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            ppu.LoadState(reader);
+        }
+
+        Assert.Equal(0x11, ppu.ReadRegister(0x2139));
+        Assert.Equal(0x22, ppu.ReadRegister(0x213A));
+        Assert.Equal(0x33, ppu.ReadRegister(0x2139));
+    }
+
+    [Fact]
+    public void LatchedBeamCountersReturnLowThenHighAndStatusResetsThePair()
+    {
+        var ppu = new SnesPpu();
+        ppu.LatchCounters(horizontal: 0x0135, vertical: 0x0101);
+
+        Assert.Equal(0x35, ppu.ReadRegister(0x213C));
+        // Only bit zero is driven during the high counter read. The other
+        // seven bits retain the PPU2 data-bus value from the low read.
+        Assert.Equal(0x35, ppu.ReadRegister(0x213C));
+        Assert.Equal(0x01, ppu.ReadRegister(0x213D));
+        Assert.Equal(0x01, ppu.ReadRegister(0x213D));
+        Assert.Equal(0x43, ppu.ReadRegister(0x213F));
+
+        Assert.Equal(0x35, ppu.ReadRegister(0x213C));
+        Assert.Equal(0x01, ppu.ReadRegister(0x213D));
+        Assert.Equal(0x03, ppu.ReadRegister(0x213F));
+    }
+
+    [Fact]
+    public void CgramReadsUseAWordLatchAndPreserveOpenBusBitSeven()
+    {
+        var ppu = new SnesPpu();
+        WriteColor(ppu, 2, 0x1234);
+        WriteColor(ppu, 3, 0x7F80);
+        ppu.WriteRegister(0x2121, 2);
+
+        Assert.Equal(0x34, ppu.ReadRegister(0x213B));
+        Assert.Equal(0x12, ppu.ReadRegister(0x213B));
+        Assert.Equal(0x80, ppu.ReadRegister(0x213B));
+        // CGRAM only drives seven bits on the high-byte phase, so bit seven
+        // remains set from the preceding low-byte read.
+        Assert.Equal(0xFF, ppu.ReadRegister(0x213B));
+    }
+
+    [Fact]
+    public void PpuStatusRegistersPreserveTheirUndrivenOpenBusBits()
+    {
+        var ppu = new SnesPpu();
+        WriteMode7Word(ppu, 0x211B, 0x0010);
+        WriteMode7Word(ppu, 0x211C, 0x0100);
+
+        Assert.Equal(0x10, ppu.ReadRegister(0x2134));
+        Assert.Equal(0x11, ppu.ReadRegister(0x213E));
+    }
+
     private static void SetDisplayOn(SnesPpu ppu) => ppu.WriteRegister(0x2100, 0x0F);
 
     private static void WriteColor(SnesPpu ppu, byte index, ushort color)
@@ -384,10 +534,64 @@ public sealed class SnesPpuTests
         }
     }
 
+    private static void WriteSplitFourBitTile(
+        SnesPpu ppu,
+        ushort tileBase,
+        int character,
+        int leftColor,
+        int rightColor)
+    {
+        var tileAddress = tileBase + (character * 16);
+        var planeZero = (byte)(
+            ((leftColor & 1) != 0 ? 0xF0 : 0) |
+            ((rightColor & 1) != 0 ? 0x0F : 0));
+        var planeOne = (byte)(
+            ((leftColor & 2) != 0 ? 0xF0 : 0) |
+            ((rightColor & 2) != 0 ? 0x0F : 0));
+        var planeTwo = (byte)(
+            ((leftColor & 4) != 0 ? 0xF0 : 0) |
+            ((rightColor & 4) != 0 ? 0x0F : 0));
+        var planeThree = (byte)(
+            ((leftColor & 8) != 0 ? 0xF0 : 0) |
+            ((rightColor & 8) != 0 ? 0x0F : 0));
+        for (var row = 0; row < 8; row++)
+        {
+            WriteVramWord(
+                ppu,
+                (ushort)(tileAddress + row),
+                (ushort)(planeZero | (planeOne << 8)));
+            WriteVramWord(
+                ppu,
+                (ushort)(tileAddress + 8 + row),
+                (ushort)(planeTwo | (planeThree << 8)));
+        }
+    }
+
     private static void WriteMode7Word(SnesPpu ppu, ushort register, short value)
     {
         ppu.WriteRegister(register, (byte)value);
         ppu.WriteRegister(register, (byte)(value >> 8));
+    }
+
+    private static SnesPpu CreateMode7RepeatPpu(int repeat)
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        WriteColor(ppu, 1, 0x03E0);
+        WriteVramWord(ppu, 0x0000, 0x0001);
+        WriteVramWord(ppu, 0x0040, 0x0100);
+        ppu.WriteRegister(0x2105, 0x07);
+        ppu.WriteRegister(0x211A, (byte)(repeat << 6));
+        ppu.WriteRegister(0x212C, 0x01);
+        WriteMode7Word(ppu, 0x211B, 0x0800);
+        WriteMode7Word(ppu, 0x211C, 0x0000);
+        WriteMode7Word(ppu, 0x211D, 0x0000);
+        WriteMode7Word(ppu, 0x211E, 0x0100);
+        WriteMode7Word(ppu, 0x211F, 0x0000);
+        WriteMode7Word(ppu, 0x2120, 0x0000);
+        WriteMode7Word(ppu, 0x210D, 0x0000);
+        WriteMode7Word(ppu, 0x210E, 0x0000);
+        return ppu;
     }
 
     private static void WriteOamWord(SnesPpu ppu, ushort wordAddress, ushort value)

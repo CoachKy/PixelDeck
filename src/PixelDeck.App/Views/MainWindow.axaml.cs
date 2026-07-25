@@ -19,6 +19,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _libraryRefreshTimer;
     private readonly DashboardSoundPlayer _dashboardSounds = new();
     private readonly WindowsGamepad _gamepad = new();
+    private readonly HeldButtonRepeater _libraryIndexVerticalRepeater =
+        new(GamepadButton.DPadUp | GamepadButton.DPadDown);
     private FileSystemWatcher? _watcher;
     private EmulatorWindow? _emulatorWindow;
     private DashboardNavigationRegion _navigationRegion = DashboardNavigationRegion.PageContent;
@@ -234,12 +236,22 @@ public partial class MainWindow : Window
 
         _gamepad.UserIndex = viewModel.SelectedControllerSlot.Index;
         viewModel.UpdateControllerStatus(_gamepad.IsConnected);
-        var presses = _gamepad.ReadNewPresses();
+        var presses = _gamepad.ReadNewPresses(out var buttons);
 
         if (_isQuitConfirmationVisible)
         {
+            _libraryIndexVerticalRepeater.Reset();
             HandleQuitConfirmationGamepad(presses);
             return;
+        }
+
+        if (_navigationRegion == DashboardNavigationRegion.LibraryIndex)
+        {
+            presses |= _libraryIndexVerticalRepeater.ReadRepeat(buttons, Environment.TickCount64);
+        }
+        else
+        {
+            _libraryIndexVerticalRepeater.Reset();
         }
 
         if (presses.HasFlag(GamepadButton.LeftShoulder))

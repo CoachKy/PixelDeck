@@ -48,6 +48,7 @@ internal sealed class NesBus
     public byte Read(ushort address)
     {
         byte value;
+        var updateExternalOpenBus = true;
         if (address < 0x2000)
         {
             value = _ram[address & 0x07FF];
@@ -60,15 +61,76 @@ internal sealed class NesBus
         {
             value = address switch
             {
-                0x4015 => Apu.ReadStatus(),
-                0x4016 => _controllerOne.Read(),
-                0x4017 => _controllerTwo.Read(),
+                0x4015 => Apu.ReadStatus(_cpuOpenBus),
+                0x4016 => _controllerOne.Read(_cpuOpenBus),
+                0x4017 => _controllerTwo.Read(_cpuOpenBus),
                 >= 0x4020 => _cartridge.CpuRead(address),
-                _ => 0
+                _ => _cpuOpenBus
             };
+            // $4015 is driven by the CPU's internal APU bus. It exposes the
+            // existing external-bus value on bit 5 without replacing that
+            // external latch with the returned status byte.
+            updateExternalOpenBus = address != 0x4015;
         }
 
-        _cpuOpenBus = value;
+        if (updateExternalOpenBus)
+        {
+            _cpuOpenBus = value;
+        }
+
+        return value;
+    }
+
+    public byte ReadForDma(
+        ushort address,
+        bool enableInternalIoReads,
+        ref ushort previousReadAddress)
+    {
+        if (!enableInternalIoReads)
+        {
+            var externalValue = ReadExternalForDma(address);
+            previousReadAddress = address;
+            return externalValue;
+        }
+
+        // When DMA halts a CPU read from $4000-$401F, the 2A03 can select an
+        // internal APU/controller register from the DMA address's low five
+        // bits while the cartridge sees the full external address.
+        var internalAddress = (ushort)(0x4000 | (address & 0x001F));
+        var isSameAddress = internalAddress == address;
+        byte value;
+        switch (internalAddress)
+        {
+            case 0x4015:
+                value = Read(internalAddress);
+                if (!isSameAddress)
+                {
+                    _ = ReadExternalForDma(address);
+                }
+
+                break;
+            case 0x4016:
+            case 0x4017:
+                value = previousReadAddress == internalAddress
+                    ? _cpuOpenBus
+                    : Read(internalAddress);
+                if (!isSameAddress)
+                {
+                    var externalValue = ReadExternalForDma(address);
+                    const byte controllerOpenBusMask = 0xE0;
+                    value = (byte)(
+                        (externalValue & controllerOpenBusMask) |
+                        ((value & ~controllerOpenBusMask) &
+                         (externalValue & ~controllerOpenBusMask)));
+                }
+
+                break;
+            default:
+                value = ReadExternalForDma(address);
+                break;
+        }
+
+        previousReadAddress = internalAddress;
         return value;
     }
 
@@ -167,6 +229,15 @@ internal sealed class NesBus
         }
     }
 
+    private byte ReadExternalForDma(ushort address)
+    {
+        // The APU/controller registers are internal to the 2A03 and do not
+        // answer a DMA unit's external-bus read.
+        return address is >= 0x4000 and <= 0x401F
+            ? _cpuOpenBus
+            : Read(address);
+    }
+
 }
 
 internal sealed class NesController
@@ -186,14 +257,17 @@ internal sealed class NesController
         }
     }
 
-    public byte Read()
+    public byte Read(byte openBus)
     {
         if (_strobe)
         {
             _shiftRegister = Volatile.Read(ref _state);
         }
 
-        var value = (byte)(0x40 | (_shiftRegister & 1));
+        // A standard NES controller only drives data bit zero. The upper
+        // three pins float and retain their prior CPU-bus values; the middle
+        // four pins are grounded on the NES-001 controller ports.
+        var value = (byte)((openBus & 0xE0) | (_shiftRegister & 1));
         if (!_strobe)
         {
             _shiftRegister = (byte)((_shiftRegister >> 1) | 0x80);

@@ -43,6 +43,7 @@ internal sealed class SnesPpu
     private byte _screenMode;
     private byte _vramIncrementMode;
     private ushort _vramAddress;
+    private ushort _vramReadLatch;
     private ushort _cgramAddress;
     private bool _cgramHighWrite;
     private byte _cgramLow;
@@ -52,6 +53,13 @@ internal sealed class SnesPpu
     private bool _oamPriorityRotation;
     private bool _spriteRangeOver;
     private bool _spriteTimeOver;
+    private ushort _latchedHorizontalCounter;
+    private ushort _latchedVerticalCounter;
+    private bool _horizontalCounterHighRead;
+    private bool _verticalCounterHighRead;
+    private bool _countersLatched;
+    private byte _ppu1OpenBus;
+    private byte _ppu2OpenBus;
     private byte _mode7Control;
     private byte _mode7Latch;
     private short _mode7A;
@@ -80,6 +88,10 @@ internal sealed class SnesPpu
     public int NonZeroCgramBytes => _cgram.Count(value => value != 0);
 
     public int NonZeroOamBytes => _oam.Count(value => value != 0);
+
+    internal bool CounterLatchEnabled { get; set; } = true;
+
+    internal bool IsPal { get; set; }
 
     public void WriteRegister(ushort address, byte value)
     {
@@ -130,9 +142,11 @@ internal sealed class SnesPpu
                 break;
             case 0x2116:
                 _vramAddress = (ushort)((_vramAddress & 0xFF00) | value);
+                ReloadVramReadLatch();
                 break;
             case 0x2117:
                 _vramAddress = (ushort)((_vramAddress & 0x00FF) | (value << 8));
+                ReloadVramReadLatch();
                 break;
             case 0x2118:
                 WriteVram(highByte: false, value);
@@ -207,22 +221,42 @@ internal sealed class SnesPpu
     public byte ReadRegister(ushort address)
     {
         var multiplication = _mode7A * (_mode7B >> 8);
-        return address switch
+        switch (address)
         {
-            0x2134 => (byte)multiplication,
-            0x2135 => (byte)(multiplication >> 8),
-            0x2136 => (byte)(multiplication >> 16),
-            0x2138 => ReadOam(),
-            0x2139 => ReadVram(highByte: false),
-            0x213A => ReadVram(highByte: true),
-            0x213B => _cgram[_cgramAddress++ & 0x01FF],
-            0x213E => (byte)(
-                0x01 |
-                (_spriteRangeOver ? 0x40 : 0) |
-                (_spriteTimeOver ? 0x80 : 0)),
-            0x213F => 0x03,
-            _ => 0
-        };
+            case 0x2134:
+                return LatchPpu1OpenBus((byte)multiplication);
+            case 0x2135:
+                return LatchPpu1OpenBus((byte)(multiplication >> 8));
+            case 0x2136:
+                return LatchPpu1OpenBus((byte)(multiplication >> 16));
+            case 0x2138:
+                return LatchPpu1OpenBus(ReadOam());
+            case 0x2139:
+                return LatchPpu1OpenBus(ReadVram(highByte: false));
+            case 0x213A:
+                return LatchPpu1OpenBus(ReadVram(highByte: true));
+            case 0x213B:
+                return ReadCgram();
+            case 0x213C:
+                return ReadLatchedCounter(
+                    _latchedHorizontalCounter,
+                    ref _horizontalCounterHighRead);
+            case 0x213D:
+                return ReadLatchedCounter(
+                    _latchedVerticalCounter,
+                    ref _verticalCounterHighRead);
+            case 0x213E:
+                _ppu1OpenBus = (byte)(
+                    (_ppu1OpenBus & 0x10) |
+                    0x01 |
+                    (_spriteRangeOver ? 0x40 : 0) |
+                    (_spriteTimeOver ? 0x80 : 0));
+                return _ppu1OpenBus;
+            case 0x213F:
+                return ReadPpu2Status();
+            default:
+                return 0;
+        }
     }
 
     public void RenderFrame()
@@ -242,6 +276,13 @@ internal sealed class SnesPpu
         {
             ReloadOamAddress();
         }
+    }
+
+    internal void LatchCounters(ushort horizontal, ushort vertical)
+    {
+        _latchedHorizontalCounter = (ushort)(horizontal & 0x01FF);
+        _latchedVerticalCounter = (ushort)(vertical & 0x01FF);
+        _countersLatched = true;
     }
 
     public void RenderScanline(int y)
@@ -295,6 +336,7 @@ internal sealed class SnesPpu
         RenderSpritesLine(y, mainScreen: false);
 
         var outputOffset = y * Width;
+        var hiresOutput = mode is 5 or 6 || (_screenMode & 0x08) != 0;
         for (var x = 0; x < Width; x++)
         {
             var colorWindowInside = IsWindowInside(layer: 5, x);
@@ -308,21 +350,36 @@ internal sealed class SnesPpu
             var layer = _mainLineLayers[x];
             if (!mathPrevented && (_colorMathDesignation & (1 << layer)) != 0)
             {
-                var secondColor = (_colorMathControl & 0x02) != 0
+                var useSubScreen = (_colorMathControl & 0x02) != 0;
+                var subScreenIsBackdrop = _subLineLayers[x] == BackdropLayer;
+                // In standard-resolution color math, the fixed color occupies
+                // the subscreen's transparent/backdrop pixels. Treating them
+                // as CGRAM color zero turns Super Mario World's cyan file-
+                // select sky black. Hires modes expose the actual subscreen
+                // backdrop instead.
+                var useFixedFallback =
+                    useSubScreen &&
+                    !hiresOutput &&
+                    subScreenIsBackdrop;
+                var secondColor = useSubScreen && !useFixedFallback
                     ? _subLineColors[x]
                     : _fixedColor;
                 mainColor = ApplyColorMath(
                     mainColor,
                     secondColor,
                     subtract: (_colorMathDesignation & 0x80) != 0,
-                    half: (_colorMathDesignation & 0x40) != 0);
+                    half:
+                        (_colorMathDesignation & 0x40) != 0 &&
+                        (!useSubScreen || !subScreenIsBackdrop));
             }
 
             _frameBuffer[outputOffset + x] = ExpandColor(mainColor);
         }
     }
 
-    internal void SaveState(BinaryWriter writer)
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 11);
+
+    internal void SaveState(BinaryWriter writer, int stateVersion)
     {
         writer.Write(_vram);
         writer.Write(_cgram);
@@ -344,6 +401,7 @@ internal sealed class SnesPpu
         writer.Write(_screenMode);
         writer.Write(_vramIncrementMode);
         writer.Write(_vramAddress);
+        writer.Write(_vramReadLatch);
         writer.Write(_cgramAddress);
         writer.Write(_cgramHighWrite);
         writer.Write(_cgramLow);
@@ -353,6 +411,18 @@ internal sealed class SnesPpu
         writer.Write(_oamPriorityRotation);
         writer.Write(_spriteRangeOver);
         writer.Write(_spriteTimeOver);
+        writer.Write(_latchedHorizontalCounter);
+        writer.Write(_latchedVerticalCounter);
+        writer.Write(_horizontalCounterHighRead);
+        writer.Write(_verticalCounterHighRead);
+        writer.Write(_countersLatched);
+        if (stateVersion >= 11)
+        {
+            writer.Write(_ppu1OpenBus);
+            writer.Write(_ppu2OpenBus);
+            writer.Write(CounterLatchEnabled);
+            writer.Write(IsPal);
+        }
         writer.Write(_mode7Control);
         writer.Write(_mode7Latch);
         writer.Write(_mode7A);
@@ -374,7 +444,9 @@ internal sealed class SnesPpu
         writer.Write(_windowLogic);
     }
 
-    internal void LoadState(BinaryReader reader)
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 11);
+
+    internal void LoadState(BinaryReader reader, int stateVersion)
     {
         reader.ReadExactly(_vram);
         reader.ReadExactly(_cgram);
@@ -396,6 +468,7 @@ internal sealed class SnesPpu
         _screenMode = reader.ReadByte();
         _vramIncrementMode = reader.ReadByte();
         _vramAddress = reader.ReadUInt16();
+        _vramReadLatch = reader.ReadUInt16();
         _cgramAddress = reader.ReadUInt16();
         _cgramHighWrite = reader.ReadBoolean();
         _cgramLow = reader.ReadByte();
@@ -405,6 +478,24 @@ internal sealed class SnesPpu
         _oamPriorityRotation = reader.ReadBoolean();
         _spriteRangeOver = reader.ReadBoolean();
         _spriteTimeOver = reader.ReadBoolean();
+        _latchedHorizontalCounter = reader.ReadUInt16();
+        _latchedVerticalCounter = reader.ReadUInt16();
+        _horizontalCounterHighRead = reader.ReadBoolean();
+        _verticalCounterHighRead = reader.ReadBoolean();
+        _countersLatched = reader.ReadBoolean();
+        if (stateVersion >= 11)
+        {
+            _ppu1OpenBus = reader.ReadByte();
+            _ppu2OpenBus = reader.ReadByte();
+            CounterLatchEnabled = reader.ReadBoolean();
+            IsPal = reader.ReadBoolean();
+        }
+        else
+        {
+            _ppu1OpenBus = 0;
+            _ppu2OpenBus = 0;
+            CounterLatchEnabled = true;
+        }
         _mode7Control = reader.ReadByte();
         _mode7Latch = reader.ReadByte();
         _mode7A = reader.ReadInt16();
@@ -731,6 +822,14 @@ internal sealed class SnesPpu
         out ushort color,
         out bool highPriority)
     {
+        var mosaicEnabled = (_mosaic & (1 << background)) != 0;
+        var mosaicSize = (_mosaic >> 4) + 1;
+        if (mosaicEnabled && mosaicSize > 1)
+        {
+            screenX -= screenX % mosaicSize;
+            screenY -= screenY % mosaicSize;
+        }
+
         if ((_mode7Control & 0x01) != 0) screenX = Width - 1 - screenX;
         if ((_mode7Control & 0x02) != 0) screenY = 255 - screenY;
 
@@ -738,14 +837,26 @@ internal sealed class SnesPpu
         var verticalOffset = SignExtend13(_mode7VerticalOffset);
         var centerX = SignExtend13(_mode7CenterX);
         var centerY = SignExtend13(_mode7CenterY);
-        var relativeX = SignExtend13(screenX + horizontalOffset - centerX);
-        var relativeY = SignExtend13(screenY + verticalOffset - centerY);
-        var transformedX = ((_mode7A * relativeX) + (_mode7B * relativeY) + (centerX << 8)) >> 8;
-        var transformedY = ((_mode7C * relativeX) + (_mode7D * relativeY) + (centerY << 8)) >> 8;
+        // The real Mode 7 pipeline clips the center-relative offsets to ten
+        // bits before applying the matrix and truncates every matrix term to
+        // a 64-subpixel boundary. Performing one conventional affine
+        // expression here causes visible seams and camera jitter near wrap.
+        var originX =
+            ((_mode7A * ClipMode7Offset(horizontalOffset - centerX)) & ~63) +
+            ((_mode7B * ClipMode7Offset(verticalOffset - centerY)) & ~63) +
+            ((_mode7B * screenY) & ~63) +
+            (centerX << 8);
+        var originY =
+            ((_mode7C * ClipMode7Offset(horizontalOffset - centerX)) & ~63) +
+            ((_mode7D * ClipMode7Offset(verticalOffset - centerY)) & ~63) +
+            ((_mode7D * screenY) & ~63) +
+            (centerY << 8);
+        var transformedX = (originX + (_mode7A * screenX)) >> 8;
+        var transformedY = (originY + (_mode7C * screenX)) >> 8;
 
         var outside = transformedX is < 0 or >= 1024 || transformedY is < 0 or >= 1024;
         var repeat = (_mode7Control >> 6) & 3;
-        if (outside && repeat is 1 or 2)
+        if (outside && repeat == 2)
         {
             color = 0;
             highPriority = false;
@@ -958,12 +1069,12 @@ internal sealed class SnesPpu
 
     private static ushort DecodeDirectColor(int pixel, int palette) =>
         (ushort)(
-            ((palette & 0x01) << 4) |
-            ((pixel & 0x07) << 1) |
-            ((palette & 0x02) << 8) |
-            ((pixel & 0x38) << 3) |
-            ((palette & 0x04) << 12) |
-            ((pixel & 0xC0) << 5));
+            ((pixel << 7) & 0x6000) |
+            ((palette << 10) & 0x1000) |
+            ((pixel << 4) & 0x0380) |
+            ((palette << 5) & 0x0040) |
+            ((pixel << 2) & 0x001C) |
+            ((palette << 1) & 0x0002));
 
     private uint ExpandColor(ushort color)
     {
@@ -999,15 +1110,19 @@ internal sealed class SnesPpu
         var background = register / 2;
         if ((register & 1) == 0)
         {
-            // All BG scroll registers share the previous-write latch. HOFS
-            // also retains three fine-scroll bits from its previous high
-            // byte, which matters when HDMA performs one write per line.
-            var current = _bgHorizontalScroll[background];
+            // All BG scroll registers share the PPU1 previous-write latch.
+            // Horizontal writes additionally use the low three bits of the
+            // previous horizontal write through the PPU2 latch. Keep that
+            // second latch separate: deriving it from the 10-bit result loses
+            // bit two and makes backgrounds jump by four pixels while they
+            // scroll. The first two entries of the existing serialized array
+            // preserve both latches without invalidating version-10 states.
             _bgHorizontalScroll[background] = (ushort)(
                 ((value << 8) |
                  (_scrollLow[0] & 0xF8) |
-                 ((current >> 8) & 0x07)) &
+                 (_scrollLow[1] & 0x07)) &
                 0x03FF);
+            _scrollLow[1] = value;
         }
         else
         {
@@ -1078,13 +1193,85 @@ internal sealed class SnesPpu
 
     private byte ReadVram(bool highByte)
     {
-        var mappedAddress = RemapVramAddress(_vramAddress);
-        var value = _vram[((mappedAddress * 2) + (highByte ? 1 : 0)) & 0xFFFF];
+        var value = highByte
+            ? (byte)(_vramReadLatch >> 8)
+            : (byte)_vramReadLatch;
         if (((_vramIncrementMode & 0x80) != 0) == highByte)
         {
+            // The PPU reloads the read latch from the current word before
+            // advancing VMADD. This deliberately repeats the addressed word
+            // once at the beginning of a sequential read unless software
+            // performs the documented dummy access.
+            ReloadVramReadLatch();
             _vramAddress += GetVramIncrement();
         }
 
+        return value;
+    }
+
+    private void ReloadVramReadLatch()
+    {
+        var mappedAddress = RemapVramAddress(_vramAddress);
+        var byteAddress = (mappedAddress * 2) & 0xFFFF;
+        _vramReadLatch = (ushort)(
+            _vram[byteAddress] |
+            (_vram[(byteAddress + 1) & 0xFFFF] << 8));
+    }
+
+    private byte ReadCgram()
+    {
+        if (!_cgramHighWrite)
+        {
+            _ppu2OpenBus = _cgram[_cgramAddress & 0x01FF];
+            _cgramHighWrite = true;
+            return _ppu2OpenBus;
+        }
+
+        _ppu2OpenBus = (byte)(
+            (_ppu2OpenBus & 0x80) |
+            (_cgram[(_cgramAddress + 1) & 0x01FF] & 0x7F));
+        _cgramAddress = (ushort)((_cgramAddress + 2) & 0x01FF);
+        _cgramHighWrite = false;
+        return _ppu2OpenBus;
+    }
+
+    private byte ReadLatchedCounter(ushort value, ref bool highRead)
+    {
+        if (highRead)
+        {
+            _ppu2OpenBus = (byte)(
+                (_ppu2OpenBus & 0xFE) |
+                ((value >> 8) & 1));
+        }
+        else
+        {
+            _ppu2OpenBus = (byte)value;
+        }
+
+        highRead = !highRead;
+        return _ppu2OpenBus;
+    }
+
+    private byte ReadPpu2Status()
+    {
+        _ppu2OpenBus = (byte)(
+            (_ppu2OpenBus & 0x20) |
+            0x03 |
+            (IsPal ? 0x10 : 0) |
+            ((!CounterLatchEnabled || _countersLatched) ? 0x40 : 0));
+        if (CounterLatchEnabled)
+        {
+            _countersLatched = false;
+        }
+
+        _horizontalCounterHighRead = false;
+        _verticalCounterHighRead = false;
+        return _ppu2OpenBus;
+    }
+
+    private byte LatchPpu1OpenBus(byte value)
+    {
+        _ppu1OpenBus = value;
         return value;
     }
 
@@ -1248,6 +1435,11 @@ internal sealed class SnesPpu
         value &= 0x1FFF;
         return (value & 0x1000) != 0 ? value | ~0x1FFF : value;
     }
+
+    private static int ClipMode7Offset(int value) =>
+        (value & 0x2000) != 0
+            ? value | ~0x03FF
+            : value & 0x03FF;
 
     private static (
         int SmallWidth,
