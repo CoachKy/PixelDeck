@@ -1,0 +1,320 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="using:PixelDeck.App.Views"
+             x:Class="PixelDeck.App.Views.ControllerPaperDoll"
+             x:Name="Root"
+             x:DataType="views:ControllerPaperDoll">
+    <Grid RowDefinitions="Auto,*" RowSpacing="12">
+        <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Spacing="3">
+                <TextBlock Text="{Binding ConsoleText, ElementName=Root}"
+                           Foreground="#65B7FF"
+                           FontSize="10"
+                           FontWeight="Bold"
+                           LetterSpacing="1.7" />
+                <TextBlock Text="{Binding DeviceText, ElementName=Root}"
+                           FontSize="19"
+                           FontWeight="Black"
+                           TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <Border Grid.Column="1"
+                    Padding="10,6"
+                    VerticalAlignment="Center"
+                    CornerRadius="12"
+                    BorderBrush="#2E65B7FF"
+                    BorderThickness="1"
+                    Background="#1265B7FF">
+                <TextBlock Text="LIVE MAP"
+                           Foreground="#65B7FF"
+                           FontSize="9"
+                           FontWeight="Bold"
+                           LetterSpacing="1.2" />
+            </Border>
+        </Grid>
+
+        <Viewbox Grid.Row="1" Stretch="Uniform">
+            <Canvas Width="760" Height="430">
+                <Border Canvas.Left="125"
+                        Canvas.Top="12"
+                        Width="215"
+                        Height="48"
+                        Padding="15,7"
+                        CornerRadius="13,13,5,5"
+                        BorderBrush="#3AFFFFFF"
+                        BorderThickness="2"
+                        Background="#17283A">
+                    <Grid ColumnDefinitions="Auto,*">
+                        <TextBlock Text="LB / L1"
+                                   VerticalAlignment="Center"
+                                   Foreground="#91A2B6"
+                                   FontSize="10"
+                                   FontWeight="Bold" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding LeftShoulderActionText, ElementName=Root}"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   FontSize="15"
+                                   FontWeight="Black" />
+                    </Grid>
+                </Border>
+
+                <Border Canvas.Left="420"
+                        Canvas.Top="12"
+                        Width="215"
+                        Height="48"
+                        Padding="15,7"
+                        CornerRadius="13,13,5,5"
+                        BorderBrush="#3AFFFFFF"
+                        BorderThickness="2"
+                        Background="#17283A">
+                    <Grid ColumnDefinitions="Auto,*">
+                        <TextBlock Text="RB / R1"
+                                   VerticalAlignment="Center"
+                                   Foreground="#91A2B6"
+                                   FontSize="10"
+                                   FontWeight="Bold" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding RightShoulderActionText, ElementName=Root}"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   FontSize="15"
+                                   FontWeight="Black" />
+                    </Grid>
+                </Border>
+
+                <Border Canvas.Left="522"
+                        Canvas.Top="67"
+                        Width="146"
+                        Height="42"
+                        Padding="12,5"
+                        CornerRadius="7"
+                        BorderBrush="#3965B7FF"
+                        BorderThickness="1"
+                        Background="#132A43">
+                    <Grid ColumnDefinitions="Auto,*">
+                        <TextBlock Text="RT / R2"
+                                   VerticalAlignment="Center"
+                                   Foreground="#91A2B6"
+                                   FontSize="9"
+                                   FontWeight="Bold" />
+                        <TextBlock Grid.Column="1"
+                                   Text="2× SPEED"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"
+                                   Foreground="#65B7FF"
+                                   FontSize="11"
+                                   FontWeight="Black" />
+                    </Grid>
+                </Border>
+
+                <Path Fill="#15283B"
+                      Stroke="#4A5C70"
+                      StrokeThickness="7"
+                      Data="M 205,75 C 155,75 128,108 112,157 L 57,322 C 44,362 82,392 113,365 L 196,293 C 222,271 249,264 286,269 L 474,269 C 511,264 538,271 564,293 L 647,365 C 678,392 716,362 703,322 L 648,157 C 632,108 605,75 555,75 C 510,75 487,91 459,112 L 301,112 C 273,91 250,75 205,75 Z" />
+
+                <Border Canvas.Left="335"
+                        Canvas.Top="137"
+                        Width="78"
+                        Height="33"
+                        CornerRadius="16"
+                        BorderBrush="#32FFFFFF"
+                        BorderThickness="1"
+                        Background="#0D1826">
+                    <Grid ColumnDefinitions="*,*">
+                        <TextBlock Text="−"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="#A9B6C6"
+                                   FontSize="18"
+                                   FontWeight="Bold" />
+                        <TextBlock Grid.Column="1"
+                                   Text="+"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="#A9B6C6"
+                                   FontSize="16"
+                                   FontWeight="Bold" />
+                    </Grid>
+                </Border>
+
+                <StackPanel Canvas.Left="314"
+                            Canvas.Top="173"
+                            Width="78"
+                            HorizontalAlignment="Center"
+                            Spacing="2">
+                    <TextBlock Text="SELECT"
+                               HorizontalAlignment="Center"
+                               Foreground="#6F8298"
+                               FontSize="8"
+                               FontWeight="Bold" />
+                    <TextBlock Text="{Binding BackActionText, ElementName=Root}"
+                               HorizontalAlignment="Center"
+                               FontSize="12"
+                               FontWeight="Black" />
+                </StackPanel>
+
+                <StackPanel Canvas.Left="387"
+                            Canvas.Top="173"
+                            Width="78"
+                            HorizontalAlignment="Center"
+                            Spacing="2">
+                    <TextBlock Text="START"
+                               HorizontalAlignment="Center"
+                               Foreground="#6F8298"
+                               FontSize="8"
+                               FontWeight="Bold" />
+                    <TextBlock Text="{Binding StartActionText, ElementName=Root}"
+                               HorizontalAlignment="Center"
+                               FontSize="12"
+                               FontWeight="Black" />
+                </StackPanel>
+
+                <Grid Canvas.Left="351" Canvas.Top="211" Width="58" Height="58">
+                    <Ellipse Fill="#203A54" Stroke="#547493" StrokeThickness="3" />
+                    <TextBlock Text="MENU"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#B8C7D8"
+                               FontSize="8"
+                               FontWeight="Black" />
+                </Grid>
+
+                <Grid Canvas.Left="143" Canvas.Top="136" Width="122" Height="122">
+                    <Border Width="38"
+                            Height="112"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="7"
+                            Background="#0A1420"
+                            BorderBrush="#52677D"
+                            BorderThickness="2" />
+                    <Border Width="112"
+                            Height="38"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="7"
+                            Background="#0A1420"
+                            BorderBrush="#52677D"
+                            BorderThickness="2" />
+                    <TextBlock Text="MOVE"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#E7EDF4"
+                               FontSize="10"
+                               FontWeight="Black" />
+                </Grid>
+                <TextBlock Canvas.Left="165"
+                           Canvas.Top="263"
+                           Width="78"
+                           Text="D-PAD"
+                           TextAlignment="Center"
+                           Foreground="#718399"
+                           FontSize="9"
+                           FontWeight="Bold" />
+
+                <Grid Canvas.Left="247" Canvas.Top="232" Width="92" Height="92">
+                    <Ellipse Fill="#0A1420" Stroke="#52677D" StrokeThickness="5" />
+                    <Ellipse Width="55" Height="55" Fill="#1F3348" Stroke="#71869C" StrokeThickness="3" />
+                </Grid>
+                <TextBlock Canvas.Left="253"
+                           Canvas.Top="330"
+                           Width="80"
+                           Text="LEFT STICK"
+                           TextAlignment="Center"
+                           Foreground="#718399"
+                           FontSize="9"
+                           FontWeight="Bold" />
+
+                <Grid Canvas.Left="435" Canvas.Top="259" Width="82" Height="82">
+                    <Ellipse Fill="#0A1420" Stroke="#52677D" StrokeThickness="5" />
+                    <Ellipse Width="48" Height="48" Fill="#1F3348" Stroke="#71869C" StrokeThickness="3" />
+                </Grid>
+                <TextBlock Canvas.Left="436"
+                           Canvas.Top="347"
+                           Width="80"
+                           Text="RIGHT STICK"
+                           TextAlignment="Center"
+                           Foreground="#718399"
+                           FontSize="9"
+                           FontWeight="Bold" />
+
+                <Grid Canvas.Left="541" Canvas.Top="115" Width="72" Height="72">
+                    <Ellipse Fill="#263344" Stroke="#E4C746" StrokeThickness="4" />
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
+                        <TextBlock Text="NORTH"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#E4C746"
+                                   FontSize="7"
+                                   FontWeight="Bold" />
+                        <TextBlock Text="{Binding NorthActionText, ElementName=Root}"
+                                   HorizontalAlignment="Center"
+                                   FontSize="15"
+                                   FontWeight="Black" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Canvas.Left="477" Canvas.Top="179" Width="72" Height="72">
+                    <Ellipse Fill="#263344" Stroke="#4F91F2" StrokeThickness="4" />
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
+                        <TextBlock Text="WEST"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#65A7F8"
+                                   FontSize="7"
+                                   FontWeight="Bold" />
+                        <TextBlock Text="{Binding WestActionText, ElementName=Root}"
+                                   HorizontalAlignment="Center"
+                                   FontSize="15"
+                                   FontWeight="Black" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Canvas.Left="605" Canvas.Top="179" Width="72" Height="72">
+                    <Ellipse Fill="#263344" Stroke="#D94E63" StrokeThickness="4" />
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
+                        <TextBlock Text="EAST"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#EE6B7E"
+                                   FontSize="7"
+                                   FontWeight="Bold" />
+                        <TextBlock Text="{Binding EastActionText, ElementName=Root}"
+                                   HorizontalAlignment="Center"
+                                   FontSize="15"
+                                   FontWeight="Black" />
+                    </StackPanel>
+                </Grid>
+
+                <Grid Canvas.Left="541" Canvas.Top="243" Width="72" Height="72">
+                    <Ellipse Fill="#263344" Stroke="#54B87A" StrokeThickness="4" />
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
+                        <TextBlock Text="SOUTH"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#70D295"
+                                   FontSize="7"
+                                   FontWeight="Bold" />
+                        <TextBlock Text="{Binding SouthActionText, ElementName=Root}"
+                                   HorizontalAlignment="Center"
+                                   FontSize="15"
+                                   FontWeight="Black" />
+                    </StackPanel>
+                </Grid>
+
+                <Border Canvas.Left="224"
+                        Canvas.Top="387"
+                        Width="312"
+                        Height="32"
+                        CornerRadius="16"
+                        Background="#0F1D2C"
+                        BorderBrush="#2CFFFFFF"
+                        BorderThickness="1">
+                    <TextBlock Text="SYSTEM / GUIDE / PS  ·  PAUSE MENU"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#8194AA"
+                               FontSize="9"
+                               FontWeight="Bold"
+                               LetterSpacing="0.8" />
+                </Border>
+            </Canvas>
+        </Viewbox>
+    </Grid>
+</UserControl>

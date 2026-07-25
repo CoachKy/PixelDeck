@@ -43,6 +43,7 @@ internal sealed class SnesBus
     private readonly bool[] _hdmaDoTransfer = new bool[8];
     private readonly SnesApu _apu = new();
     private readonly SnesDsp1? _dsp1;
+    private readonly SnesCx4? _cx4;
     private uint _wramAddress;
     private byte _nmitimen;
     private byte _wrmpya;
@@ -75,11 +76,18 @@ internal sealed class SnesBus
     private byte _divisionCyclesRemaining;
     private uint _mathShift;
     private byte _openBus;
+    private byte _memorySpeedControl;
+    private bool _cpuInstructionTimingActive;
+    private int _cpuInstructionAccessCount;
+    private int _cpuInstructionAccessMasterClocks;
+    private int _cpuInstructionDmaMasterClocks;
+    private long _totalMasterClocks;
 
     public SnesBus(SnesCartridge cartridge)
     {
         _cartridge = cartridge;
         _dsp1 = cartridge.HasDsp1 ? new SnesDsp1() : null;
+        _cx4 = cartridge.HasCx4 ? new SnesCx4(cartridge) : null;
         Ppu = new SnesPpu();
         Ppu.IsPal = cartridge.Info.IsPal;
         Ppu.CounterLatchEnabled = (_pio & 0x80) != 0;
@@ -107,6 +115,8 @@ internal sealed class SnesBus
 
     public long ReadDsp1CommandCount(byte command) => _dsp1?.GetCommandExecutionCount(command) ?? 0;
 
+    public long ReadCx4CommandCount(byte command) => _cx4?.GetCommandExecutionCount(command) ?? 0;
+
     public byte ReadDspRegister(byte address) => _apu.ReadDspRegister(address);
 
     public int ReadAudioSamples(Span<float> destination) => _apu.ReadSamples(destination);
@@ -117,6 +127,87 @@ internal sealed class SnesBus
 
     internal byte NmiTimerControl => _nmitimen;
 
+    internal byte MemorySpeedControl => _memorySpeedControl;
+
+    internal long TotalMasterClocks => _totalMasterClocks;
+
+    internal void BeginCpuInstructionTiming()
+    {
+        _cpuInstructionTimingActive = true;
+        _cpuInstructionAccessCount = 0;
+        _cpuInstructionAccessMasterClocks = 0;
+        _cpuInstructionDmaMasterClocks = 0;
+    }
+
+    internal CpuInstructionTiming EndCpuInstructionTiming(int minimumCpuCycles)
+    {
+        var cpuCycles = Math.Max(Math.Max(1, minimumCpuCycles), _cpuInstructionAccessCount);
+        var internalCycles = cpuCycles - _cpuInstructionAccessCount;
+        var masterClocks =
+            _cpuInstructionAccessMasterClocks +
+            (internalCycles * MasterClocksPerCpuCycle) +
+            _cpuInstructionDmaMasterClocks;
+
+        _cpuInstructionTimingActive = false;
+        return new CpuInstructionTiming(cpuCycles, Math.Max(MasterClocksPerCpuCycle, masterClocks));
+    }
+
+    internal byte CpuRead(uint address)
+    {
+        RecordCpuAccess(address);
+        return Read(address);
+    }
+
+    internal void CpuWrite(uint address, byte value)
+    {
+        RecordCpuAccess(address);
+        Write(address, value);
+    }
+
+    internal int GetCpuAccessMasterClocks(uint address)
+    {
+        address &= 0xFFFFFF;
+        var bank = (byte)(address >> 16);
+        var offset = (ushort)address;
+
+        if (bank is >= 0x40 and <= 0x7F)
+        {
+            return 8;
+        }
+
+        if (bank is >= 0xC0)
+        {
+            return (_memorySpeedControl & 0x01) != 0 ? 6 : 8;
+        }
+
+        if (offset < 0x2000)
+        {
+            return 8;
+        }
+
+        if (offset < 0x4000)
+        {
+            return 6;
+        }
+
+        if (offset < 0x4200)
+        {
+            return 12;
+        }
+
+        if (offset < 0x6000)
+        {
+            return 6;
+        }
+
+        if (offset < 0x8000)
+        {
+            return 8;
+        }
+
+        return bank >= 0x80 && (_memorySpeedControl & 0x01) != 0 ? 6 : 8;
+    }
+
     public byte Read(uint address)
     {
         address &= 0xFFFFFF;
@@ -126,6 +217,11 @@ internal sealed class SnesBus
         if (TryReadDsp1(bank, offset, out var dsp1Value))
         {
             return LatchOpenBus(dsp1Value);
+        }
+
+        if (TryReadCx4(bank, offset, out var cx4Value))
+        {
+            return LatchOpenBus(cx4Value);
         }
 
         if (bank is 0x7E or 0x7F)
@@ -175,6 +271,11 @@ internal sealed class SnesBus
             return dsp1Value;
         }
 
+        if (TryPeekCx4(bank, offset, out var cx4Value))
+        {
+            return cx4Value;
+        }
+
         if (bank is 0x7E or 0x7F)
         {
             return _wram[((bank - 0x7E) << 16) | offset];
@@ -196,6 +297,11 @@ internal sealed class SnesBus
         var offset = (ushort)address;
 
         if (TryWriteDsp1(bank, offset, value))
+        {
+            return;
+        }
+
+        if (TryWriteCx4(bank, offset, value))
         {
             return;
         }
@@ -254,7 +360,13 @@ internal sealed class SnesBus
 
     public void Clock(int cpuCycles)
     {
-        var masterClocks = Math.Max(1, cpuCycles) * MasterClocksPerCpuCycle;
+        AdvanceMasterClocks(Math.Max(1, cpuCycles) * MasterClocksPerCpuCycle);
+    }
+
+    internal void AdvanceMasterClocks(int masterClocks)
+    {
+        masterClocks = Math.Max(MasterClocksPerCpuCycle, masterClocks);
+        _totalMasterClocks += masterClocks;
         _apu.ClockMasterClocks(masterClocks);
         while (masterClocks > 0)
         {
@@ -310,6 +422,17 @@ internal sealed class SnesBus
         }
     }
 
+    private void RecordCpuAccess(uint address)
+    {
+        if (!_cpuInstructionTimingActive)
+        {
+            return;
+        }
+
+        _cpuInstructionAccessCount++;
+        _cpuInstructionAccessMasterClocks += GetCpuAccessMasterClocks(address);
+    }
+
     private void CheckHorizontalIrq(int previousMasterClock, int currentMasterClock)
     {
         var horizontalIrqEnabled = (_nmitimen & 0x10) != 0;
@@ -357,7 +480,7 @@ internal sealed class SnesBus
         }
     }
 
-    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 11);
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 13);
 
     internal void SaveState(BinaryWriter writer, int stateVersion)
     {
@@ -401,14 +524,23 @@ internal sealed class SnesBus
             writer.Write(_mathShift);
         }
         writer.Write(_openBus);
+        if (stateVersion >= 13)
+        {
+            writer.Write(_memorySpeedControl);
+            writer.Write(_totalMasterClocks);
+        }
         foreach (var value in _hdmaTerminated) writer.Write(value);
         foreach (var value in _hdmaDoTransfer) writer.Write(value);
         _dsp1?.SaveState(writer);
+        if (stateVersion >= 12)
+        {
+            _cx4?.SaveState(writer);
+        }
         _apu.SaveState(writer);
         Ppu.SaveState(writer, stateVersion);
     }
 
-    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 11);
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 13);
 
     internal void LoadState(BinaryReader reader, int stateVersion)
     {
@@ -466,15 +598,68 @@ internal sealed class SnesBus
             _mathShift = 0;
         }
         _openBus = reader.ReadByte();
+        if (stateVersion >= 13)
+        {
+            _memorySpeedControl = reader.ReadByte();
+            _totalMasterClocks = reader.ReadInt64();
+        }
+        else
+        {
+            _memorySpeedControl = 0;
+            _totalMasterClocks = 0;
+        }
         for (var index = 0; index < 8; index++) _hdmaTerminated[index] = reader.ReadBoolean();
         for (var index = 0; index < 8; index++) _hdmaDoTransfer[index] = reader.ReadBoolean();
         _dsp1?.LoadState(reader);
+        if (stateVersion >= 12)
+        {
+            _cx4?.LoadState(reader);
+        }
         _apu.LoadState(reader);
         Ppu.LoadState(reader, stateVersion);
         Ppu.IsPal = _cartridge.Info.IsPal;
         Ppu.CounterLatchEnabled = (_pio & 0x80) != 0;
         FrameReady = false;
     }
+
+    private bool TryReadCx4(byte bank, ushort address, out byte value)
+    {
+        value = 0;
+        if (_cx4 is null || !TryDecodeCx4Address(bank, address))
+        {
+            return false;
+        }
+
+        value = _cx4.Read(address);
+        return true;
+    }
+
+    private bool TryPeekCx4(byte bank, ushort address, out byte value)
+    {
+        value = 0;
+        if (_cx4 is null || !TryDecodeCx4Address(bank, address))
+        {
+            return false;
+        }
+
+        value = _cx4.Peek(address);
+        return true;
+    }
+
+    private bool TryWriteCx4(byte bank, ushort address, byte value)
+    {
+        if (_cx4 is null || !TryDecodeCx4Address(bank, address))
+        {
+            return false;
+        }
+
+        _cx4.Write(address, value);
+        return true;
+    }
+
+    private static bool TryDecodeCx4Address(byte bank, ushort address) =>
+        (bank <= 0x3F || bank is >= 0x80 and <= 0xBF) &&
+        address is >= 0x6000 and < 0x8000;
 
     private bool TryReadDsp1(byte bank, ushort address, out byte value)
     {
@@ -640,7 +825,16 @@ internal sealed class SnesBus
                 {
                     _irqFlag = false;
                 }
-                if (!nmiWasEnabled && (value & 0x80) != 0 && _vblank)
+                // Enabling NMI during VBlank only creates the hardware's
+                // immediate edge while RDNMI is still asserted. Software
+                // commonly reads $4210, briefly disables NMI in its handler,
+                // then restores $4200; retriggering after that acknowledgement
+                // recursively nests the handler and eventually exhausts the
+                // native-mode stack.
+                if (!nmiWasEnabled &&
+                    (value & 0x80) != 0 &&
+                    _vblank &&
+                    _nmiFlag)
                 {
                     _nmiPending = true;
                 }
@@ -690,11 +884,15 @@ internal sealed class SnesBus
             case 0x420C:
                 _hdmaEnable = value;
                 break;
+            case 0x420D:
+                _memorySpeedControl = (byte)(value & 0x01);
+                break;
         }
     }
 
     private void PerformDma(byte enabledChannels)
     {
+        var dmaMasterClocks = enabledChannels == 0 ? 0 : 8;
         for (var channel = 0; channel < 8; channel++)
         {
             if ((enabledChannels & (1 << channel)) == 0)
@@ -710,6 +908,7 @@ internal sealed class SnesBus
             var aBank = _dmaRegisters[registerBase + 4];
             var transferSize = _dmaRegisters[registerBase + 5] | (_dmaRegisters[registerBase + 6] << 8);
             if (transferSize == 0) transferSize = 0x10000;
+            dmaMasterClocks += 8 + (transferSize * 8);
             var fixedAddress = (control & 0x08) != 0;
             var decrement = (control & 0x10) != 0;
             var ppuToCpu = (control & 0x80) != 0;
@@ -737,6 +936,11 @@ internal sealed class SnesBus
             _dmaRegisters[registerBase + 3] = (byte)(aAddress >> 8);
             _dmaRegisters[registerBase + 5] = 0;
             _dmaRegisters[registerBase + 6] = 0;
+        }
+
+        if (_cpuInstructionTimingActive)
+        {
+            _cpuInstructionDmaMasterClocks += dmaMasterClocks;
         }
     }
 
@@ -1032,3 +1236,5 @@ internal sealed class SnesBus
 
     private static bool IsSystemBank(byte bank) => bank <= 0x3F || bank is >= 0x80 and <= 0xBF;
 }
+
+internal readonly record struct CpuInstructionTiming(int CpuCycles, int MasterClocks);

@@ -43,18 +43,21 @@ public sealed class SnesMachineTests
         }
     }
 
-    [Fact]
-    public void VersionTenStateMigratesToTheCurrentCore()
+    [Theory]
+    [InlineData(10)]
+    [InlineData(11)]
+    [InlineData(12)]
+    public void PreviousStateMigratesToTheCurrentCore(int stateVersion)
     {
         var gamePath = CreateSyntheticLoRom();
         try
         {
             var machine = SnesMachine.Load(gamePath);
             machine.RunFrame();
-            var versionTenState = machine.SaveState(stateVersion: 10);
+            var previousState = machine.SaveState(stateVersion);
             var expectedFrame = machine.RunFrame().ToArray();
 
-            machine.LoadState(versionTenState);
+            machine.LoadState(previousState);
 
             Assert.Equal(expectedFrame, machine.RunFrame().ToArray());
         }
@@ -332,6 +335,37 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void AcknowledgedVblankDoesNotRetriggerWhenNmiIsRestored()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var cartridge = SnesCartridge.Load(gamePath);
+            var bus = new SnesBus(cartridge);
+
+            bus.BeginFrame();
+            bus.Clock(51_150);
+            Assert.Equal(0x80, bus.Read(0x004210) & 0x80);
+
+            bus.Write(0x004200, 0x00);
+            bus.Write(0x004200, 0x80);
+
+            Assert.False(bus.ConsumeNmi());
+
+            bus = new SnesBus(cartridge);
+            bus.BeginFrame();
+            bus.Clock(51_150);
+            bus.Write(0x004200, 0x80);
+
+            Assert.True(bus.ConsumeNmi());
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void CpuMathUnitCompletesMultiplicationAndDivisionOverHardwareCycles()
     {
         var gamePath = CreateSyntheticLoRom();
@@ -360,6 +394,140 @@ public sealed class SnesMachineTests
             Assert.Equal(0, bus.Read(0x004215));
             Assert.Equal(6, bus.Read(0x004216));
             Assert.Equal(0, bus.Read(0x004217));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void CpuInstructionTimingUsesBaseCyclesAndAddressSpeed()
+    {
+        var gamePath = CreateSyntheticLoRom([0xEA, 0xDB]); // NOP; STP
+        try
+        {
+            var machine = SnesMachine.Load(gamePath);
+
+            machine.StepInstructionForDiagnostics();
+
+            Assert.Equal(2, machine.CpuCycles);
+            Assert.Equal(14, machine.LastInstructionMasterClocks);
+            Assert.Equal(14, machine.MasterClocks);
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void CpuInstructionTimingAddsTakenBranchAndIndexedPagePenalties()
+    {
+        var branchPath = CreateSyntheticLoRom([0x80, 0x00, 0xDB]); // BRA +0; STP
+        var indexedPath = CreateSyntheticLoRom(
+        [
+            0xA2, 0x01,       // LDX #$01
+            0xBD, 0xFF, 0x80, // LDA $80FF,X - crosses into $8100
+            0xDB
+        ]);
+        try
+        {
+            var branchMachine = SnesMachine.Load(branchPath);
+            branchMachine.StepInstructionForDiagnostics();
+            Assert.Equal(3, branchMachine.CpuCycles);
+            Assert.Equal(22, branchMachine.LastInstructionMasterClocks);
+
+            var indexedMachine = SnesMachine.Load(indexedPath);
+            indexedMachine.StepInstructionForDiagnostics();
+            indexedMachine.StepInstructionForDiagnostics();
+            Assert.Equal(7, indexedMachine.CpuCycles);
+            Assert.Equal(38, indexedMachine.LastInstructionMasterClocks);
+        }
+        finally
+        {
+            File.Delete(branchPath);
+            File.Delete(indexedPath);
+        }
+    }
+
+    [Fact]
+    public void CpuAddressSpeedsHonorMemoryMapAndFastRomControl()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var bus = new SnesBus(SnesCartridge.Load(gamePath));
+
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0x000000));
+            Assert.Equal(6, bus.GetCpuAccessMasterClocks(0x002000));
+            Assert.Equal(12, bus.GetCpuAccessMasterClocks(0x004000));
+            Assert.Equal(6, bus.GetCpuAccessMasterClocks(0x004200));
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0x006000));
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0x008000));
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0x808000));
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0xC00000));
+
+            bus.Write(0x00420D, 0xFF);
+
+            Assert.Equal(1, bus.MemorySpeedControl);
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0x008000));
+            Assert.Equal(6, bus.GetCpuAccessMasterClocks(0x808000));
+            Assert.Equal(6, bus.GetCpuAccessMasterClocks(0xC00000));
+            Assert.Equal(8, bus.GetCpuAccessMasterClocks(0x7E0000));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void GeneralDmaAddsGlobalChannelAndByteTransferStalls()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var bus = new SnesBus(SnesCartridge.Load(gamePath));
+            bus.Write(0x004300, 0x00);
+            bus.Write(0x004301, 0x00);
+            bus.Write(0x004302, 0x00);
+            bus.Write(0x004303, 0x00);
+            bus.Write(0x004304, 0x7E);
+            bus.Write(0x004305, 0x03);
+            bus.Write(0x004306, 0x00);
+
+            bus.BeginCpuInstructionTiming();
+            bus.CpuWrite(0x00420B, 0x01);
+            var timing = bus.EndCpuInstructionTiming(1);
+
+            Assert.Equal(1, timing.CpuCycles);
+            Assert.Equal(46, timing.MasterClocks);
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void CurrentBusStateRestoresFastRomAndMasterClockPhase()
+    {
+        var gamePath = CreateSyntheticLoRom();
+        try
+        {
+            var bus = new SnesBus(SnesCartridge.Load(gamePath));
+            bus.Write(0x00420D, 0x01);
+            bus.AdvanceMasterClocks(123);
+            var expectedMasterClocks = bus.TotalMasterClocks;
+
+            using var state = SaveBusState(bus, stateVersion: 13);
+            bus.Write(0x00420D, 0x00);
+            bus.AdvanceMasterClocks(456);
+            LoadBusState(bus, state, stateVersion: 13);
+
+            Assert.Equal(1, bus.MemorySpeedControl);
+            Assert.Equal(expectedMasterClocks, bus.TotalMasterClocks);
         }
         finally
         {
@@ -494,7 +662,19 @@ public sealed class SnesMachineTests
     [Fact]
     public void LocalSnesImagesCompleteFramesWhenPresent()
     {
-        var gamesFolder = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
+        var configuredGamesFolder = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
+        var gamesFolder = string.IsNullOrWhiteSpace(configuredGamesFolder)
+            ? Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "Games",
+                    "SuperNintendo"))
+            : Path.Combine(Path.GetFullPath(configuredGamesFolder), "SuperNintendo");
         if (!Directory.Exists(gamesFolder))
         {
             return;
@@ -674,8 +854,19 @@ public sealed class SnesMachineTests
     [Fact]
     public void LocalSuperMarioWorldReachesControllableGameplayWhenPresent()
     {
-        var gamesFolder = Path.GetFullPath(
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
+        var configuredGamesFolder = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
+        var gamesFolder = string.IsNullOrWhiteSpace(configuredGamesFolder)
+            ? Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "Games",
+                    "SuperNintendo"))
+            : Path.Combine(Path.GetFullPath(configuredGamesFolder), "SuperNintendo");
         if (!Directory.Exists(gamesFolder))
         {
             return;
@@ -844,6 +1035,25 @@ public sealed class SnesMachineTests
             }
         }
         Assert.True(overworldInteractive, "Super Mario World's overworld did not become interactive.");
+        var overworldFrame = machine.CurrentFrame.ToArray();
+        var overworldMario = Enumerable.Range(168, 16)
+            .SelectMany(y => overworldFrame.AsSpan((y * machine.Width) + 113, 16).ToArray())
+            .ToArray();
+        Assert.Contains(
+            0xFFEE0000u,
+            overworldMario);
+        Assert.Contains(
+            0xFFA80000u,
+            overworldMario);
+        Assert.Contains(
+            0xFF3C3CCFu,
+            overworldMario);
+        CaptureFrameWhenRequested(
+            gamePath,
+            overworldFrame,
+            machine.Width,
+            machine.Height,
+            "-overworld");
 
         for (var frame = 0; frame < 120; frame++)
         {
@@ -963,8 +1173,19 @@ public sealed class SnesMachineTests
             return;
         }
 
-        var gamesFolder = Path.GetFullPath(
-            Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "Games", "SuperNintendo"));
+        var configuredGamesFolder = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
+        var gamesFolder = string.IsNullOrWhiteSpace(configuredGamesFolder)
+            ? Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "Games",
+                    "SuperNintendo"))
+            : Path.Combine(Path.GetFullPath(configuredGamesFolder), "SuperNintendo");
         var requestedFrames = int.TryParse(
             Environment.GetEnvironmentVariable("PIXELDECK_SNES_FRAMES"),
             out var parsedFrames)
@@ -1020,12 +1241,17 @@ public sealed class SnesMachineTests
                 .Select(command => (Command: command, Count: machine.ReadDsp1CommandCount((byte)command)))
                 .Where(entry => entry.Count != 0)
                 .Select(entry => $"${entry.Command:X2}={entry.Count}");
+            var cx4Commands = Enumerable.Range(0, 256)
+                .Select(command => (Command: command, Count: machine.ReadCx4CommandCount((byte)command)))
+                .Where(entry => entry.Count != 0)
+                .Select(entry => $"${entry.Command:X2}={entry.Count}");
             _output.WriteLine(
                 $"{Path.GetFileName(gamePath)}: {requestedFrames} frames, " +
                 $"PC=${machine.ProgramAddress:X6}, NMI={machine.NmiCount}, IRQ={machine.IrqCount}, " +
                 $"BRK={machine.BrkCount}, blank={machine.IsDisplayBlanked}, " +
                 $"colors={machine.CurrentFrame.ToArray().Distinct().Count()}, " +
-                $"DSP-1=[{string.Join(", ", dspCommands)}].");
+                $"DSP-1=[{string.Join(", ", dspCommands)}], " +
+                $"CX4=[{string.Join(", ", cx4Commands)}].");
         }
     }
 
@@ -1110,7 +1336,7 @@ public sealed class SnesMachineTests
 
     private static MemoryStream SaveBusState(
         SnesBus bus,
-        int stateVersion = 11)
+        int stateVersion = 13)
     {
         var state = new MemoryStream();
         using (var writer = new BinaryWriter(
@@ -1128,7 +1354,7 @@ public sealed class SnesMachineTests
     private static void LoadBusState(
         SnesBus bus,
         MemoryStream state,
-        int stateVersion = 11)
+        int stateVersion = 13)
     {
         state.Position = 0;
         using var reader = new BinaryReader(

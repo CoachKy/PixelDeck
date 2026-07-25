@@ -4,10 +4,16 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <Version>1.13.17</Version>
-    <AssemblyVersion>1.13.17.0</AssemblyVersion>
-    <FileVersion>1.13.17.0</FileVersion>
-    <InformationalVersion>1.13.17</InformationalVersion>
+    <!--
+      The cycle/dot-accurate core must keep real-time headroom when PixelDeck
+      is launched from an IDE's Debug configuration. PDBs remain available;
+      only this hot emulation assembly is JIT-optimized.
+    -->
+    <Optimize>true</Optimize>
+    <Version>1.15.20</Version>
+    <AssemblyVersion>1.15.20.0</AssemblyVersion>
+    <FileVersion>1.15.20.0</FileVersion>
+    <InformationalVersion>1.15.20</InformationalVersion>
   </PropertyGroup>
 
 </Project>

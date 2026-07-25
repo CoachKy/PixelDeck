@@ -25,6 +25,7 @@ internal sealed class SnesPpu
     private readonly int[] _subLinePriorities = new int[Width];
     private readonly byte[] _mainLineLayers = new byte[Width];
     private readonly byte[] _subLineLayers = new byte[Width];
+    private readonly bool[] _mainLineColorMathAllowed = new bool[Width];
 
     private byte _brightness;
     private bool _forcedBlank = true;
@@ -311,6 +312,7 @@ internal sealed class SnesPpu
         Array.Fill(_subLinePriorities, -1);
         Array.Fill(_mainLineLayers, BackdropLayer);
         Array.Fill(_subLineLayers, BackdropLayer);
+        Array.Fill(_mainLineColorMathAllowed, true);
 
         var mode = _backgroundMode & 0x07;
         if (mode == 7)
@@ -348,7 +350,9 @@ internal sealed class SnesPpu
 
             var mathPrevented = ApplyColorWindowRule((_colorMathControl >> 4) & 3, colorWindowInside);
             var layer = _mainLineLayers[x];
-            if (!mathPrevented && (_colorMathDesignation & (1 << layer)) != 0)
+            if (!mathPrevented &&
+                _mainLineColorMathAllowed[x] &&
+                (_colorMathDesignation & (1 << layer)) != 0)
             {
                 var useSubScreen = (_colorMathControl & 0x02) != 0;
                 var subScreenIsBackdrop = _subLineLayers[x] == BackdropLayer;
@@ -802,9 +806,12 @@ internal sealed class SnesPpu
                     continue;
                 }
 
+                // Mode 7 normally places BG1 between OBJ priorities zero and
+                // one. EXTBG inserts BG2-low behind OBJ0 and BG2-high between
+                // OBJ priorities one and two.
                 var priority = background == 0
-                    ? (highPriority ? 8 : 4)
-                    : (highPriority ? 9 : 3);
+                    ? 3
+                    : (highPriority ? 7 : 1);
                 if (priority >= priorities[screenX])
                 {
                     priorities[screenX] = priority;
@@ -1042,6 +1049,13 @@ internal sealed class SnesPpu
                     priorities[outputX] = priority;
                     colors[outputX] = ReadColor15(128 + (palette * 16) + pixel);
                     layers[outputX] = 4;
+                    if (mainScreen)
+                    {
+                        // Main-screen objects using palettes 0-3 reject
+                        // color math. Palettes 4-7 opt into the OBJ bit in
+                        // CGADSUB.
+                        _mainLineColorMathAllowed[outputX] = palette >= 4;
+                    }
                 }
             }
         }
@@ -1408,18 +1422,19 @@ internal sealed class SnesPpu
         },
         1 => background switch
         {
-            0 => high ? 8 : 5,
-            1 => high ? 7 : 4,
-            2 => high && (_backgroundMode & 0x08) != 0 ? 10 : high ? 3 : 1,
+            0 => high ? 11 : 8,
+            1 => high ? 10 : 7,
+            2 => high && (_backgroundMode & 0x08) != 0 ? 13 : high ? 3 : 1,
             _ => -1
         },
-        _ => background switch
+        2 or 3 or 4 or 5 => background switch
         {
-            0 => high ? 8 : 5,
-            1 => high ? 7 : 3,
-            2 => high ? 6 : 2,
-            _ => high ? 4 : 1
-        }
+            0 => high ? 10 : 3,
+            1 => high ? 7 : 1,
+            _ => -1
+        },
+        6 => background == 0 ? (high ? 10 : 3) : -1,
+        _ => -1
     };
 
     private static int GetObjectPriority(int priority) => priority switch

@@ -52,6 +52,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ControllerSlots = Enumerable.Range(0, 4)
             .Select(index => new ControllerSlotOption(index, $"Controller {index + 1}"))
             .ToArray();
+        ControllerSetupPlayers =
+        [
+            new(ControllerSetupPlayer.PlayerOne, "Player One"),
+            new(ControllerSetupPlayer.PlayerTwo, "Player Two")
+        ];
+        ControllerSetupConsoles =
+        [
+            new(ControllerSetupConsole.Nintendo, "Nintendo"),
+            new(ControllerSetupConsole.SuperNintendo, "Super Nintendo")
+        ];
+        selectedControllerSetupPlayer = ControllerSetupPlayers[0];
+        selectedControllerSetupConsole = ControllerSetupConsoles[0];
         ControllerButtons =
         [
             new(GamepadButton.A, "South (A / Cross)"),
@@ -90,6 +102,14 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         selectedNintendoBButton = FindButton(settings.BButton, GamepadButton.X);
         selectedNintendoStartButton = FindButton(settings.StartButton, GamepadButton.Start);
         selectedNintendoSelectButton = FindButton(settings.SelectButton, GamepadButton.Back);
+        selectedPlayerTwoNintendoAButton = FindButton(settings.PlayerTwoAButton, GamepadButton.A);
+        selectedPlayerTwoNintendoBButton = FindButton(settings.PlayerTwoBButton, GamepadButton.X);
+        selectedPlayerTwoNintendoStartButton = FindButton(
+            settings.PlayerTwoStartButton,
+            GamepadButton.Start);
+        selectedPlayerTwoNintendoSelectButton = FindButton(
+            settings.PlayerTwoSelectButton,
+            GamepadButton.Back);
         removeNesSpriteLimit = settings.RemoveNesSpriteLimit;
         hideNesHorizontalOverscan = settings.HideNesHorizontalOverscan;
         selectedMmc3IrqRevision = Mmc3IrqRevisions.First(
@@ -107,6 +127,22 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         selectedSnesRButton = FindButton(settings.SnesRButton, GamepadButton.RightShoulder);
         selectedSnesStartButton = FindButton(settings.SnesStartButton, GamepadButton.Start);
         selectedSnesSelectButton = FindButton(settings.SnesSelectButton, GamepadButton.Back);
+        selectedPlayerTwoSnesAButton = FindButton(settings.PlayerTwoSnesAButton, GamepadButton.B);
+        selectedPlayerTwoSnesBButton = FindButton(settings.PlayerTwoSnesBButton, GamepadButton.A);
+        selectedPlayerTwoSnesXButton = FindButton(settings.PlayerTwoSnesXButton, GamepadButton.Y);
+        selectedPlayerTwoSnesYButton = FindButton(settings.PlayerTwoSnesYButton, GamepadButton.X);
+        selectedPlayerTwoSnesLButton = FindButton(
+            settings.PlayerTwoSnesLButton,
+            GamepadButton.LeftShoulder);
+        selectedPlayerTwoSnesRButton = FindButton(
+            settings.PlayerTwoSnesRButton,
+            GamepadButton.RightShoulder);
+        selectedPlayerTwoSnesStartButton = FindButton(
+            settings.PlayerTwoSnesStartButton,
+            GamepadButton.Start);
+        selectedPlayerTwoSnesSelectButton = FindButton(
+            settings.PlayerTwoSnesSelectButton,
+            GamepadButton.Back);
     }
 
     public ObservableCollection<GameEntry> Games { get; } = [];
@@ -122,6 +158,10 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     public IReadOnlyList<ControllerSlotOption> ControllerSlots { get; }
 
     public IReadOnlyList<ControllerButtonOption> ControllerButtons { get; }
+
+    public IReadOnlyList<ControllerSetupPlayerOption> ControllerSetupPlayers { get; }
+
+    public IReadOnlyList<ControllerSetupConsoleOption> ControllerSetupConsoles { get; }
 
     public IReadOnlyList<Mmc3IrqRevisionOption> Mmc3IrqRevisions { get; }
 
@@ -242,6 +282,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private ControllerSlotOption selectedPlayerTwoControllerSlot;
 
     [ObservableProperty]
+    private ControllerSetupPlayerOption selectedControllerSetupPlayer;
+
+    [ObservableProperty]
+    private ControllerSetupConsoleOption selectedControllerSetupConsole;
+
+    [ObservableProperty]
     private ControllerButtonOption selectedNintendoAButton;
 
     [ObservableProperty]
@@ -252,6 +298,18 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     private ControllerButtonOption selectedNintendoSelectButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoNintendoAButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoNintendoBButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoNintendoStartButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoNintendoSelectButton;
 
     [ObservableProperty]
     private bool removeNesSpriteLimit;
@@ -295,21 +353,276 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private ControllerButtonOption selectedSnesSelectButton;
 
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesAButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesBButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesXButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesYButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesLButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesRButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesStartButton;
+
+    [ObservableProperty]
+    private ControllerButtonOption selectedPlayerTwoSnesSelectButton;
+
+    public bool IsNintendoControllerSetup =>
+        SelectedControllerSetupConsole.Console == ControllerSetupConsole.Nintendo;
+
+    public bool IsSuperNintendoControllerSetup => !IsNintendoControllerSetup;
+
+    public ControllerSlotOption SelectedControllerSetupSlot
+    {
+        get => SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne
+            ? SelectedControllerSlot
+            : SelectedPlayerTwoControllerSlot;
+        set
+        {
+            if (ReferenceEquals(value, SelectedControllerSetupSlot))
+            {
+                return;
+            }
+
+            if (SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne)
+            {
+                SelectedControllerSlot = value;
+            }
+            else
+            {
+                SelectedPlayerTwoControllerSlot = value;
+            }
+
+            OnPropertyChanged();
+            NotifyControllerSetupChanged();
+        }
+    }
+
+    public ControllerButtonOption SelectedSetupAButton
+    {
+        get => GetSelectedSetupButton(
+            SelectedNintendoAButton,
+            SelectedPlayerTwoNintendoAButton,
+            SelectedSnesAButton,
+            SelectedPlayerTwoSnesAButton);
+        set => SetSelectedSetupButton(
+            value,
+            option => SelectedNintendoAButton = option,
+            option => SelectedPlayerTwoNintendoAButton = option,
+            option => SelectedSnesAButton = option,
+            option => SelectedPlayerTwoSnesAButton = option);
+    }
+
+    public ControllerButtonOption SelectedSetupBButton
+    {
+        get => GetSelectedSetupButton(
+            SelectedNintendoBButton,
+            SelectedPlayerTwoNintendoBButton,
+            SelectedSnesBButton,
+            SelectedPlayerTwoSnesBButton);
+        set => SetSelectedSetupButton(
+            value,
+            option => SelectedNintendoBButton = option,
+            option => SelectedPlayerTwoNintendoBButton = option,
+            option => SelectedSnesBButton = option,
+            option => SelectedPlayerTwoSnesBButton = option);
+    }
+
+    public ControllerButtonOption SelectedSetupXButton
+    {
+        get => SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne
+            ? SelectedSnesXButton
+            : SelectedPlayerTwoSnesXButton;
+        set
+        {
+            if (SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne)
+            {
+                SelectedSnesXButton = value;
+            }
+            else
+            {
+                SelectedPlayerTwoSnesXButton = value;
+            }
+        }
+    }
+
+    public ControllerButtonOption SelectedSetupYButton
+    {
+        get => SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne
+            ? SelectedSnesYButton
+            : SelectedPlayerTwoSnesYButton;
+        set
+        {
+            if (SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne)
+            {
+                SelectedSnesYButton = value;
+            }
+            else
+            {
+                SelectedPlayerTwoSnesYButton = value;
+            }
+        }
+    }
+
+    public ControllerButtonOption SelectedSetupLButton
+    {
+        get => SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne
+            ? SelectedSnesLButton
+            : SelectedPlayerTwoSnesLButton;
+        set
+        {
+            if (SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne)
+            {
+                SelectedSnesLButton = value;
+            }
+            else
+            {
+                SelectedPlayerTwoSnesLButton = value;
+            }
+        }
+    }
+
+    public ControllerButtonOption SelectedSetupRButton
+    {
+        get => SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne
+            ? SelectedSnesRButton
+            : SelectedPlayerTwoSnesRButton;
+        set
+        {
+            if (SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne)
+            {
+                SelectedSnesRButton = value;
+            }
+            else
+            {
+                SelectedPlayerTwoSnesRButton = value;
+            }
+        }
+    }
+
+    public ControllerButtonOption SelectedSetupStartButton
+    {
+        get => GetSelectedSetupButton(
+            SelectedNintendoStartButton,
+            SelectedPlayerTwoNintendoStartButton,
+            SelectedSnesStartButton,
+            SelectedPlayerTwoSnesStartButton);
+        set => SetSelectedSetupButton(
+            value,
+            option => SelectedNintendoStartButton = option,
+            option => SelectedPlayerTwoNintendoStartButton = option,
+            option => SelectedSnesStartButton = option,
+            option => SelectedPlayerTwoSnesStartButton = option);
+    }
+
+    public ControllerButtonOption SelectedSetupSelectButton
+    {
+        get => GetSelectedSetupButton(
+            SelectedNintendoSelectButton,
+            SelectedPlayerTwoNintendoSelectButton,
+            SelectedSnesSelectButton,
+            SelectedPlayerTwoSnesSelectButton);
+        set => SetSelectedSetupButton(
+            value,
+            option => SelectedNintendoSelectButton = option,
+            option => SelectedPlayerTwoNintendoSelectButton = option,
+            option => SelectedSnesSelectButton = option,
+            option => SelectedPlayerTwoSnesSelectButton = option);
+    }
+
+    public string PaperDollSouthActionText => FormatPaperDollAction(GamepadButton.A);
+
+    public string PaperDollEastActionText => FormatPaperDollAction(GamepadButton.B);
+
+    public string PaperDollWestActionText => FormatPaperDollAction(GamepadButton.X);
+
+    public string PaperDollNorthActionText => FormatPaperDollAction(GamepadButton.Y);
+
+    public string PaperDollLeftShoulderActionText =>
+        FormatPaperDollAction(GamepadButton.LeftShoulder);
+
+    public string PaperDollRightShoulderActionText =>
+        FormatPaperDollAction(GamepadButton.RightShoulder);
+
+    public string PaperDollStartActionText => FormatPaperDollAction(GamepadButton.Start);
+
+    public string PaperDollBackActionText => FormatPaperDollAction(GamepadButton.Back);
+
     partial void OnSelectedControllerSlotChanged(ControllerSlotOption value)
     {
         SaveControllerSlots(playerOneChanged: true);
+        NotifyControllerSetupChanged();
     }
 
-    partial void OnSelectedPlayerTwoControllerSlotChanged(ControllerSlotOption value) =>
+    partial void OnSelectedPlayerTwoControllerSlotChanged(ControllerSlotOption value)
+    {
         SaveControllerSlots(playerOneChanged: false);
+        NotifyControllerSetupChanged();
+    }
 
-    partial void OnSelectedNintendoAButtonChanged(ControllerButtonOption value) => SaveNintendoButtonSettings();
+    partial void OnSelectedControllerSetupPlayerChanged(ControllerSetupPlayerOption value) =>
+        NotifyControllerSetupChanged();
 
-    partial void OnSelectedNintendoBButtonChanged(ControllerButtonOption value) => SaveNintendoButtonSettings();
+    partial void OnSelectedControllerSetupConsoleChanged(ControllerSetupConsoleOption value) =>
+        NotifyControllerSetupChanged();
 
-    partial void OnSelectedNintendoStartButtonChanged(ControllerButtonOption value) => SaveNintendoButtonSettings();
+    partial void OnSelectedNintendoAButtonChanged(ControllerButtonOption value)
+    {
+        SaveNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
 
-    partial void OnSelectedNintendoSelectButtonChanged(ControllerButtonOption value) => SaveNintendoButtonSettings();
+    partial void OnSelectedNintendoBButtonChanged(ControllerButtonOption value)
+    {
+        SaveNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    partial void OnSelectedNintendoStartButtonChanged(ControllerButtonOption value)
+    {
+        SaveNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    partial void OnSelectedNintendoSelectButtonChanged(ControllerButtonOption value)
+    {
+        SaveNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    partial void OnSelectedPlayerTwoNintendoAButtonChanged(ControllerButtonOption value)
+    {
+        SavePlayerTwoNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    partial void OnSelectedPlayerTwoNintendoBButtonChanged(ControllerButtonOption value)
+    {
+        SavePlayerTwoNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    partial void OnSelectedPlayerTwoNintendoStartButtonChanged(ControllerButtonOption value)
+    {
+        SavePlayerTwoNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    partial void OnSelectedPlayerTwoNintendoSelectButtonChanged(ControllerButtonOption value)
+    {
+        SavePlayerTwoNintendoButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
 
     partial void OnRemoveNesSpriteLimitChanged(bool value)
     {
@@ -347,21 +660,53 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         PixelDeckSettingsStore.Save();
     }
 
-    partial void OnSelectedSnesAButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesAButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesBButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesBButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesXButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesXButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesYButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesYButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesLButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesLButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesRButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesRButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesStartButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesStartButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
 
-    partial void OnSelectedSnesSelectButtonChanged(ControllerButtonOption value) => SaveSnesButtonSettings();
+    partial void OnSelectedSnesSelectButtonChanged(ControllerButtonOption value) =>
+        SaveSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesAButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesBButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesXButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesYButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesLButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesRButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesStartButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
+
+    partial void OnSelectedPlayerTwoSnesSelectButtonChanged(ControllerButtonOption value) =>
+        SavePlayerTwoSnesButtonAndRefreshSetup();
 
     partial void OnSelectedLibrarySystemChanged(LibrarySystem value)
     {
@@ -620,12 +965,25 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ConnectedControllerCountText = FormatConnectedControllerCount(connectedControllerCount);
         ControllerInputBackendText = $"{backendName.ToUpperInvariant()} GAMEPAD INPUT";
 
+        var controllerLabelsChanged = false;
         for (var index = 0; index < ControllerSlots.Count; index++)
         {
             var name = index < controllerNames.Count ? controllerNames[index] : null;
-            ControllerSlots[index].Label = string.IsNullOrWhiteSpace(name)
+            var label = string.IsNullOrWhiteSpace(name)
                 ? $"Controller {index + 1} — Not connected"
                 : $"Controller {index + 1} — {name}";
+            if (ControllerSlots[index].Label == label)
+            {
+                continue;
+            }
+
+            ControllerSlots[index].Label = label;
+            controllerLabelsChanged = true;
+        }
+
+        if (controllerLabelsChanged)
+        {
+            OnPropertyChanged(nameof(SelectedControllerSetupSlot));
         }
     }
 
@@ -698,6 +1056,84 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ControllerButtons.FirstOrDefault(option => option.Button == button)
         ?? ControllerButtons.First(option => option.Button == fallback);
 
+    private ControllerButtonOption GetSelectedSetupButton(
+        ControllerButtonOption playerOneNintendo,
+        ControllerButtonOption playerTwoNintendo,
+        ControllerButtonOption playerOneSnes,
+        ControllerButtonOption playerTwoSnes)
+    {
+        var playerTwo = SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerTwo;
+        return SelectedControllerSetupConsole.Console == ControllerSetupConsole.Nintendo
+            ? playerTwo ? playerTwoNintendo : playerOneNintendo
+            : playerTwo ? playerTwoSnes : playerOneSnes;
+    }
+
+    private void SetSelectedSetupButton(
+        ControllerButtonOption value,
+        Action<ControllerButtonOption> setPlayerOneNintendo,
+        Action<ControllerButtonOption> setPlayerTwoNintendo,
+        Action<ControllerButtonOption> setPlayerOneSnes,
+        Action<ControllerButtonOption> setPlayerTwoSnes)
+    {
+        var playerTwo = SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerTwo;
+        if (SelectedControllerSetupConsole.Console == ControllerSetupConsole.Nintendo)
+        {
+            if (playerTwo) setPlayerTwoNintendo(value);
+            else setPlayerOneNintendo(value);
+        }
+        else
+        {
+            if (playerTwo) setPlayerTwoSnes(value);
+            else setPlayerOneSnes(value);
+        }
+    }
+
+    private void NotifyControllerSetupChanged()
+    {
+        OnPropertyChanged(nameof(SelectedControllerSetupSlot));
+        OnPropertyChanged(nameof(IsNintendoControllerSetup));
+        OnPropertyChanged(nameof(IsSuperNintendoControllerSetup));
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    private void NotifyControllerSetupMappingsChanged()
+    {
+        OnPropertyChanged(nameof(SelectedSetupAButton));
+        OnPropertyChanged(nameof(SelectedSetupBButton));
+        OnPropertyChanged(nameof(SelectedSetupXButton));
+        OnPropertyChanged(nameof(SelectedSetupYButton));
+        OnPropertyChanged(nameof(SelectedSetupLButton));
+        OnPropertyChanged(nameof(SelectedSetupRButton));
+        OnPropertyChanged(nameof(SelectedSetupStartButton));
+        OnPropertyChanged(nameof(SelectedSetupSelectButton));
+        OnPropertyChanged(nameof(PaperDollSouthActionText));
+        OnPropertyChanged(nameof(PaperDollEastActionText));
+        OnPropertyChanged(nameof(PaperDollWestActionText));
+        OnPropertyChanged(nameof(PaperDollNorthActionText));
+        OnPropertyChanged(nameof(PaperDollLeftShoulderActionText));
+        OnPropertyChanged(nameof(PaperDollRightShoulderActionText));
+        OnPropertyChanged(nameof(PaperDollStartActionText));
+        OnPropertyChanged(nameof(PaperDollBackActionText));
+    }
+
+    private string FormatPaperDollAction(GamepadButton physicalButton)
+    {
+        var actions = new List<string>(2);
+        if (SelectedSetupAButton.Button == physicalButton) actions.Add("A");
+        if (SelectedSetupBButton.Button == physicalButton) actions.Add("B");
+        if (IsSuperNintendoControllerSetup)
+        {
+            if (SelectedSetupXButton.Button == physicalButton) actions.Add("X");
+            if (SelectedSetupYButton.Button == physicalButton) actions.Add("Y");
+            if (SelectedSetupLButton.Button == physicalButton) actions.Add("L");
+            if (SelectedSetupRButton.Button == physicalButton) actions.Add("R");
+        }
+
+        if (SelectedSetupStartButton.Button == physicalButton) actions.Add("START");
+        if (SelectedSetupSelectButton.Button == physicalButton) actions.Add("SELECT");
+        return actions.Count == 0 ? "—" : string.Join(" + ", actions);
+    }
+
     private bool _isUpdatingControllerSlots;
 
     private void SaveControllerSlots(bool playerOneChanged)
@@ -758,6 +1194,36 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         PixelDeckSettingsStore.Save();
     }
 
+    private void SavePlayerTwoNintendoButtonSettings()
+    {
+        if (SelectedPlayerTwoNintendoAButton is null ||
+            SelectedPlayerTwoNintendoBButton is null ||
+            SelectedPlayerTwoNintendoStartButton is null ||
+            SelectedPlayerTwoNintendoSelectButton is null)
+        {
+            return;
+        }
+
+        var settings = PixelDeckSettingsStore.Current;
+        settings.PlayerTwoAButton = SelectedPlayerTwoNintendoAButton.Button;
+        settings.PlayerTwoBButton = SelectedPlayerTwoNintendoBButton.Button;
+        settings.PlayerTwoStartButton = SelectedPlayerTwoNintendoStartButton.Button;
+        settings.PlayerTwoSelectButton = SelectedPlayerTwoNintendoSelectButton.Button;
+        PixelDeckSettingsStore.Save();
+    }
+
+    private void SaveSnesButtonAndRefreshSetup()
+    {
+        SaveSnesButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    private void SavePlayerTwoSnesButtonAndRefreshSetup()
+    {
+        SavePlayerTwoSnesButtonSettings();
+        NotifyControllerSetupMappingsChanged();
+    }
+
     private void SaveSnesButtonSettings()
     {
         if (SelectedSnesAButton is null ||
@@ -781,6 +1247,32 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         settings.SnesRButton = SelectedSnesRButton.Button;
         settings.SnesStartButton = SelectedSnesStartButton.Button;
         settings.SnesSelectButton = SelectedSnesSelectButton.Button;
+        PixelDeckSettingsStore.Save();
+    }
+
+    private void SavePlayerTwoSnesButtonSettings()
+    {
+        if (SelectedPlayerTwoSnesAButton is null ||
+            SelectedPlayerTwoSnesBButton is null ||
+            SelectedPlayerTwoSnesXButton is null ||
+            SelectedPlayerTwoSnesYButton is null ||
+            SelectedPlayerTwoSnesLButton is null ||
+            SelectedPlayerTwoSnesRButton is null ||
+            SelectedPlayerTwoSnesStartButton is null ||
+            SelectedPlayerTwoSnesSelectButton is null)
+        {
+            return;
+        }
+
+        var settings = PixelDeckSettingsStore.Current;
+        settings.PlayerTwoSnesAButton = SelectedPlayerTwoSnesAButton.Button;
+        settings.PlayerTwoSnesBButton = SelectedPlayerTwoSnesBButton.Button;
+        settings.PlayerTwoSnesXButton = SelectedPlayerTwoSnesXButton.Button;
+        settings.PlayerTwoSnesYButton = SelectedPlayerTwoSnesYButton.Button;
+        settings.PlayerTwoSnesLButton = SelectedPlayerTwoSnesLButton.Button;
+        settings.PlayerTwoSnesRButton = SelectedPlayerTwoSnesRButton.Button;
+        settings.PlayerTwoSnesStartButton = SelectedPlayerTwoSnesStartButton.Button;
+        settings.PlayerTwoSnesSelectButton = SelectedPlayerTwoSnesSelectButton.Button;
         PixelDeckSettingsStore.Save();
     }
 
@@ -839,6 +1331,22 @@ public enum LibrarySystem
     Nintendo,
     SuperNintendo
 }
+
+public enum ControllerSetupPlayer
+{
+    PlayerOne,
+    PlayerTwo
+}
+
+public enum ControllerSetupConsole
+{
+    Nintendo,
+    SuperNintendo
+}
+
+public sealed record ControllerSetupPlayerOption(ControllerSetupPlayer Player, string Label);
+
+public sealed record ControllerSetupConsoleOption(ControllerSetupConsole Console, string Label);
 
 public sealed partial class ControllerSlotOption : ObservableObject
 {

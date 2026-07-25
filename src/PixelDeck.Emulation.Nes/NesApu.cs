@@ -68,7 +68,7 @@ internal sealed class NesApu
         _pulseTwo.SetEnabled(false);
         _triangle.SetEnabled(false);
         _noise.SetEnabled(false);
-        _dmc.SetEnabled(false, _cpuCycle);
+        _dmc.StopImmediately();
 
         if (!softReset)
         {
@@ -883,6 +883,7 @@ internal sealed class NesApu
         private bool _silence = true;
         private bool _dmaPending;
         private int _transferStartDelay;
+        private int _disableDelay;
 
         public bool IrqPending { get; private set; }
 
@@ -926,9 +927,14 @@ internal sealed class NesApu
             IrqPending = false;
             if (!enabled)
             {
-                _bytesRemaining = 0;
-                _dmaPending = false;
-                _transferStartDelay = 0;
+                // The 2A03 does not stop the DMC reader on the $4015 write
+                // edge. It takes effect one APU cycle later. That short
+                // window is observable: a reload request may halt the CPU
+                // and then be cancelled before its dummy/read cycles.
+                if (_disableDelay == 0)
+                {
+                    _disableDelay = (cpuCycle & 1) == 0 ? 2 : 3;
+                }
             }
             else if (_bytesRemaining == 0)
             {
@@ -945,6 +951,13 @@ internal sealed class NesApu
 
         public void ClockTimer()
         {
+            if (_disableDelay > 0 && --_disableDelay == 0)
+            {
+                _bytesRemaining = 0;
+                _dmaPending = false;
+                _transferStartDelay = 0;
+            }
+
             if (_transferStartDelay > 0)
             {
                 if (--_transferStartDelay == 0)
@@ -1044,6 +1057,7 @@ internal sealed class NesApu
             writer.Write(_silence);
             writer.Write(_dmaPending);
             writer.Write(_transferStartDelay);
+            writer.Write(_disableDelay);
             writer.Write(IrqPending);
         }
 
@@ -1065,7 +1079,18 @@ internal sealed class NesApu
             _silence = reader.ReadBoolean();
             _dmaPending = reader.ReadBoolean();
             _transferStartDelay = reader.ReadInt32();
+            _disableDelay = reader.ReadInt32();
             IrqPending = reader.ReadBoolean();
+        }
+
+        public void StopImmediately()
+        {
+            _enabled = false;
+            _bytesRemaining = 0;
+            _dmaPending = false;
+            _transferStartDelay = 0;
+            _disableDelay = 0;
+            IrqPending = false;
         }
 
         private void FillSampleBuffer()

@@ -355,7 +355,10 @@ public partial class EmulatorWindow : Window
                 var playerOneButtons =
                     GamepadInputMapper.ToNesButtons(playerOneGamepad, settings) |
                     ReadNesKeyboardButtons();
-                var playerTwoButtons = GamepadInputMapper.ToNesButtons(playerTwoGamepad, settings);
+                var playerTwoButtons = GamepadInputMapper.ToNesButtons(
+                    playerTwoGamepad,
+                    settings,
+                    playerTwo: true);
                 _nesMachine.SetControllerState(1, playerOneButtons);
                 _nesMachine.SetControllerState(2, playerTwoButtons);
             }
@@ -364,7 +367,10 @@ public partial class EmulatorWindow : Window
                 var playerOneButtons =
                     GamepadInputMapper.ToSnesButtons(playerOneGamepad, settings) |
                     ReadSnesKeyboardButtons();
-                var playerTwoButtons = GamepadInputMapper.ToSnesButtons(playerTwoGamepad, settings);
+                var playerTwoButtons = GamepadInputMapper.ToSnesButtons(
+                    playerTwoGamepad,
+                    settings,
+                    playerTwo: true);
                 _snesMachine.SetControllerState(1, playerOneButtons);
                 _snesMachine.SetControllerState(2, playerTwoButtons);
             }

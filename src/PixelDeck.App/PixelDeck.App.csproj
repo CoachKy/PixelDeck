@@ -6,10 +6,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.9.39</Version>
-    <AssemblyVersion>0.9.39.0</AssemblyVersion>
-    <FileVersion>0.9.39.0</FileVersion>
-    <InformationalVersion>0.9.39</InformationalVersion>
+    <Version>0.15.48</Version>
+    <AssemblyVersion>0.15.48.0</AssemblyVersion>
+    <FileVersion>0.15.48.0</FileVersion>
+    <InformationalVersion>0.15.48</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

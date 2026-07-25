@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private bool _isClosingAfterConfirmation;
     private bool _quitConfirmed;
     private int _quitConfirmationIndex;
+    private int _settingsFocusIndex;
 
     public MainWindow()
     {
@@ -87,6 +88,13 @@ public partial class MainWindow : Window
         if (_isQuitConfirmationVisible)
         {
             HandleQuitConfirmationKey(eventArgs);
+            return;
+        }
+
+        if (viewModel.IsSettingsVisible &&
+            _navigationRegion == DashboardNavigationRegion.PageContent &&
+            HandleSettingsKey(viewModel, eventArgs))
+        {
             return;
         }
 
@@ -269,6 +277,13 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (viewModel.IsSettingsVisible &&
+            _navigationRegion == DashboardNavigationRegion.PageContent)
+        {
+            HandleSettingsGamepad(viewModel, presses);
+            return;
+        }
+
         if (presses.HasFlag(GamepadButton.B) &&
             viewModel.IsLibraryVisible &&
             _navigationRegion is DashboardNavigationRegion.PageContent or
@@ -392,6 +407,159 @@ public partial class MainWindow : Window
         {
             ActivatePageContent(viewModel);
         }
+    }
+
+    private bool HandleSettingsKey(MainViewModel viewModel, KeyEventArgs eventArgs)
+    {
+        switch (eventArgs.Key)
+        {
+            case Key.Up:
+                MoveSettingsFocus(viewModel, -1);
+                break;
+            case Key.Down:
+                MoveSettingsFocus(viewModel, 1);
+                break;
+            case Key.Left:
+                ChangeSettingsValue(viewModel, -1);
+                break;
+            case Key.Right:
+                ChangeSettingsValue(viewModel, 1);
+                break;
+            case Key.Enter:
+                ChangeSettingsValue(viewModel, 1);
+                break;
+            case Key.Escape:
+                FocusPrimaryTabs(viewModel);
+                PlayNavigationTone();
+                break;
+            default:
+                return false;
+        }
+
+        eventArgs.Handled = true;
+        return true;
+    }
+
+    private void HandleSettingsGamepad(MainViewModel viewModel, GamepadButton presses)
+    {
+        if (presses.HasFlag(GamepadButton.B))
+        {
+            FocusPrimaryTabs(viewModel);
+            PlayNavigationTone();
+            return;
+        }
+
+        if (presses.HasFlag(GamepadButton.DPadUp))
+        {
+            MoveSettingsFocus(viewModel, -1);
+            return;
+        }
+
+        if (presses.HasFlag(GamepadButton.DPadDown))
+        {
+            MoveSettingsFocus(viewModel, 1);
+            return;
+        }
+
+        if (presses.HasFlag(GamepadButton.DPadLeft))
+        {
+            ChangeSettingsValue(viewModel, -1);
+            return;
+        }
+
+        if (presses.HasFlag(GamepadButton.DPadRight) ||
+            presses.HasFlag(GamepadButton.A))
+        {
+            ChangeSettingsValue(viewModel, 1);
+        }
+    }
+
+    private void MoveSettingsFocus(MainViewModel viewModel, int direction)
+    {
+        var controls = GetSettingsControls(viewModel);
+        if (controls.Count == 0)
+        {
+            return;
+        }
+
+        if (direction < 0 && _settingsFocusIndex <= 0)
+        {
+            FocusPrimaryTabs(viewModel);
+            PlayNavigationTone();
+            return;
+        }
+
+        var nextIndex = Math.Clamp(_settingsFocusIndex + direction, 0, controls.Count - 1);
+        if (nextIndex == _settingsFocusIndex)
+        {
+            return;
+        }
+
+        _settingsFocusIndex = nextIndex;
+        controls[_settingsFocusIndex].Focus();
+        PlayNavigationTone();
+    }
+
+    private void ChangeSettingsValue(MainViewModel viewModel, int direction)
+    {
+        var controls = GetSettingsControls(viewModel);
+        if (controls.Count == 0)
+        {
+            return;
+        }
+
+        _settingsFocusIndex = Math.Clamp(_settingsFocusIndex, 0, controls.Count - 1);
+        var control = controls[_settingsFocusIndex];
+        switch (control)
+        {
+            case ComboBox comboBox when comboBox.Items.Count > 0:
+                comboBox.SelectedIndex = Wrap(
+                    Math.Max(0, comboBox.SelectedIndex) + direction,
+                    comboBox.Items.Count);
+                break;
+            case CheckBox checkBox:
+                checkBox.IsChecked = !(checkBox.IsChecked ?? false);
+                break;
+            default:
+                return;
+        }
+
+        PlayNavigationTone();
+    }
+
+    private IReadOnlyList<Control> GetSettingsControls(MainViewModel viewModel)
+    {
+        var controls = new List<Control>
+        {
+            ControllerSetupPlayerPicker,
+            ControllerSetupSlotPicker,
+            ControllerSetupConsolePicker,
+            SetupAButtonPicker,
+            SetupBButtonPicker
+        };
+
+        if (viewModel.IsSuperNintendoControllerSetup)
+        {
+            controls.Add(SetupXButtonPicker);
+            controls.Add(SetupYButtonPicker);
+            controls.Add(SetupLButtonPicker);
+            controls.Add(SetupRButtonPicker);
+        }
+
+        controls.Add(SetupStartButtonPicker);
+        controls.Add(SetupSelectButtonPicker);
+
+        if (viewModel.IsNintendoControllerSetup)
+        {
+            controls.Add(SetupSpriteLimitCheckBox);
+            controls.Add(SetupOverscanCheckBox);
+            controls.Add(SetupMmc3Picker);
+            controls.Add(SetupPpuRevisionPicker);
+            controls.Add(SetupOamDecayCheckBox);
+            controls.Add(SetupOamPhasePicker);
+        }
+
+        return controls;
     }
 
     private static void UpdateControllerConnections(MainViewModel viewModel)
@@ -546,7 +714,8 @@ public partial class MainWindow : Window
                 else LibraryPage.Focus();
                 break;
             case DashboardPage.Settings:
-                ControllerSlotPicker.Focus();
+                _settingsFocusIndex = 0;
+                ControllerSetupPlayerPicker.Focus();
                 break;
             case DashboardPage.Quit:
                 QuitButton.Focus();

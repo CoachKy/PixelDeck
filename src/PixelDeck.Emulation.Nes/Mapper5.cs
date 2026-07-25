@@ -5,11 +5,9 @@ namespace PixelDeck.Emulation.Nes;
 ///
 /// The mapper exposes 8 KiB-granular PRG banking, independent background and
 /// sprite CHR banks, per-nametable CIRAM/ExRAM/fill selection, extended
-/// attributes, scanline IRQs, protected work RAM, and the hardware multiplier.
-/// MMC5 expansion audio and vertical split rendering are intentionally kept
-/// outside this first mapper implementation because they require additional
-/// APU and fetch-pipeline integration; cartridges that do not use those two
-/// facilities, including the local Castlevania III image, use the paths below.
+/// attributes, scanline IRQs, protected work RAM, the hardware multiplier, and
+/// the complete pulse/PCM expansion-audio block. Vertical split rendering
+/// remains separate because it requires additional fetch-pipeline integration.
 /// </summary>
 internal sealed class Mapper5(
     byte[] prgRom,
@@ -17,6 +15,7 @@ internal sealed class Mapper5(
     bool chrIsRam,
     CartridgeRam programRam) : IMapper
 {
+    private readonly Mmc5Audio _audio = new();
     private readonly byte[] _exRam = new byte[1_024];
     private readonly byte[] _prgBanks = [0, 0, 0, 0, 0xFF];
     private readonly ushort[] _chrBanks = new ushort[12];
@@ -51,7 +50,9 @@ internal sealed class Mapper5(
 
     public NametableMirroring Mirroring => NametableMirroring.Horizontal;
 
-    public bool IrqPending => _irqEnabled && _irqPending;
+    public bool IrqPending => (_irqEnabled && _irqPending) || _audio.IrqPending;
+
+    public float ExpansionAudioOutput => _audio.Output;
 
     public byte CpuRead(ushort address)
     {
@@ -70,6 +71,16 @@ internal sealed class Mapper5(
             var status = (byte)((_irqPending ? 0x80 : 0) | (_inFrame ? 0x40 : 0));
             _irqPending = false;
             return status;
+        }
+
+        if (address == 0x5010)
+        {
+            return _audio.ReadPcmStatus();
+        }
+
+        if (address == 0x5015)
+        {
+            return _audio.ReadPulseStatus();
         }
 
         if (address == 0x5205)
@@ -98,18 +109,34 @@ internal sealed class Mapper5(
         }
 
         var mapping = ResolveProgramMapping(address);
+        byte value;
         if (!mapping.IsRom)
         {
-            return ReadProgramRam(mapping.Bank, address & 0x1FFF);
+            value = ReadProgramRam(mapping.Bank, address & 0x1FFF);
+        }
+        else
+        {
+            var bankCount = Math.Max(1, prgRom.Length / 8_192);
+            var bank = mapping.Bank % bankCount;
+            value = prgRom[(bank * 8_192) + (address & 0x1FFF)];
         }
 
-        var bankCount = Math.Max(1, prgRom.Length / 8_192);
-        var bank = mapping.Bank % bankCount;
-        return prgRom[(bank * 8_192) + (address & 0x1FFF)];
+        if (address <= 0xBFFF)
+        {
+            _audio.ObserveProgramRead(value);
+        }
+
+        return value;
     }
 
     public void CpuWrite(ushort address, byte value)
     {
+        if (address is (>= 0x5000 and <= 0x5007) or 0x5010 or 0x5011 or 0x5015)
+        {
+            _audio.WriteRegister(address, value);
+            return;
+        }
+
         if (address is >= 0x5C00 and <= 0x5FFF)
         {
             var index = address - 0x5C00;
@@ -328,6 +355,8 @@ internal sealed class Mapper5(
 
     public void SetPpuControl(byte value) => _largeSprites = (value & 0x20) != 0;
 
+    public void ClockCpuCycle() => _audio.ClockCpuCycle();
+
     public void SaveState(BinaryWriter writer)
     {
         writer.Write(chrIsRam);
@@ -367,6 +396,7 @@ internal sealed class Mapper5(
         writer.Write(_multiplierTwo);
         writer.Write(_extendedAttributeTileOffset);
         writer.Write(_extendedAttributeValid);
+        _audio.SaveState(writer);
     }
 
     public void LoadState(BinaryReader reader)
@@ -416,6 +446,7 @@ internal sealed class Mapper5(
         _multiplierTwo = reader.ReadByte();
         _extendedAttributeTileOffset = reader.ReadInt32();
         _extendedAttributeValid = reader.ReadBoolean();
+        _audio.LoadState(reader);
 
         if (_prgMode > 3 || _chrMode > 3 || _exRamMode > 3 ||
             _extendedAttributeTileOffset is < 0 or >= 1_024)

@@ -80,6 +80,105 @@ public sealed class SnesPpuTests
     }
 
     [Fact]
+    public void OnlyObjectPalettesFourThroughSevenParticipateInColorMath()
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        WriteColor(ppu, 129, 0x001F);
+        WriteColor(ppu, 193, 0x001F);
+        WriteSolidFourBitTile(ppu, 0, 0, 1);
+        FillOamWithOffscreenSprites(ppu);
+        WriteOamSprite(ppu, 0, x: 0, y: 0, character: 0, attributes: 0);
+        WriteOamSprite(ppu, 1, x: 8, y: 0, character: 0, attributes: 8);
+        ppu.WriteRegister(0x212C, 0x10);
+        ppu.WriteRegister(0x2131, 0x10);
+        ppu.WriteRegister(0x2132, 0x5F);
+
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[0]);
+        Assert.Equal(0xFFFFFF00u, ppu.FrameBuffer[8]);
+    }
+
+    [Fact]
+    public void Mode1HighPriorityBg1CoversObjectPriorityTwo()
+    {
+        var ppu = CreatePriorityOverlapPpu(
+            mode: 1,
+            background: 0,
+            backgroundHighPriority: true,
+            objectPriority: 2);
+
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[0]);
+    }
+
+    [Fact]
+    public void Mode1PriorityBg3CoversObjectPriorityThree()
+    {
+        var ppu = CreatePriorityOverlapPpu(
+            mode: 0x09,
+            background: 2,
+            backgroundHighPriority: true,
+            objectPriority: 3);
+
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[0]);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void HighPriorityBg1CoversObjectPriorityTwoInModesTwoThroughSix(int mode)
+    {
+        var ppu = CreatePriorityOverlapPpu(
+            mode,
+            background: 0,
+            backgroundHighPriority: true,
+            objectPriority: 2);
+
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[0]);
+    }
+
+    [Fact]
+    public void Mode7ExtBgLowPriorityPixelFallsBehindObjectPriorityZero()
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        WriteColor(ppu, 1, 0x001F);
+        WriteColor(ppu, 129, 0x03E0);
+        // Tile zero and its upper-left Mode 7 pixel share this VRAM word.
+        WriteVramWord(ppu, 0x0000, 0x0100);
+        ppu.WriteRegister(0x2105, 0x07);
+        ppu.WriteRegister(0x2133, 0x40);
+        WriteMode7Word(ppu, 0x211B, 0x0100);
+        WriteMode7Word(ppu, 0x211C, 0x0000);
+        WriteMode7Word(ppu, 0x211D, 0x0000);
+        WriteMode7Word(ppu, 0x211E, 0x0100);
+        WriteMode7Word(ppu, 0x211F, 0x0000);
+        WriteMode7Word(ppu, 0x2120, 0x0000);
+        WriteMode7Word(ppu, 0x210D, 0x0000);
+        WriteMode7Word(ppu, 0x210E, 0x0000);
+
+        FillOamWithOffscreenSprites(ppu);
+        ppu.WriteRegister(0x2101, 0x01);
+        WriteSolidFourBitTile(ppu, 0x2000, 0, 1);
+        WriteOamSprite(ppu, 0, 0, 0, 0, 0);
+        ppu.WriteRegister(0x212C, 0x12);
+
+        ppu.RenderScanline(0);
+
+        Assert.Equal(0xFF00FF00u, ppu.FrameBuffer[0]);
+    }
+
+    [Fact]
     public void Mode2UsesBg3OffsetsAfterTheFirstVisibleTileColumn()
     {
         var ppu = new SnesPpu();
@@ -493,6 +592,50 @@ public sealed class SnesPpuTests
     }
 
     private static void SetDisplayOn(SnesPpu ppu) => ppu.WriteRegister(0x2100, 0x0F);
+
+    private static SnesPpu CreatePriorityOverlapPpu(
+        int mode,
+        int background,
+        bool backgroundHighPriority,
+        int objectPriority)
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        WriteColor(ppu, 1, 0x001F);
+        WriteColor(ppu, 129, 0x03E0);
+
+        var screenRegister = (ushort)(0x2107 + background);
+        ppu.WriteRegister(screenRegister, 0x04);
+        if (background < 2)
+        {
+            ppu.WriteRegister(0x210B, background == 0 ? (byte)0x01 : (byte)0x10);
+        }
+        else
+        {
+            ppu.WriteRegister(0x210C, background == 2 ? (byte)0x01 : (byte)0x10);
+        }
+
+        WriteVramWord(
+            ppu,
+            0x0400,
+            backgroundHighPriority ? (ushort)0x2000 : (ushort)0);
+        WriteSolidFourBitTile(ppu, 0x1000, 0, 1);
+
+        FillOamWithOffscreenSprites(ppu);
+        ppu.WriteRegister(0x2101, 0x01);
+        WriteSolidFourBitTile(ppu, 0x2000, 0, 1);
+        WriteOamSprite(
+            ppu,
+            0,
+            x: 0,
+            y: 0,
+            character: 0,
+            attributes: (byte)(objectPriority << 4));
+
+        ppu.WriteRegister(0x2105, (byte)mode);
+        ppu.WriteRegister(0x212C, (byte)((1 << background) | 0x10));
+        return ppu;
+    }
 
     private static void WriteColor(SnesPpu ppu, byte index, ushort color)
     {

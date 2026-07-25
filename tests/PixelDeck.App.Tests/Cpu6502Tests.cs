@@ -104,6 +104,34 @@ public sealed class Cpu6502Tests
     }
 
     [Fact]
+    public void DmcDisableAfterAQueuedTransferKeepsOnlyTheAbortedHaltCycle()
+    {
+        using var image = TestNesImage.Create(
+        [
+            0x8D, 0x15, 0x40,       // STA $4015
+            0xEA,                   // NOP
+            0x4C, 0x04, 0x80        // JMP $8004
+        ]);
+        var bus = new NesBus(Cartridge.Load(image.Path));
+        var cpu = new Cpu6502(bus);
+        cpu.Reset();
+        bus.Apu.WriteRegister(0x4010, 0x00);
+        bus.Apu.WriteRegister(0x4012, 0x00);
+        bus.Apu.WriteRegister(0x4013, 0x00);
+        bus.Apu.WriteRegister(0x4015, 0x10);
+
+        Assert.Equal(4, cpu.Step());
+        Assert.True(bus.Apu.DmcDmaPending);
+
+        // The pending request has already reached the CPU, but the delayed
+        // $4015 disable reaches the reader during its halt cycle. No dummy,
+        // alignment, or cartridge read follows.
+        Assert.Equal(3, cpu.Step());
+        Assert.False(bus.Apu.DmcDmaPending);
+        Assert.False(bus.Apu.IrqPending);
+    }
+
+    [Fact]
     public void IndexedStorePerformsItsObservableDummyRead()
     {
         using var image = TestNesImage.Create(

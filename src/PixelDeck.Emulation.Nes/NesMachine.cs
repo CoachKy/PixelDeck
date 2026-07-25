@@ -4,7 +4,7 @@ public sealed class NesMachine
 {
     public const int AudioSampleRate = 48_000;
     private const uint SaveStateMagic = 0x31534450; // PDS1
-    private const int SaveStateVersion = 17;
+    private const int SaveStateVersion = 19;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly NesBus _bus;

@@ -19,6 +19,14 @@ public sealed class PixelDeckSettings
 
     public GamepadButton SelectButton { get; set; } = GamepadButton.Back;
 
+    public GamepadButton PlayerTwoAButton { get; set; } = GamepadButton.A;
+
+    public GamepadButton PlayerTwoBButton { get; set; } = GamepadButton.X;
+
+    public GamepadButton PlayerTwoStartButton { get; set; } = GamepadButton.Start;
+
+    public GamepadButton PlayerTwoSelectButton { get; set; } = GamepadButton.Back;
+
     public bool RemoveNesSpriteLimit { get; set; }
 
     public bool HideNesHorizontalOverscan { get; set; } = true;
@@ -47,6 +55,22 @@ public sealed class PixelDeckSettings
     public GamepadButton SnesStartButton { get; set; } = GamepadButton.Start;
 
     public GamepadButton SnesSelectButton { get; set; } = GamepadButton.Back;
+
+    public GamepadButton PlayerTwoSnesAButton { get; set; } = GamepadButton.B;
+
+    public GamepadButton PlayerTwoSnesBButton { get; set; } = GamepadButton.A;
+
+    public GamepadButton PlayerTwoSnesXButton { get; set; } = GamepadButton.Y;
+
+    public GamepadButton PlayerTwoSnesYButton { get; set; } = GamepadButton.X;
+
+    public GamepadButton PlayerTwoSnesLButton { get; set; } = GamepadButton.LeftShoulder;
+
+    public GamepadButton PlayerTwoSnesRButton { get; set; } = GamepadButton.RightShoulder;
+
+    public GamepadButton PlayerTwoSnesStartButton { get; set; } = GamepadButton.Start;
+
+    public GamepadButton PlayerTwoSnesSelectButton { get; set; } = GamepadButton.Back;
 }
 
 public static class PixelDeckSettingsStore

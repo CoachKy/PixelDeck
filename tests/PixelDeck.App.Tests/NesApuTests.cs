@@ -199,6 +199,61 @@ public sealed class NesApuTests
         Assert.True(oddPhase.DmcDmaPending);
     }
 
+    [Theory]
+    [InlineData(0, 2)]
+    [InlineData(1, 3)]
+    public void DmcDisableUsesTheCpuPhaseBeforeCancellingAnOutstandingTransfer(
+        int cyclesBeforeDisable,
+        int disableDelay)
+    {
+        var apu = new NesApu();
+        apu.WriteRegister(0x4015, 0x10);
+        apu.Clock(2 + cyclesBeforeDisable);
+        Assert.True(apu.DmcDmaPending);
+
+        apu.WriteRegister(0x4015, 0x00);
+
+        Assert.True(apu.DmcDmaPending);
+        Assert.True((apu.ReadStatus() & 0x10) != 0);
+        apu.Clock(disableDelay - 1);
+        Assert.True(apu.DmcDmaPending);
+        apu.Clock(1);
+        Assert.False(apu.DmcDmaPending);
+        Assert.Equal(0, apu.ReadStatus() & 0x10);
+    }
+
+    [Fact]
+    public void SaveStatePreservesAnInFlightDmcDisableDelay()
+    {
+        var apu = new NesApu();
+        apu.WriteRegister(0x4015, 0x10);
+        apu.Clock(2);
+        apu.WriteRegister(0x4015, 0x00);
+        apu.Clock(1);
+
+        byte[] state;
+        using (var stateStream = new MemoryStream())
+        {
+            using var writer = new BinaryWriter(stateStream);
+            apu.SaveState(writer);
+            writer.Flush();
+            state = stateStream.ToArray();
+        }
+
+        apu.Clock(1);
+        Assert.False(apu.DmcDmaPending);
+
+        using (var stateStream = new MemoryStream(state, writable: false))
+        using (var reader = new BinaryReader(stateStream))
+        {
+            apu.LoadState(reader);
+        }
+
+        Assert.True(apu.DmcDmaPending);
+        apu.Clock(1);
+        Assert.False(apu.DmcDmaPending);
+    }
+
     [Fact]
     public void SaveStateRestoresTheExactAudioSequence()
     {

@@ -22,3 +22,6 @@
 # Local emulator captures are diagnostic output. Existing checked-in reference
 # captures remain tracked, but new files in this folder stay local.
 /artifacts/snes-audit/*
+
+# Local cross-platform publish output used for release validation.
+/artifacts/validation/*

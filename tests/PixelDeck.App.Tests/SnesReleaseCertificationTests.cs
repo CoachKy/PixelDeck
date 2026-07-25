@@ -20,6 +20,7 @@ public sealed class SnesReleaseCertificationTests
     [InlineData(SnesMapMode.HiRom, 0x21, 0x00)]
     [InlineData(SnesMapMode.HiRom, 0x31, 0x01)]
     [InlineData(SnesMapMode.HiRom, 0x21, 0x02)]
+    [InlineData(SnesMapMode.ExHiRom, 0x35, 0x02)]
     public void StandardNtscCartridgeContractBoots(
         SnesMapMode mapMode,
         byte mapModeByte,
@@ -49,6 +50,124 @@ public sealed class SnesReleaseCertificationTests
     }
 
     [Fact]
+    public void ExHiRomMapsBothRomRegionsAndHiRomSaveRam()
+    {
+        using var image = CertificationSnesImage.Create(
+            SnesMapMode.ExHiRom,
+            mapModeByte: 0x35,
+            cartridgeType: 0x02,
+            destinationCode: 0x01);
+        var bytes = File.ReadAllBytes(image.Path);
+        bytes[0x000000] = 0xC0;
+        bytes[0x3FFFFF] = 0xFF;
+        bytes[0x400000] = 0x40;
+        bytes[0x5F0000] = 0x5F;
+        File.WriteAllBytes(image.Path, bytes);
+
+        var cartridge = SnesCartridge.Load(image.Path);
+
+        Assert.Equal(SnesMapMode.ExHiRom, cartridge.Info.MapMode);
+        Assert.Equal(0xC0, cartridge.Read(0xC00000));
+        Assert.Equal(0xFF, cartridge.Read(0xFFFFFF));
+        Assert.Equal(0x40, cartridge.Read(0x400000));
+        Assert.Equal(0x5F, cartridge.Read(0x5F0000));
+        Assert.Equal(0x40, cartridge.Read(0x600000));
+        Assert.Equal(0x78, cartridge.Read(0x008000));
+
+        cartridge.Write(0x206000, 0x5A);
+        Assert.Equal(0x5A, cartridge.Read(0xA06000));
+    }
+
+    [Fact]
+    public void NonPowerOfTwoHiRomUsesPhysicalMirroringInsteadOfModulo()
+    {
+        using var image = CertificationSnesImage.Create(
+            SnesMapMode.HiRom,
+            mapModeByte: 0x31,
+            cartridgeType: 0x00,
+            destinationCode: 0x01);
+        var bytes = File.ReadAllBytes(image.Path);
+        Array.Resize(ref bytes, 3 * 1024 * 1024);
+        bytes[0x000000] = 0x10;
+        bytes[0x100000] = 0x20;
+        bytes[0x200000] = 0x30;
+        File.WriteAllBytes(image.Path, bytes);
+
+        var cartridge = SnesCartridge.Load(image.Path);
+
+        Assert.Equal(0x10, cartridge.Read(0xC00000));
+        Assert.Equal(0x20, cartridge.Read(0xD00000));
+        Assert.Equal(0x30, cartridge.Read(0xE00000));
+        Assert.Equal(0x30, cartridge.Read(0xF00000));
+    }
+
+    [Fact]
+    public void Cx4CartridgesExposeMirroredRamCommandsRomDmaAndSaveState()
+    {
+        using var image = CertificationSnesImage.Create(
+            SnesMapMode.LoRom,
+            mapModeByte: 0x20,
+            cartridgeType: 0xF3,
+            destinationCode: 0x01);
+        var info = SnesCartridge.Inspect(image.Path);
+
+        Assert.True(info.IsSupported, info.CompatibilityMessage);
+        Assert.Contains("CX4", info.CompatibilityMessage);
+        Assert.False(info.HasBatteryBackedRam);
+
+        var cartridge = SnesCartridge.Load(image.Path);
+        var bus = new SnesBus(cartridge);
+
+        // Signed 24-bit multiply: 2 * 3 = 6.
+        bus.Write(0x007F80, 0x02);
+        bus.Write(0x007F81, 0x00);
+        bus.Write(0x007F82, 0x00);
+        bus.Write(0x007F83, 0x03);
+        bus.Write(0x007F84, 0x00);
+        bus.Write(0x007F85, 0x00);
+        bus.Write(0x007F4D, 0x02);
+        bus.Write(0x007F4F, 0x25);
+
+        Assert.Equal(0x06, bus.Read(0x007F80));
+        Assert.Equal(0x00, bus.Read(0x007F81));
+        Assert.Equal(0x00, bus.Read(0x007F82));
+        Assert.Equal(0x00, bus.Read(0x007F5E));
+        Assert.Equal(0x06, bus.Read(0x807F80));
+        Assert.Equal(1, bus.ReadCx4CommandCount(0x25));
+
+        // CX4 ROM DMA copies from raw LoROM source $00:8000 into CX4 RAM.
+        bus.Write(0x007F40, 0x00);
+        bus.Write(0x007F41, 0x80);
+        bus.Write(0x007F42, 0x00);
+        bus.Write(0x007F43, 0x02);
+        bus.Write(0x007F44, 0x00);
+        bus.Write(0x007F45, 0x00);
+        bus.Write(0x007F46, 0x60);
+        bus.Write(0x007F47, 0x00);
+
+        Assert.Equal(0x78, bus.Read(0x006000));
+        Assert.Equal(0xA9, bus.Read(0x006001));
+
+        using var state = new MemoryStream();
+        using (var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            bus.SaveState(writer);
+        }
+
+        bus.Write(0x006000, 0xCC);
+        bus.Write(0x007F4F, 0x25);
+        Assert.Equal(2, bus.ReadCx4CommandCount(0x25));
+        state.Position = 0;
+        using (var reader = new BinaryReader(state, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            bus.LoadState(reader);
+        }
+
+        Assert.Equal(0x78, bus.Read(0x006000));
+        Assert.Equal(1, bus.ReadCx4CommandCount(0x25));
+    }
+
+    [Fact]
     public void UnsupportedHardwareIsExcludedFromTheStableEnvelope()
     {
         using var enhancement = CertificationSnesImage.Create(
@@ -71,6 +190,126 @@ public sealed class SnesReleaseCertificationTests
         Assert.Contains("PAL", palInfo.CompatibilityMessage);
         Assert.Throws<NotSupportedException>(() => SnesMachine.Load(enhancement.Path));
         Assert.Throws<NotSupportedException>(() => SnesMachine.Load(pal.Path));
+    }
+
+    [Fact]
+    public void LocalExHiRomImagesCompleteBootFramesWhenPresent()
+    {
+        var images = FindLocalGames()
+            .Where(path =>
+            {
+                try
+                {
+                    return SnesCartridge.Inspect(path).MapMode == SnesMapMode.ExHiRom;
+                }
+                catch (InvalidDataException)
+                {
+                    return false;
+                }
+            })
+            .ToArray();
+
+        foreach (var path in images)
+        {
+            var machine = SnesMachine.Load(path);
+            for (var frame = 0; frame < 120; frame++)
+            {
+                Assert.Equal(256 * 224, machine.RunFrame().Length);
+            }
+
+            Assert.True(machine.CpuCycles > 0);
+            Assert.Equal(0, machine.BrkCount);
+            Assert.Equal(0, machine.CopCount);
+            _output.WriteLine(
+                $"{Path.GetFileName(path)}: ExHiROM booted 120 frames at PC ${machine.ProgramAddress:X6}.");
+        }
+    }
+
+    [Fact]
+    public void LocalCx4ImagesReachCommandDrivenScenesWhenPresent()
+    {
+        var images = FindLocalGames()
+            .Where(path =>
+            {
+                try
+                {
+                    var info = SnesCartridge.Inspect(path);
+                    return info.CartridgeType == 0xF3 && info.IsSupported;
+                }
+                catch (InvalidDataException)
+                {
+                    return false;
+                }
+            })
+            .ToArray();
+
+        foreach (var path in images)
+        {
+            var machine = SnesMachine.Load(path);
+            var audio = new float[2_048];
+            var audioPeak = 0f;
+            var maximumColors = 0;
+            var visibleFrames = 0;
+            const int frames = 2_400;
+            for (var frame = 0; frame < frames; frame++)
+            {
+                machine.SetControllerState(1, GetSoakInput(frame));
+                var pixels = machine.RunFrame();
+                Assert.Equal(256 * 224, pixels.Length);
+                if (frame % 30 == 0)
+                {
+                    maximumColors = Math.Max(maximumColors, CountDistinctColors(pixels));
+                }
+                if (!machine.IsDisplayBlanked)
+                {
+                    visibleFrames++;
+                }
+
+                int read;
+                while ((read = machine.ReadAudioSamples(audio)) > 0)
+                {
+                    for (var index = 0; index < read; index++)
+                    {
+                        audioPeak = Math.Max(audioPeak, Math.Abs(audio[index]));
+                    }
+                }
+            }
+
+            var cx4Commands = Enumerable.Range(0, 256)
+                .Select(command => (
+                    Command: command,
+                    Count: machine.ReadCx4CommandCount((byte)command)))
+                .Where(entry => entry.Count != 0)
+                .Select(entry => $"${entry.Command:X2}={entry.Count}");
+            _output.WriteLine(
+                $"{Path.GetFileName(path)}: PC=${machine.ProgramAddress:X6}, " +
+                $"BRK={machine.BrkCount}, first BRK=${machine.FirstBrkAddress:X6}, " +
+                $"COP={machine.CopCount}, PPU writes={machine.PpuRegisterWriteCount}, " +
+                $"visible={visibleFrames}, colors={maximumColors}, audio peak={audioPeak:0.0000}, " +
+                $"CX4=[{string.Join(", ", cx4Commands)}].");
+            Assert.True(machine.CpuCycles > 0);
+            Assert.True(
+                machine.BrkCount == 0,
+                $"{Path.GetFileName(path)} executed {machine.BrkCount} BRKs; " +
+                $"first=${machine.FirstBrkAddress:X6}, current PC=${machine.ProgramAddress:X6}.");
+            Assert.Equal(0, machine.CopCount);
+            Assert.True(machine.PpuRegisterWriteCount > 0);
+            Assert.False(machine.IsDisplayBlanked);
+            Assert.True(
+                visibleFrames >= 300 && maximumColors >= 8,
+                $"{Path.GetFileName(path)} did not produce a useful visible CX4 boot sequence.");
+            Assert.True(
+                audioPeak >= 0.0001f,
+                $"{Path.GetFileName(path)} did not produce audible S-DSP output.");
+            Assert.True(
+                machine.ReadCx4CommandCount(0x00) > 0,
+                $"{Path.GetFileName(path)} never exercised the CX4 sprite command.");
+            Assert.Equal(ushort.MaxValue, machine.ApuFirstUnsupportedAddress);
+            Assert.Equal(0, machine.DroppedAudioSampleCount);
+            VerifyExactStateRoundTrip(machine, path);
+            _output.WriteLine(
+                $"{Path.GetFileName(path)}: CX4 cartridge passed {frames} frames at PC ${machine.ProgramAddress:X6}.");
+        }
     }
 
     [Fact]
@@ -308,8 +547,20 @@ public sealed class SnesReleaseCertificationTests
             var path = System.IO.Path.Combine(
                 directoryPath,
                 $"{mapMode}-{mapModeByte:X2}-{cartridgeType:X2}.sfc");
-            var image = new byte[mapMode == SnesMapMode.LoRom ? 32 * 1_024 : 64 * 1_024];
-            var programOffset = mapMode == SnesMapMode.LoRom ? 0 : 0x8000;
+            var image = new byte[mapMode switch
+            {
+                SnesMapMode.LoRom => 32 * 1_024,
+                SnesMapMode.HiRom => 64 * 1_024,
+                SnesMapMode.ExHiRom => 6 * 1_024 * 1_024,
+                _ => throw new ArgumentOutOfRangeException(nameof(mapMode))
+            }];
+            var programOffset = mapMode switch
+            {
+                SnesMapMode.LoRom => 0,
+                SnesMapMode.HiRom => 0x8000,
+                SnesMapMode.ExHiRom => 0x408000,
+                _ => throw new ArgumentOutOfRangeException(nameof(mapMode))
+            };
             byte[] program =
             [
                 0x78,             // SEI
@@ -323,11 +574,23 @@ public sealed class SnesReleaseCertificationTests
             ];
             program.CopyTo(image, programOffset);
 
-            var header = mapMode == SnesMapMode.LoRom ? 0x7FC0 : 0xFFC0;
+            var header = mapMode switch
+            {
+                SnesMapMode.LoRom => 0x7FC0,
+                SnesMapMode.HiRom => 0xFFC0,
+                SnesMapMode.ExHiRom => 0x40FFC0,
+                _ => throw new ArgumentOutOfRangeException(nameof(mapMode))
+            };
             "PIXELSNES CERT ROM   ".Select(character => (byte)character).ToArray().CopyTo(image, header);
             image[header + 0x15] = mapModeByte;
             image[header + 0x16] = cartridgeType;
-            image[header + 0x17] = mapMode == SnesMapMode.LoRom ? (byte)0x05 : (byte)0x06;
+            image[header + 0x17] = mapMode switch
+            {
+                SnesMapMode.LoRom => 0x05,
+                SnesMapMode.HiRom => 0x06,
+                SnesMapMode.ExHiRom => 0x0D,
+                _ => throw new ArgumentOutOfRangeException(nameof(mapMode))
+            };
             image[header + 0x18] = cartridgeType == 0x00 ? (byte)0 : (byte)0x03;
             image[header + 0x19] = destinationCode;
             image[header + 0x1C] = 0xCB;

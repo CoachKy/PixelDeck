@@ -795,6 +795,10 @@ internal sealed class Cpu6502
 
         IdleCycle();
         dmcHaltNeeded = false;
+        CancelStoppedDmcDma(
+            ref hasDmcDma,
+            ref dmcHaltNeeded,
+            ref dmcDummyNeeded);
 
         while (hasOamDma || hasDmcDma)
         {
@@ -852,6 +856,10 @@ internal sealed class Cpu6502
                 IdleCycle();
             }
 
+            CancelStoppedDmcDma(
+                ref hasDmcDma,
+                ref dmcHaltNeeded,
+                ref dmcDummyNeeded);
             if (!hasDmcDma && _bus.Apu.DmcDmaPending)
             {
                 hasDmcDma = true;
@@ -861,6 +869,24 @@ internal sealed class Cpu6502
         }
 
         _dmaCyclesThisStep += TotalCycles - dmaStartedAt;
+    }
+
+    private void CancelStoppedDmcDma(
+        ref bool hasDmcDma,
+        ref bool haltNeeded,
+        ref bool dummyNeeded)
+    {
+        if (!hasDmcDma || _bus.Apu.DmcDmaPending)
+        {
+            return;
+        }
+
+        // A $4015 disable can reach the DMC reader after the CPU has already
+        // accepted its halt request. Hardware keeps that single halt cycle,
+        // then suppresses the dummy/alignment/read portion of the transfer.
+        hasDmcDma = false;
+        haltNeeded = false;
+        dummyNeeded = false;
     }
 
     private static void AdvanceDmcDmaPhase(ref bool haltNeeded, ref bool dummyNeeded)

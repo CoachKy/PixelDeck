@@ -6,7 +6,8 @@ namespace PixelDeck.Emulation.Snes;
 public enum SnesMapMode
 {
     LoRom,
-    HiRom
+    HiRom,
+    ExHiRom
 }
 
 public sealed record SnesCartridgeInfo(
@@ -28,6 +29,8 @@ public sealed class SnesCartridge
     private const int CopierHeaderSize = 512;
     private const int LoRomHeaderOffset = 0x7FC0;
     private const int HiRomHeaderOffset = 0xFFC0;
+    private const int ExHiRomHeaderOffset = 0x40FFC0;
+    private const int StandardHiRomCapacity = 4 * 1024 * 1024;
 
     private readonly byte[] _rom;
     private readonly byte[] _ram;
@@ -49,6 +52,10 @@ public sealed class SnesCartridge
     public ReadOnlyMemory<byte> Fingerprint { get; }
 
     internal bool HasDsp1 => IsDsp1Board(Info.MapMode, Info.MapModeByte, Info.CartridgeType);
+
+    internal bool HasCx4 =>
+        Info.MapMode == SnesMapMode.LoRom &&
+        Info.CartridgeType == 0xF3;
 
     public static SnesCartridgeInfo Inspect(string path)
     {
@@ -93,6 +100,16 @@ public sealed class SnesCartridge
                 _ramDirty = true;
             }
         }
+    }
+
+    internal byte ReadCx4RomByte(uint address, int displacement = 0)
+    {
+        // CX4 source pointers use the cartridge's raw LoROM byte layout:
+        // bank selects a 32 KiB page and the high address bit is ignored.
+        var mappedAddress =
+            (int)(((address & 0xFF0000) >> 1) + (address & 0x7FFF)) +
+            displacement;
+        return _rom[MirrorAddress(mappedAddress, _rom.Length)];
     }
 
     internal void SaveState(BinaryWriter writer)
@@ -211,6 +228,10 @@ public sealed class SnesCartridge
         {
             candidates.Add(ReadCandidate(rom, HiRomHeaderOffset, SnesMapMode.HiRom));
         }
+        if (rom.Length >= ExHiRomHeaderOffset + 64)
+        {
+            candidates.Add(ReadCandidate(rom, ExHiRomHeaderOffset, SnesMapMode.ExHiRom));
+        }
 
         var header = candidates.OrderByDescending(candidate => candidate.Score).First();
         if (header.Score < 8)
@@ -228,6 +249,7 @@ public sealed class SnesCartridge
         {
             SnesMapMode.LoRom => header.MapModeByte is 0x20 or 0x30,
             SnesMapMode.HiRom => header.MapModeByte is 0x21 or 0x31,
+            SnesMapMode.ExHiRom => header.MapModeByte is 0x25 or 0x35,
             _ => false
         };
         // The low nibble describes the installed storage while the high
@@ -235,7 +257,13 @@ public sealed class SnesCartridge
         // are DSP-family boards. PixelSNES currently implements DSP-1, the
         // variant used by standard $03-$06 DSP boards such as Super Mario Kart.
         var hasDsp1 = IsDsp1Board(header.MapMode, header.MapModeByte, header.CartridgeType);
-        var hasUnsupportedEnhancementChip = header.CartridgeType > 0x02 && !hasDsp1;
+        var hasCx4 =
+            header.MapMode == SnesMapMode.LoRom &&
+            header.CartridgeType == 0xF3;
+        var hasUnsupportedEnhancementChip =
+            header.CartridgeType > 0x02 &&
+            !hasDsp1 &&
+            !hasCx4;
         var hasBatteryBackedRam = header.CartridgeType is 0x02 or 0x05 or 0x06;
         var isPal = IsPalRegion(header.DestinationCode);
         var isSupported = hasSupportedMapByte && !hasUnsupportedEnhancementChip && !isPal;
@@ -247,6 +275,8 @@ public sealed class SnesCartridge
                     ? "PAL SNES timing is not certified yet."
                     : hasDsp1
                         ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC, DSP-1). CPU, PPU video, and S-DSP stereo audio are active."
+                        : hasCx4
+                            ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC, CX4). CPU, PPU video, CX4 graphics commands, and S-DSP stereo audio are active."
                         : $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC). CPU, PPU video, and S-DSP stereo audio are active.";
 
         var info = new SnesCartridgeInfo(
@@ -275,7 +305,32 @@ public sealed class SnesCartridge
                 return false;
             }
 
-            index = (((bank & 0x7F) * 0x8000) + (address & 0x7FFF)) % _rom.Length;
+            var mappedAddress = ((bank & 0x7F) * 0x8000) + (address & 0x7FFF);
+            index = MirrorAddress(mappedAddress, _rom.Length);
+            return true;
+        }
+
+        if (Info.MapMode == SnesMapMode.ExHiRom)
+        {
+            if (bank is 0x7E or 0x7F ||
+                (address < 0x8000 && (bank < 0x40 || bank is >= 0x80 and < 0xC0)))
+            {
+                return false;
+            }
+
+            var mappedAddress = ((bank & 0x3F) * 0x10000) + address;
+            if (bank < 0x80)
+            {
+                var extendedSize = _rom.Length - StandardHiRomCapacity;
+                index = StandardHiRomCapacity + MirrorAddress(mappedAddress, extendedSize);
+            }
+            else
+            {
+                index = MirrorAddress(
+                    mappedAddress,
+                    Math.Min(_rom.Length, StandardHiRomCapacity));
+            }
+
             return true;
         }
 
@@ -285,7 +340,8 @@ public sealed class SnesCartridge
             return false;
         }
 
-        index = (((bank & 0x3F) * 0x10000) + address) % _rom.Length;
+        var hiRomAddress = ((bank & 0x3F) * 0x10000) + address;
+        index = MirrorAddress(hiRomAddress, _rom.Length);
         return true;
     }
 
@@ -353,6 +409,7 @@ public sealed class SnesCartridge
         {
             0 => SnesMapMode.LoRom,
             1 => SnesMapMode.HiRom,
+            5 => SnesMapMode.ExHiRom,
             _ => (SnesMapMode?)null
         };
         score += encodedMap == expectedMap ? 4 : -4;
@@ -372,6 +429,29 @@ public sealed class SnesCartridge
     private static ushort ReadWord(byte[] data, int offset) =>
         (ushort)(data[offset] | (data[offset + 1] << 8));
 
+    private static int MirrorAddress(int address, int size)
+    {
+        if (size <= 0)
+        {
+            throw new InvalidDataException("The SNES ROM contains an empty mapped region.");
+        }
+
+        if (address < size)
+        {
+            return address;
+        }
+
+        var mask = 1 << 30;
+        while ((address & mask) == 0)
+        {
+            mask >>= 1;
+        }
+
+        return size <= (address & mask)
+            ? MirrorAddress(address - mask, size)
+            : mask + MirrorAddress(address - mask, size - mask);
+    }
+
     private static bool IsPalRegion(byte destinationCode) => destinationCode is >= 0x02 and <= 0x0C;
 
     private static bool IsDsp1Board(SnesMapMode mapMode, byte mapModeByte, byte cartridgeType) =>
@@ -382,7 +462,13 @@ public sealed class SnesCartridge
         (cartridgeType == 0x05 && mapMode == SnesMapMode.HiRom);
 
     private static string FormatMapMode(SnesMapMode mapMode) =>
-        mapMode == SnesMapMode.LoRom ? "LoROM" : "HiROM";
+        mapMode switch
+        {
+            SnesMapMode.LoRom => "LoROM",
+            SnesMapMode.HiRom => "HiROM",
+            SnesMapMode.ExHiRom => "ExHiROM",
+            _ => "unknown"
+        };
 
     private sealed record HeaderCandidate(
         string Title,

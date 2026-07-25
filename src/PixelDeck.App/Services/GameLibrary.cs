@@ -178,7 +178,13 @@ public sealed class GameLibrary
             try
             {
                 var cartridge = SnesCartridge.Inspect(filePath);
-                var mapText = cartridge.MapMode == SnesMapMode.LoRom ? "LOROM" : "HIROM";
+                var mapText = cartridge.MapMode switch
+                {
+                    SnesMapMode.LoRom => "LOROM",
+                    SnesMapMode.HiRom => "HIROM",
+                    SnesMapMode.ExHiRom => "EXHIROM",
+                    _ => "UNKNOWN"
+                };
                 return new Compatibility(
                     null,
                     0,

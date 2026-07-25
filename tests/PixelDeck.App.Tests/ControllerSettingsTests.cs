@@ -19,6 +19,10 @@ public sealed class ControllerSettingsTests
         Assert.Equal(GamepadButton.X, settings.BButton);
         Assert.Equal(GamepadButton.Start, settings.StartButton);
         Assert.Equal(GamepadButton.Back, settings.SelectButton);
+        Assert.Equal(GamepadButton.A, settings.PlayerTwoAButton);
+        Assert.Equal(GamepadButton.X, settings.PlayerTwoBButton);
+        Assert.Equal(GamepadButton.Start, settings.PlayerTwoStartButton);
+        Assert.Equal(GamepadButton.Back, settings.PlayerTwoSelectButton);
         Assert.False(settings.RemoveNesSpriteLimit);
         Assert.True(settings.HideNesHorizontalOverscan);
         Assert.Equal(Mmc3IrqRevision.Auto, settings.Mmc3IrqRevision);
@@ -36,6 +40,14 @@ public sealed class ControllerSettingsTests
         Assert.Equal(GamepadButton.RightShoulder, settings.SnesRButton);
         Assert.Equal(GamepadButton.Start, settings.SnesStartButton);
         Assert.Equal(GamepadButton.Back, settings.SnesSelectButton);
+        Assert.Equal(GamepadButton.B, settings.PlayerTwoSnesAButton);
+        Assert.Equal(GamepadButton.A, settings.PlayerTwoSnesBButton);
+        Assert.Equal(GamepadButton.Y, settings.PlayerTwoSnesXButton);
+        Assert.Equal(GamepadButton.X, settings.PlayerTwoSnesYButton);
+        Assert.Equal(GamepadButton.LeftShoulder, settings.PlayerTwoSnesLButton);
+        Assert.Equal(GamepadButton.RightShoulder, settings.PlayerTwoSnesRButton);
+        Assert.Equal(GamepadButton.Start, settings.PlayerTwoSnesStartButton);
+        Assert.Equal(GamepadButton.Back, settings.PlayerTwoSnesSelectButton);
     }
 
     [Fact]
@@ -63,6 +75,30 @@ public sealed class ControllerSettingsTests
         Assert.Equal(
             SnesButton.B | SnesButton.Y | SnesButton.Start | SnesButton.Right,
             GamepadInputMapper.ToSnesButtons(gamepad, settings));
+    }
+
+    [Fact]
+    public void PlayerTwoCanUseIndependentMappingsForEachConsole()
+    {
+        var settings = new PixelDeckSettings
+        {
+            PlayerTwoAButton = GamepadButton.B,
+            PlayerTwoBButton = GamepadButton.A,
+            PlayerTwoSnesAButton = GamepadButton.X,
+            PlayerTwoSnesBButton = GamepadButton.Y,
+            PlayerTwoSnesXButton = GamepadButton.LeftShoulder
+        };
+        var gamepad = GamepadButton.B | GamepadButton.Y;
+
+        Assert.Equal(
+            NesButton.A,
+            GamepadInputMapper.ToNesButtons(gamepad, settings, playerTwo: true));
+        Assert.Equal(
+            SnesButton.B,
+            GamepadInputMapper.ToSnesButtons(gamepad, settings, playerTwo: true));
+        Assert.Equal(
+            NesButton.None,
+            GamepadInputMapper.ToNesButtons(gamepad, settings));
     }
 
     [Fact]

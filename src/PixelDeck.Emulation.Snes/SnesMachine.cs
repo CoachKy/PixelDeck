@@ -4,7 +4,7 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 11;
+    private const int SaveStateVersion = 13;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
@@ -68,6 +68,8 @@ public sealed class SnesMachine
 
     public long ReadDsp1CommandCount(byte command) => _bus.ReadDsp1CommandCount(command);
 
+    public long ReadCx4CommandCount(byte command) => _bus.ReadCx4CommandCount(command);
+
     internal int ActiveAudioVoiceCount => _bus.ActiveAudioVoiceCount;
 
     internal byte ReadDspRegister(byte address) => _bus.ReadDspRegister(address);
@@ -75,6 +77,12 @@ public sealed class SnesMachine
     internal ushort AutomaticControllerOne => _bus.AutomaticControllerOne;
 
     internal byte NmiTimerControl => _bus.NmiTimerControl;
+
+    internal byte MemorySpeedControl => _bus.MemorySpeedControl;
+
+    internal int LastInstructionMasterClocks => _cpu.LastMasterClocks;
+
+    internal long MasterClocks => _bus.TotalMasterClocks;
 
     public int NonZeroVramBytes => _bus.Ppu.NonZeroVramBytes;
 
@@ -105,8 +113,8 @@ public sealed class SnesMachine
 
     internal void StepInstructionForDiagnostics()
     {
-        var cpuCycles = _cpu.Step();
-        _bus.Clock(cpuCycles);
+        _cpu.Step();
+        _bus.AdvanceMasterClocks(_cpu.LastMasterClocks);
     }
 
     public ReadOnlySpan<uint> RunFrame()
@@ -121,8 +129,8 @@ public sealed class SnesMachine
                 throw new InvalidOperationException("The SNES CPU did not complete a video frame within the safety limit.");
             }
 
-            var cpuCycles = _cpu.Step();
-            _bus.Clock(cpuCycles);
+            _cpu.Step();
+            _bus.AdvanceMasterClocks(_cpu.LastMasterClocks);
         }
 
         return _bus.Ppu.FrameBuffer;
@@ -142,11 +150,11 @@ public sealed class SnesMachine
 
     internal byte[] SaveState(int stateVersion)
     {
-        if (stateVersion is not (10 or SaveStateVersion))
+        if (stateVersion is not (10 or 11 or 12 or SaveStateVersion))
         {
             throw new ArgumentOutOfRangeException(
                 nameof(stateVersion),
-                "PixelSNES can only write the current state or its v10 migration fixture.");
+                "PixelSNES can only write the current state or its v10-v12 migration fixtures.");
         }
 
         using var payloadStream = new MemoryStream();
@@ -199,7 +207,7 @@ public sealed class SnesMachine
         }
 
         var stateVersion = reader.ReadInt32();
-        if (stateVersion is not (10 or SaveStateVersion))
+        if (stateVersion is not (10 or 11 or 12 or SaveStateVersion))
         {
             throw new InvalidDataException("This is not a compatible PixelDeck SNES save state.");
         }

@@ -11,6 +11,29 @@ internal sealed class Cpu65816
     private const byte Overflow = 0x40;
     private const byte Negative = 0x80;
 
+    // W65C816S base cycles with M=X=1, branches not taken, direct page
+    // aligned, and indexed reads not crossing a page. Additional memory
+    // accesses are counted by SnesBus and dynamic penalties are added below.
+    private static readonly byte[] BaseCycles =
+    [
+        7, 6, 7, 4, 5, 3, 5, 6, 3, 2, 2, 4, 6, 4, 6, 5,
+        2, 5, 5, 7, 5, 4, 6, 6, 2, 4, 2, 2, 6, 4, 7, 5,
+        6, 6, 8, 4, 3, 3, 5, 6, 4, 2, 2, 5, 4, 4, 6, 5,
+        2, 5, 5, 7, 4, 4, 6, 6, 2, 4, 2, 2, 4, 4, 7, 5,
+        7, 6, 2, 4, 7, 3, 5, 6, 3, 2, 2, 3, 3, 4, 6, 5,
+        2, 5, 5, 7, 7, 4, 6, 6, 2, 4, 3, 2, 4, 4, 7, 5,
+        6, 6, 6, 4, 3, 3, 5, 6, 4, 2, 2, 6, 5, 4, 6, 5,
+        2, 5, 5, 7, 4, 4, 6, 6, 2, 4, 4, 2, 6, 4, 7, 5,
+        2, 6, 4, 4, 3, 3, 3, 6, 2, 2, 2, 3, 4, 4, 4, 5,
+        2, 6, 5, 7, 4, 4, 4, 6, 2, 5, 2, 2, 4, 5, 5, 5,
+        2, 6, 2, 4, 3, 3, 3, 6, 2, 2, 2, 4, 4, 4, 4, 5,
+        2, 5, 5, 7, 4, 4, 4, 6, 2, 4, 2, 2, 4, 4, 4, 5,
+        2, 6, 3, 4, 3, 3, 5, 6, 2, 2, 2, 3, 4, 4, 6, 5,
+        2, 5, 5, 7, 6, 4, 6, 6, 2, 4, 3, 3, 6, 4, 7, 5,
+        2, 6, 3, 4, 3, 3, 5, 6, 2, 2, 2, 3, 4, 4, 6, 5,
+        2, 5, 5, 7, 5, 4, 6, 6, 2, 4, 4, 2, 8, 4, 7, 5
+    ];
+
     private readonly SnesBus _bus;
     private ushort _a;
     private ushort _x;
@@ -26,6 +49,11 @@ internal sealed class Cpu65816
     private bool _stopped;
     private ushort _resetVector;
     private bool _hasLeftResetVector;
+    private int _instructionExtraCycles;
+    private int _instructionOpcode = -1;
+    private bool _instructionWasEmulation;
+    private bool _instructionAccumulatorWas8Bit;
+    private bool _instructionIndexWas8Bit;
 
     public Cpu65816(SnesBus bus)
     {
@@ -33,6 +61,8 @@ internal sealed class Cpu65816
     }
 
     public long TotalCycles { get; private set; }
+
+    public int LastMasterClocks { get; private set; } = 6;
 
     public uint ProgramAddress => ((uint)_programBank << 16) | _programCounter;
 
@@ -92,6 +122,13 @@ internal sealed class Cpu65816
 
     public int Step()
     {
+        _bus.BeginCpuInstructionTiming();
+        _instructionExtraCycles = 0;
+        _instructionOpcode = -1;
+        _instructionWasEmulation = _emulation;
+        _instructionAccumulatorWas8Bit = AccumulatorIs8Bit;
+        _instructionIndexWas8Bit = IndexIs8Bit;
+
         if (_bus.ConsumeNmi())
         {
             NmiCount++;
@@ -126,13 +163,14 @@ internal sealed class Cpu65816
         }
 
         var opcode = FetchByte();
+        _instructionOpcode = opcode;
         var low = opcode & 0x1F;
         if (IsAccumulatorGroupAddress(low) && (opcode & 0xE0) is 0x00 or 0x20 or 0x40 or 0x60 or 0x80 or 0xA0 or 0xC0 or 0xE0)
         {
             if ((opcode & 0xE0) != 0x80 || low != 0x09)
             {
                 ExecuteAccumulatorGroup(opcode, low);
-                return Finish(4);
+                return Finish(BaseCycles[opcode]);
             }
         }
 
@@ -205,7 +243,7 @@ internal sealed class Cpu65816
                 _a = _stackPointer;
                 SetNegativeZero(_a, is8Bit: false);
                 break;
-            case 0x3C: Bit(ReadValue(AddressAbsoluteX(), AccumulatorIs8Bit), immediate: false); break;
+            case 0x3C: Bit(ReadValue(AddressAbsoluteX(applyIndexPenalty: true), AccumulatorIs8Bit), immediate: false); break;
             case 0x3E: ShiftMemory(AddressAbsoluteX(), ShiftKind.Rol); break;
 
             case 0x40:
@@ -347,8 +385,8 @@ internal sealed class Cpu65816
                 _x = MaskIndex(_y);
                 SetNegativeZero(_x, IndexIs8Bit);
                 break;
-            case 0xBC: LoadIndex(ref _y, ReadValue(AddressAbsoluteX(), IndexIs8Bit)); break;
-            case 0xBE: LoadIndex(ref _x, ReadValue(AddressAbsoluteY(), IndexIs8Bit)); break;
+            case 0xBC: LoadIndex(ref _y, ReadValue(AddressAbsoluteX(applyIndexPenalty: true), IndexIs8Bit)); break;
+            case 0xBE: LoadIndex(ref _x, ReadValue(AddressAbsoluteY(applyIndexPenalty: true), IndexIs8Bit)); break;
 
             case 0xC0: Compare(_y, FetchValue(IndexIs8Bit), IndexIs8Bit); break;
             case 0xC2: SetStatus((byte)(_status & ~FetchByte())); break;
@@ -368,7 +406,7 @@ internal sealed class Cpu65816
             case 0xD0: Branch(!GetFlag(Zero)); break;
             case 0xD4:
             {
-                var pointer = (ushort)(_directPage + FetchByte());
+                var pointer = (ushort)AddressDirect();
                 PushWord(ReadWord(pointer));
                 break;
             }
@@ -435,7 +473,7 @@ internal sealed class Cpu65816
                 throw new InvalidOperationException($"Unsupported 65C816 opcode ${opcode:X2} at ${_programBank:X2}:{(ushort)(_programCounter - 1):X4}.");
         }
 
-        return Finish(3);
+        return Finish(BaseCycles[opcode]);
     }
 
     internal void SaveState(BinaryWriter writer)
@@ -483,13 +521,13 @@ internal sealed class Cpu65816
         var is8Bit = AccumulatorIs8Bit;
         if (operation == 0x80)
         {
-            WriteValue(ResolveAccumulatorGroupAddress(low), GetAccumulator(), is8Bit);
+            WriteValue(ResolveAccumulatorGroupAddress(opcode, low), GetAccumulator(), is8Bit);
             return;
         }
 
         var operand = low == 0x09
             ? FetchValue(is8Bit)
-            : ReadValue(ResolveAccumulatorGroupAddress(low), is8Bit);
+            : ReadValue(ResolveAccumulatorGroupAddress(opcode, low), is8Bit);
         var accumulator = GetAccumulator();
         var mask = is8Bit ? 0x00FF : 0xFFFF;
 
@@ -525,33 +563,31 @@ internal sealed class Cpu65816
         _a &= (ushort)(AccumulatorIs8Bit ? 0xFFFF : mask);
     }
 
-    private uint ResolveAccumulatorGroupAddress(int low)
+    private uint ResolveAccumulatorGroupAddress(byte opcode, int low)
     {
+        var isStore = (opcode & 0xE0) == 0x80;
         switch (low)
         {
             case 0x01:
-            {
-                var operand = FetchByte();
-                var pointer = (ushort)(_directPage + operand + _x);
-                return ((uint)_dataBank << 16) | ReadWord(pointer);
-            }
+                return ((uint)_dataBank << 16) | ReadWord(AddressDirectX());
             case 0x03:
                 return (ushort)(_stackPointer + FetchByte());
             case 0x05:
                 return AddressDirect();
             case 0x07:
-                return ReadLong((ushort)(_directPage + FetchByte()));
+                return ReadLong(AddressDirect());
             case 0x0D:
                 return AddressAbsolute();
             case 0x0F:
                 return FetchLong();
             case 0x11:
             {
-                var pointer = ReadWord((ushort)(_directPage + FetchByte()));
-                return (((uint)_dataBank << 16) + pointer + _y) & 0xFFFFFF;
+                var pointer = ReadWord(AddressDirect());
+                var baseAddress = ((uint)_dataBank << 16) | pointer;
+                return AddIndexAndApplyPenalty(baseAddress, _y, applyPenalty: !isStore);
             }
             case 0x12:
-                return ((uint)_dataBank << 16) | ReadWord((ushort)(_directPage + FetchByte()));
+                return ((uint)_dataBank << 16) | ReadWord(AddressDirect());
             case 0x13:
             {
                 var pointer = ReadWord((ushort)(_stackPointer + FetchByte()));
@@ -560,11 +596,11 @@ internal sealed class Cpu65816
             case 0x15:
                 return AddressDirectX();
             case 0x17:
-                return (ReadLong((ushort)(_directPage + FetchByte())) + _y) & 0xFFFFFF;
+                return (ReadLong(AddressDirect()) + _y) & 0xFFFFFF;
             case 0x19:
-                return AddressAbsoluteY();
+                return AddressAbsoluteY(applyIndexPenalty: !isStore);
             case 0x1D:
-                return AddressAbsoluteX();
+                return AddressAbsoluteX(applyIndexPenalty: !isStore);
             case 0x1F:
                 return (FetchLong() + _x) & 0xFFFFFF;
             default:
@@ -752,7 +788,13 @@ internal sealed class Cpu65816
         var displacement = (sbyte)FetchByte();
         if (always)
         {
+            var previousProgramCounter = _programCounter;
             _programCounter = (ushort)(_programCounter + displacement);
+            _instructionExtraCycles++;
+            if (_emulation && (previousProgramCounter & 0xFF00) != (_programCounter & 0xFF00))
+            {
+                _instructionExtraCycles++;
+            }
         }
     }
 
@@ -762,8 +804,8 @@ internal sealed class Cpu65816
         // even though assemblers conventionally display source,destination.
         var destinationBank = FetchByte();
         var sourceBank = FetchByte();
-        var value = _bus.Read(((uint)sourceBank << 16) | _x);
-        _bus.Write(((uint)destinationBank << 16) | _y, value);
+        var value = _bus.CpuRead(((uint)sourceBank << 16) | _x);
+        _bus.CpuWrite(((uint)destinationBank << 16) | _y, value);
         _dataBank = destinationBank;
         _x = MaskIndex(_x + (increment ? 1 : -1));
         _y = MaskIndex(_y + (increment ? 1 : -1));
@@ -890,7 +932,7 @@ internal sealed class Cpu65816
 
     private byte FetchByte()
     {
-        var value = _bus.Read(((uint)_programBank << 16) | _programCounter);
+        var value = _bus.CpuRead(((uint)_programBank << 16) | _programCounter);
         _programCounter++;
         return value;
     }
@@ -910,44 +952,84 @@ internal sealed class Cpu65816
     private ushort FetchValue(bool is8Bit) => is8Bit ? FetchByte() : FetchWord();
 
     private ushort ReadValue(uint address, bool is8Bit) =>
-        is8Bit ? _bus.Read(address) : ReadWord(address);
+        is8Bit ? _bus.CpuRead(address) : ReadWord(address);
 
     private void WriteValue(uint address, ushort value, bool is8Bit)
     {
-        _bus.Write(address, (byte)value);
+        _bus.CpuWrite(address, (byte)value);
         if (!is8Bit)
         {
-            _bus.Write(IncrementWithinBank(address), (byte)(value >> 8));
+            _bus.CpuWrite(IncrementWithinBank(address), (byte)(value >> 8));
         }
     }
 
     private ushort ReadWord(uint address)
     {
-        var low = _bus.Read(address);
-        return (ushort)(low | (_bus.Read(IncrementWithinBank(address)) << 8));
+        var low = _bus.CpuRead(address);
+        return (ushort)(low | (_bus.CpuRead(IncrementWithinBank(address)) << 8));
     }
 
     private uint ReadLong(uint address)
     {
         var low = ReadWord(address);
-        return low | ((uint)_bus.Read(IncrementWithinBank(IncrementWithinBank(address))) << 16);
+        return low | ((uint)_bus.CpuRead(IncrementWithinBank(IncrementWithinBank(address))) << 16);
     }
 
-    private uint AddressDirect() => (ushort)(_directPage + FetchByte());
+    private uint AddressDirect()
+    {
+        ApplyDirectPagePenalty();
+        return (ushort)(_directPage + FetchByte());
+    }
 
-    private uint AddressDirectX() => (ushort)(_directPage + FetchByte() + _x);
+    private uint AddressDirectX()
+    {
+        ApplyDirectPagePenalty();
+        return (ushort)(_directPage + FetchByte() + _x);
+    }
 
-    private uint AddressDirectY() => (ushort)(_directPage + FetchByte() + _y);
+    private uint AddressDirectY()
+    {
+        ApplyDirectPagePenalty();
+        return (ushort)(_directPage + FetchByte() + _y);
+    }
+
+    private void ApplyDirectPagePenalty()
+    {
+        if ((_directPage & 0x00FF) != 0)
+        {
+            _instructionExtraCycles++;
+        }
+    }
 
     private uint AddressAbsolute() => ((uint)_dataBank << 16) | FetchWord();
 
-    private uint AddressAbsoluteX() => (((uint)_dataBank << 16) + FetchWord() + _x) & 0xFFFFFF;
+    private uint AddressAbsoluteX(bool applyIndexPenalty = false)
+    {
+        var baseAddress = ((uint)_dataBank << 16) | FetchWord();
+        return AddIndexAndApplyPenalty(baseAddress, _x, applyIndexPenalty);
+    }
 
-    private uint AddressAbsoluteY() => (((uint)_dataBank << 16) + FetchWord() + _y) & 0xFFFFFF;
+    private uint AddressAbsoluteY(bool applyIndexPenalty = false)
+    {
+        var baseAddress = ((uint)_dataBank << 16) | FetchWord();
+        return AddIndexAndApplyPenalty(baseAddress, _y, applyIndexPenalty);
+    }
+
+    private uint AddIndexAndApplyPenalty(uint baseAddress, ushort index, bool applyPenalty)
+    {
+        var effectiveAddress = (baseAddress + index) & 0xFFFFFF;
+        if (applyPenalty &&
+            (!IndexIs8Bit || (baseAddress & 0x00FF00) != (effectiveAddress & 0x00FF00)))
+        {
+            _instructionExtraCycles++;
+        }
+
+        return effectiveAddress;
+    }
 
     private void PushByte(byte value)
     {
-        _bus.Write(_stackPointer, value);
+        _bus.CpuWrite(_stackPointer, value);
         _stackPointer--;
         if (_emulation) _stackPointer = (ushort)(0x0100 | (byte)_stackPointer);
     }
@@ -956,7 +1038,7 @@ internal sealed class Cpu65816
     {
         _stackPointer++;
         if (_emulation) _stackPointer = (ushort)(0x0100 | (byte)_stackPointer);
-        return _bus.Read(_stackPointer);
+        return _bus.CpuRead(_stackPointer);
     }
 
     private void PushWord(ushort value)
@@ -973,8 +1055,26 @@ internal sealed class Cpu65816
 
     private int Finish(int cycles)
     {
-        TotalCycles += cycles;
-        return cycles;
+        var adjustedCycles = cycles + _instructionExtraCycles;
+        if (_instructionOpcode == 0x40 && _instructionWasEmulation)
+        {
+            adjustedCycles--;
+        }
+
+        if (!_instructionAccumulatorWas8Bit && _instructionOpcode is 0x48 or 0x68)
+        {
+            adjustedCycles++;
+        }
+
+        if (!_instructionIndexWas8Bit && _instructionOpcode is 0x5A or 0x7A or 0xDA or 0xFA)
+        {
+            adjustedCycles++;
+        }
+
+        var timing = _bus.EndCpuInstructionTiming(adjustedCycles);
+        TotalCycles += timing.CpuCycles;
+        LastMasterClocks = timing.MasterClocks;
+        return timing.CpuCycles;
     }
 
     private static bool IsAccumulatorGroupAddress(int low) =>
