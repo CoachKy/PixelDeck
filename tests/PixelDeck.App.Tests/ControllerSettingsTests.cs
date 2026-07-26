@@ -2,6 +2,7 @@ using PixelDeck.App.Input;
 using PixelDeck.App.Settings;
 using PixelDeck.App.ViewModels;
 using PixelDeck.Emulation.Nes;
+using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
 
 namespace PixelDeck.App.Tests;
@@ -75,6 +76,24 @@ public sealed class ControllerSettingsTests
         Assert.Equal(
             SnesButton.B | SnesButton.Y | SnesButton.Start | SnesButton.Right,
             GamepadInputMapper.ToSnesButtons(gamepad, settings));
+    }
+
+    [Fact]
+    public void Pixel64PreservesAnalogMagnitudeAndUsesTheRightStickAsCButtons()
+    {
+        var settings = new PixelDeckSettings();
+        var state = new GamepadState(
+            GamepadButton.A | GamepadButton.LeftTrigger,
+            LeftX: 18_431,
+            LeftY: short.MinValue,
+            RightX: 13_000,
+            RightY: 0);
+
+        var controller = GamepadInputMapper.ToN64Controller(state, settings);
+
+        Assert.Equal(N64Button.A | N64Button.Z | N64Button.CRight, controller.Buttons);
+        Assert.InRange(controller.StickX, (sbyte)39, (sbyte)41);
+        Assert.Equal(-80, controller.StickY);
     }
 
     [Fact]

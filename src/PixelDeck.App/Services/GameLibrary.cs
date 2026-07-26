@@ -3,6 +3,7 @@ using System.Text;
 using Avalonia.Media;
 using PixelDeck.App.Models;
 using PixelDeck.Emulation.Nes;
+using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
 
 namespace PixelDeck.App.Services;
@@ -10,6 +11,7 @@ namespace PixelDeck.App.Services;
 public sealed class GameLibrary
 {
     public const string NintendoFolderName = "Nintendo";
+    public const string Nintendo64FolderName = "Nintendo64";
     public const string SuperNintendoFolderName = "SuperNintendo";
 
     private static readonly string[] ScreenshotExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
@@ -43,6 +45,7 @@ public sealed class GameLibrary
         GamesFolder = gamesFolder is null ? ResolveGamesFolder() : Path.GetFullPath(gamesFolder);
         Directory.CreateDirectory(GamesFolder);
         NintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, NintendoFolderName)).FullName;
+        Nintendo64Folder = Directory.CreateDirectory(Path.Combine(GamesFolder, Nintendo64FolderName)).FullName;
         SuperNintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, SuperNintendoFolderName)).FullName;
         _titleResolver = new RomTitleResolver(GamesFolder);
     }
@@ -50,6 +53,8 @@ public sealed class GameLibrary
     public string GamesFolder { get; }
 
     public string NintendoFolder { get; }
+
+    public string Nintendo64Folder { get; }
 
     public string SuperNintendoFolder { get; }
 
@@ -172,6 +177,35 @@ public sealed class GameLibrary
 
     private static Compatibility InspectCompatibility(string filePath, string extension)
     {
+        if (string.Equals(extension, ".z64", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, ".v64", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, ".n64", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var cartridge = N64Cartridge.Inspect(filePath);
+                return new Compatibility(
+                    null,
+                    0,
+                    cartridge.IsPixel64TargetSupported,
+                    cartridge.CompatibilityMessage,
+                    cartridge.Cic == N64Cic.Unknown
+                        ? "UNKNOWN CIC"
+                        : cartridge.Cic.ToString().Replace("Cic", "CIC "),
+                    cartridge.IsPixel64TargetSupported,
+                    cartridge.Title);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
+            {
+                return new Compatibility(
+                    null,
+                    0,
+                    false,
+                    "This file does not contain a recognized Nintendo 64 cartridge image.",
+                    "UNKNOWN");
+            }
+        }
+
         if (string.Equals(extension, ".sfc", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".smc", StringComparison.OrdinalIgnoreCase))
         {

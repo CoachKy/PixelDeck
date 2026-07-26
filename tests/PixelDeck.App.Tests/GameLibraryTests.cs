@@ -131,6 +131,39 @@ public sealed class GameLibraryTests
     }
 
     [Fact]
+    public async Task ScanAsync_UsesTheSharedGalleryContractForThePixel64Target()
+    {
+        var localTarget = FindLocalN64Target();
+        if (localTarget is null)
+        {
+            return;
+        }
+
+        var testRoot = CreateTestDirectory();
+        try
+        {
+            var n64Folder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.Nintendo64FolderName));
+            var targetPath = Path.Combine(n64Folder.FullName, "target.z64");
+            File.Copy(localTarget, targetPath);
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("SUPER MARIO 64", game.Title);
+            Assert.Equal("Nintendo 64", game.Platform);
+            Assert.Equal("N64", game.PlatformCode);
+            Assert.Equal("CIC 6102", game.MapperText);
+            Assert.Equal("PARTIAL", game.LaunchBadgeText);
+            Assert.True(game.CanLaunch);
+            Assert.Contains("development target", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_UsesAValidatedNintendoHeaderTitleForNesImages()
     {
         var testRoot = CreateTestDirectory();
@@ -340,8 +373,10 @@ public sealed class GameLibraryTests
             var library = new GameLibrary(testRoot);
 
             Assert.Equal(Path.Combine(testRoot, GameLibrary.NintendoFolderName), library.NintendoFolder);
+            Assert.Equal(Path.Combine(testRoot, GameLibrary.Nintendo64FolderName), library.Nintendo64Folder);
             Assert.Equal(Path.Combine(testRoot, GameLibrary.SuperNintendoFolderName), library.SuperNintendoFolder);
             Assert.True(Directory.Exists(library.NintendoFolder));
+            Assert.True(Directory.Exists(library.Nintendo64Folder));
             Assert.True(Directory.Exists(library.SuperNintendoFolder));
         }
         finally
@@ -356,6 +391,24 @@ public sealed class GameLibraryTests
         var testRoot = Path.Combine(testParent, Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(testRoot);
         return testRoot;
+    }
+
+    private static string? FindLocalN64Target()
+    {
+        var folder = Path.GetFullPath(Path.Combine(
+            AppContext.BaseDirectory,
+            "..",
+            "..",
+            "..",
+            "..",
+            "..",
+            "Games",
+            GameLibrary.Nintendo64FolderName));
+        return Directory.Exists(folder)
+            ? Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
+                .FirstOrDefault(path =>
+                    Path.GetExtension(path).Equals(".z64", StringComparison.OrdinalIgnoreCase))
+            : null;
     }
 
     private static byte[] CreateNesImage(

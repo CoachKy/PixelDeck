@@ -10,8 +10,18 @@ internal interface IGamepadBackend : IDisposable
 
     GamepadButton ReadButtons(int userIndex);
 
+    GamepadState ReadState(int userIndex) =>
+        new(ReadButtons(userIndex), 0, 0, 0, 0);
+
     string? GetControllerName(int userIndex);
 }
+
+internal readonly record struct GamepadState(
+    GamepadButton Buttons,
+    short LeftX,
+    short LeftY,
+    short RightX,
+    short RightY);
 
 internal readonly record struct GamepadConnections(int ConnectedMask)
 {

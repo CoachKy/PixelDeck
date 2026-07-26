@@ -9,9 +9,12 @@
 /Games/*
 !/Games/README.md
 !/Games/Nintendo/
+!/Games/Nintendo64/
 !/Games/SuperNintendo/
 /Games/Nintendo/*
 !/Games/Nintendo/README.md
+/Games/Nintendo64/*
+!/Games/Nintendo64/README.md
 /Games/SuperNintendo/*
 !/Games/SuperNintendo/README.md
 
@@ -22,9 +25,13 @@
 # Local emulator captures are diagnostic output. Existing checked-in reference
 # captures remain tracked, but new files in this folder stay local.
 /artifacts/snes-audit/*
+/artifacts/zelda-*/
 
 # Local cross-platform publish output used for release validation.
 /artifacts/validation/*
+
+# Local tester packages and their expanded staging directories.
+/artifacts/releases/*
 
 # Per-ROM compatibility reports and captures contain local collection details.
 /artifacts/nes-compatibility/*

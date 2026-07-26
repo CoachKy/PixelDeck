@@ -16,6 +16,11 @@ internal sealed class XInputGamepadBackend : IGamepadBackend
             ? _gamepads[userIndex].ReadButtons()
             : GamepadButton.None;
 
+    public GamepadState ReadState(int userIndex) =>
+        userIndex is >= 0 and < GamepadManager.MaximumControllers
+            ? _gamepads[userIndex].ReadState()
+            : default;
+
     public string? GetControllerName(int userIndex) =>
         ReadConnections().IsConnected(userIndex)
             ? $"XInput Controller {userIndex + 1}"

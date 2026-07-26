@@ -112,4 +112,26 @@ public sealed class AudioBufferSynchronizerTests
         Assert.Equal(nominal, first);
         Assert.Equal(nominal, second);
     }
+
+    [Fact]
+    public void StereoQueueMeasuresBufferedFramesInsteadOfRawSampleValues()
+    {
+        const int snesSampleRate = 32_000;
+        const int channels = 2;
+        var synchronizer = new AudioBufferSynchronizer();
+        var targetSampleValues = (int)(
+            snesSampleRate *
+            channels *
+            AudioBufferSynchronizer.TargetBufferSeconds);
+
+        var interval = synchronizer.GetFrameInterval(
+            FramesPerSecond,
+            playbackRate: 1,
+            audioAvailable: true,
+            bufferedSampleValues: targetSampleValues,
+            snesSampleRate,
+            channels);
+
+        Assert.Equal(TimeSpan.FromSeconds(1 / FramesPerSecond), interval);
+    }
 }

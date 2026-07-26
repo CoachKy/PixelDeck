@@ -12,6 +12,7 @@ using PixelDeck.App.Models;
 using PixelDeck.App.Services;
 using PixelDeck.App.Settings;
 using PixelDeck.Emulation.Nes;
+using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
 
 namespace PixelDeck.App.Views;
@@ -32,6 +33,7 @@ public partial class EmulatorWindow : Window
     private SaveStateCatalog? _saveStateCatalog;
     private Task? _emulationTask;
     private NesMachine? _nesMachine;
+    private N64Machine? _n64Machine;
     private SnesMachine? _snesMachine;
     private EmulatorAudioOutput? _audioOutput;
     private Stopwatch? _playSession;
@@ -291,6 +293,14 @@ public partial class EmulatorWindow : Window
     {
         var bitmap = _frameBitmap ?? throw new InvalidOperationException("The emulator display is not initialized.");
         FrameImage.InvalidateVisual();
+
+        if (_n64Machine is not null && !hasUsefulImage)
+        {
+            EmulatorStatusText.Text = "PIXEL64 BOOTED · RSP / RDP RENDERER IN DEVELOPMENT";
+            LoadingOverlay.IsVisible = true;
+            return;
+        }
+
         LoadingOverlay.IsVisible = false;
 
         if (_game is not null && !_screenshotSaved && frameNumber >= 120 && hasUsefulImage)
@@ -303,8 +313,10 @@ public partial class EmulatorWindow : Window
 
     private void PollInput(object? sender, EventArgs eventArgs)
     {
-        var playerOneGamepad = _gamepad.ReadButtons();
-        var playerTwoGamepad = _playerTwoGamepad.ReadButtons();
+        var playerOneState = _gamepad.ReadState();
+        var playerTwoState = _playerTwoGamepad.ReadState();
+        var playerOneGamepad = playerOneState.Buttons;
+        var playerTwoGamepad = playerTwoState.Buttons;
         var playerOneNewPresses = playerOneGamepad & ~_previousGamepadButtons;
         var playerTwoNewPresses = playerTwoGamepad & ~_previousPlayerTwoGamepadButtons;
         var playerOnePauseChord =
@@ -376,7 +388,40 @@ public partial class EmulatorWindow : Window
                 _snesMachine.SetControllerState(1, playerOneButtons);
                 _snesMachine.SetControllerState(2, playerTwoButtons);
             }
+            else if (_n64Machine is not null)
+            {
+                var playerOneController = GamepadInputMapper.ToN64Controller(
+                    playerOneState,
+                    settings);
+                var keyboardController = ReadN64KeyboardController();
+                playerOneController = new N64ControllerState(
+                    playerOneController.Buttons | keyboardController.Buttons,
+                    keyboardController.StickX != 0 ? keyboardController.StickX : playerOneController.StickX,
+                    keyboardController.StickY != 0 ? keyboardController.StickY : playerOneController.StickY);
+                _n64Machine.SetControllerState(1, playerOneController);
+                _n64Machine.SetControllerState(
+                    2,
+                    GamepadInputMapper.ToN64Controller(playerTwoState, settings, playerTwo: true));
+            }
         }
+    }
+
+    private N64ControllerState ReadN64KeyboardController()
+    {
+        var buttons = N64Button.None;
+        if (_pressedKeys.Contains(Key.Z)) buttons |= N64Button.A;
+        if (_pressedKeys.Contains(Key.X)) buttons |= N64Button.B;
+        if (_pressedKeys.Contains(Key.Enter)) buttons |= N64Button.Start;
+        if (_pressedKeys.Contains(Key.A)) buttons |= N64Button.Z;
+        if (_pressedKeys.Contains(Key.Q)) buttons |= N64Button.L;
+        if (_pressedKeys.Contains(Key.W)) buttons |= N64Button.R;
+        var stickX = _pressedKeys.Contains(Key.Left)
+            ? (sbyte)-80
+            : _pressedKeys.Contains(Key.Right) ? (sbyte)80 : (sbyte)0;
+        var stickY = _pressedKeys.Contains(Key.Down)
+            ? (sbyte)-80
+            : _pressedKeys.Contains(Key.Up) ? (sbyte)80 : (sbyte)0;
+        return new N64ControllerState(buttons, stickX, stickY);
     }
 
     private NesButton ReadNesKeyboardButtons()
@@ -479,6 +524,8 @@ public partial class EmulatorWindow : Window
             _nesMachine?.SetControllerState(2, NesButton.None);
             _snesMachine?.SetControllerState(1, SnesButton.None);
             _snesMachine?.SetControllerState(2, SnesButton.None);
+            _n64Machine?.SetControllerState(1, N64ControllerState.Neutral);
+            _n64Machine?.SetControllerState(2, N64ControllerState.Neutral);
             if (paused)
             {
                 _nesMachine?.ClearAudioSamples();
@@ -511,12 +558,6 @@ public partial class EmulatorWindow : Window
         {
             _audioOutput.PlaybackRate = multiplier;
             _audioOutput.IsPaused = _isPaused;
-        }
-
-        lock (_machineLock)
-        {
-            _nesMachine?.ClearAudioSamples();
-            _snesMachine?.ClearAudioSamples();
         }
     }
 
@@ -855,28 +896,40 @@ public partial class EmulatorWindow : Window
         }
     }
 
-    private bool HasMachine => _nesMachine is not null || _snesMachine is not null;
+    private bool HasMachine =>
+        _nesMachine is not null ||
+        _snesMachine is not null ||
+        _n64Machine is not null;
 
-    private int MachineWidth => _nesMachine?.Width ?? _snesMachine?.Width
+    private int MachineWidth => _nesMachine?.Width ?? _snesMachine?.Width ?? _n64Machine?.Width
         ?? throw new InvalidOperationException("The emulator is not running.");
 
-    private int MachineHeight => _nesMachine?.Height ?? _snesMachine?.Height
+    private int MachineHeight => _nesMachine?.Height ?? _snesMachine?.Height ?? _n64Machine?.Height
         ?? throw new InvalidOperationException("The emulator is not running.");
 
-    private double MachineFramesPerSecond => _snesMachine?.FramesPerSecond ?? 60.0988;
+    private double MachineFramesPerSecond =>
+        _snesMachine?.FramesPerSecond ??
+        _n64Machine?.FramesPerSecond ??
+        60.0988;
 
     private TimeSpan GetFrameInterval(int playbackRate)
     {
-        var useNesAudioClock =
-            _nesMachine is not null &&
-            _audioOutput?.IsAvailable == true;
+        var useAudioClock = HasMachine && _audioOutput?.IsAvailable == true;
+        var bufferedSampleValues =
+            _nesMachine?.BufferedAudioSampleCount ??
+            _snesMachine?.BufferedAudioSampleCount ??
+            0;
+        var sampleRate = _snesMachine is not null
+            ? SnesMachine.AudioSampleRate
+            : NesMachine.AudioSampleRate;
+        var channels = _snesMachine is not null ? 2 : 1;
         return _audioBufferSynchronizer.GetFrameInterval(
             MachineFramesPerSecond,
             playbackRate,
-            useNesAudioClock,
-            _nesMachine?.BufferedAudioSampleCount ?? 0,
-            NesMachine.AudioSampleRate,
-            channels: 1);
+            useAudioClock,
+            bufferedSampleValues,
+            sampleRate,
+            channels);
     }
 
     private void LoadMachine()
@@ -886,6 +939,7 @@ public partial class EmulatorWindow : Window
         TryFlushBatterySave();
         _nesMachine = null;
         _snesMachine = null;
+        _n64Machine = null;
 
         if (string.Equals(extension, ".nes", StringComparison.OrdinalIgnoreCase))
         {
@@ -910,6 +964,14 @@ public partial class EmulatorWindow : Window
             return;
         }
 
+        if (string.Equals(extension, ".z64", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, ".v64", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, ".n64", StringComparison.OrdinalIgnoreCase))
+        {
+            _n64Machine = N64Machine.Load(path, _game.SaveRamPath);
+            return;
+        }
+
         throw new NotSupportedException($"PixelDeck cannot emulate {extension} games yet.");
     }
 
@@ -919,6 +981,7 @@ public partial class EmulatorWindow : Window
         {
             _nesMachine?.FlushBatterySave();
             _snesMachine?.FlushBatterySave();
+            _n64Machine?.FlushBatterySave();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -940,6 +1003,12 @@ public partial class EmulatorWindow : Window
             return;
         }
 
+        if (_n64Machine is not null)
+        {
+            _n64Machine.RunFrame().CopyTo(destination);
+            return;
+        }
+
         throw new InvalidOperationException("The emulator is not running.");
     }
 
@@ -953,6 +1022,11 @@ public partial class EmulatorWindow : Window
         if (_snesMachine is not null)
         {
             return _snesMachine.CurrentFrame.ToArray();
+        }
+
+        if (_n64Machine is not null)
+        {
+            return _n64Machine.CurrentFrame.ToArray();
         }
 
         throw new InvalidOperationException("The emulator is not running.");
@@ -970,6 +1044,11 @@ public partial class EmulatorWindow : Window
             return _snesMachine.SaveState();
         }
 
+        if (_n64Machine is not null)
+        {
+            return _n64Machine.SaveState();
+        }
+
         throw new InvalidOperationException("The emulator is not running.");
     }
 
@@ -984,6 +1063,12 @@ public partial class EmulatorWindow : Window
         if (_snesMachine is not null)
         {
             _snesMachine.LoadState(state);
+            return;
+        }
+
+        if (_n64Machine is not null)
+        {
+            _n64Machine.LoadState(state);
             return;
         }
 

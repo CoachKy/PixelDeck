@@ -47,6 +47,7 @@ public sealed class SnesMachineTests
     [InlineData(10)]
     [InlineData(11)]
     [InlineData(12)]
+    [InlineData(13)]
     public void PreviousStateMigratesToTheCurrentCore(int stateVersion)
     {
         var gamePath = CreateSyntheticLoRom();
@@ -1127,6 +1128,126 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void LocalLinkToThePastCreatesAPlayerAndReachesControllableGameplayWhenPresent()
+    {
+        var configuredGamesFolder = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
+        var gamesFolder = string.IsNullOrWhiteSpace(configuredGamesFolder)
+            ? Path.GetFullPath(
+                Path.Combine(
+                    AppContext.BaseDirectory,
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "..",
+                    "Games",
+                    "SuperNintendo"))
+            : Path.Combine(Path.GetFullPath(configuredGamesFolder), "SuperNintendo");
+        if (!Directory.Exists(gamesFolder))
+        {
+            return;
+        }
+
+        var gamePath = Directory.EnumerateFiles(gamesFolder)
+            .FirstOrDefault(path =>
+                (Path.GetExtension(path) is ".sfc" or ".smc") &&
+                Path.GetFileName(path).Contains("Link to the Past", StringComparison.OrdinalIgnoreCase));
+        if (gamePath is null)
+        {
+            return;
+        }
+
+        var batterySavePath = Path.Combine(
+            Path.GetTempPath(),
+            $"pixeldeck-zelda-{Guid.NewGuid():N}.sav");
+        try
+        {
+            var machine = SnesMachine.Load(gamePath, batterySavePath);
+            var audioBuffer = new float[4096];
+            long stereoAudioFrames = 0;
+            var audioPeak = 0f;
+            var moduleTransitions = new List<string>();
+            var previousModule = -1;
+
+            for (var frame = 1; frame <= 7_200; frame++)
+            {
+                machine.SetControllerState(1, GetLinkToThePastProgressionInput(frame));
+                machine.RunFrame();
+                DrainAudio(machine, audioBuffer, ref stereoAudioFrames, ref audioPeak);
+
+                var module = machine.PeekMemory(0x7E0010);
+                if (module != previousModule)
+                {
+                    moduleTransitions.Add(
+                        $"{frame}:${module:X2}/{machine.PeekMemory(0x7E0011):X2}");
+                    previousModule = module;
+                }
+            }
+
+            var mainModule = machine.PeekMemory(0x7E0010);
+            var startingX = ReadWord(machine, 0x7E0022);
+            var startingY = ReadWord(machine, 0x7E0020);
+            var frameBeforeMovement = machine.CurrentFrame.ToArray();
+            var colorsBeforeMovement = frameBeforeMovement.Distinct().Count();
+            CaptureFrameWhenRequested(
+                gamePath,
+                frameBeforeMovement,
+                machine.Width,
+                machine.Height,
+                "-gameplay");
+
+            for (var frame = 0; frame < 120; frame++)
+            {
+                machine.SetControllerState(1, SnesButton.Right);
+                machine.RunFrame();
+                DrainAudio(machine, audioBuffer, ref stereoAudioFrames, ref audioPeak);
+            }
+
+            var endingX = ReadWord(machine, 0x7E0022);
+            var endingY = ReadWord(machine, 0x7E0020);
+            _output.WriteLine(
+                $"Zelda route: modules={string.Join(",", moduleTransitions)}, " +
+                $"position=({startingX},{startingY})->({endingX},{endingY}), " +
+                $"colors={colorsBeforeMovement}, audio={stereoAudioFrames} frames peak={audioPeak:F4}.");
+
+            Assert.Equal(0x07, mainModule);
+            Assert.False(machine.IsDisplayBlanked);
+            Assert.True(colorsBeforeMovement >= 24);
+            Assert.True(
+                endingX > startingX,
+                $"A Link to the Past reached gameplay but Link did not respond to Right " +
+                $"(({startingX},{startingY})->({endingX},{endingY}), " +
+                $"modules={string.Join(",", moduleTransitions)}).");
+            Assert.True(stereoAudioFrames > 100_000);
+            Assert.True(audioPeak >= 0.0001f);
+            Assert.Equal(0, machine.BrkCount);
+            Assert.Equal(0, machine.CopCount);
+            Assert.Equal(ushort.MaxValue, machine.ApuFirstUnsupportedAddress);
+            Assert.Equal(0, machine.DroppedAudioSampleCount);
+
+            machine.SetControllerState(1, SnesButton.None);
+            machine.ClearAudioSamples();
+            var gameplayState = machine.SaveState();
+            var expectedNextFrame = machine.RunFrame().ToArray();
+            var expectedAudio = ReadAllAudio(machine);
+            machine.LoadState(gameplayState);
+            Assert.Equal(expectedNextFrame, machine.RunFrame().ToArray());
+            Assert.Equal(expectedAudio, ReadAllAudio(machine));
+
+            machine.FlushBatterySave();
+            Assert.True(File.Exists(batterySavePath));
+            var batterySave = File.ReadAllBytes(batterySavePath);
+            Assert.Equal(machine.Cartridge.Info.RamSize, batterySave.Length);
+            Assert.Contains(batterySave, value => value != 0);
+        }
+        finally
+        {
+            File.Delete(batterySavePath);
+            File.Delete(batterySavePath + ".tmp");
+        }
+    }
+
+    [Fact]
     public void TraceFirstLocalSnesBrkWhenRequested()
     {
         var requestedGame = Environment.GetEnvironmentVariable("PIXELDECK_SNES_TRACE_GAME");
@@ -1297,6 +1418,66 @@ public sealed class SnesMachineTests
         };
     }
 
+    private static SnesButton GetLinkToThePastProgressionInput(int frame)
+    {
+        var pulse = frame % 300;
+        if (pulse is >= 30 and < 36)
+        {
+            return SnesButton.Start;
+        }
+
+        if (pulse is >= 90 and < 96)
+        {
+            return SnesButton.B;
+        }
+
+        if (pulse is >= 150 and < 156)
+        {
+            return SnesButton.A;
+        }
+
+        return (frame % 1_200) switch
+        {
+            >= 300 and < 420 => SnesButton.Right | SnesButton.B,
+            >= 600 and < 720 => SnesButton.Down,
+            >= 900 and < 1_020 => SnesButton.Left | SnesButton.Y,
+            _ => SnesButton.None
+        };
+    }
+
+    private static ushort ReadWord(SnesMachine machine, uint address) =>
+        (ushort)(machine.PeekMemory(address) | (machine.PeekMemory(address + 1) << 8));
+
+    private static void DrainAudio(
+        SnesMachine machine,
+        float[] buffer,
+        ref long stereoAudioFrames,
+        ref float peak)
+    {
+        int samplesRead;
+        while ((samplesRead = machine.ReadAudioSamples(buffer)) > 0)
+        {
+            stereoAudioFrames += samplesRead / 2;
+            for (var index = 0; index < samplesRead; index++)
+            {
+                peak = Math.Max(peak, Math.Abs(buffer[index]));
+            }
+        }
+    }
+
+    private static float[] ReadAllAudio(SnesMachine machine)
+    {
+        var samples = new List<float>();
+        var buffer = new float[4096];
+        int samplesRead;
+        while ((samplesRead = machine.ReadAudioSamples(buffer)) > 0)
+        {
+            samples.AddRange(buffer.AsSpan(0, samplesRead).ToArray());
+        }
+
+        return samples.ToArray();
+    }
+
     private static int RequiredBootFrames(string gameName) =>
         gameName.Contains("Donkey Kong Country", StringComparison.OrdinalIgnoreCase) ||
         gameName.Contains("Final Fantasy III", StringComparison.OrdinalIgnoreCase) ||
@@ -1336,7 +1517,7 @@ public sealed class SnesMachineTests
 
     private static MemoryStream SaveBusState(
         SnesBus bus,
-        int stateVersion = 13)
+        int stateVersion = 14)
     {
         var state = new MemoryStream();
         using (var writer = new BinaryWriter(
@@ -1354,7 +1535,7 @@ public sealed class SnesMachineTests
     private static void LoadBusState(
         SnesBus bus,
         MemoryStream state,
-        int stateVersion = 13)
+        int stateVersion = 14)
     {
         state.Position = 0;
         using var reader = new BinaryReader(

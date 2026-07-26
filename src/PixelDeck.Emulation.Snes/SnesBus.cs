@@ -353,6 +353,7 @@ internal sealed class SnesBus
         FrameReady = false;
         if (_scanline == 0)
         {
+            Ppu.BeginFrame();
             InitializeHdma();
             PerformHdmaScanline();
         }
@@ -480,7 +481,7 @@ internal sealed class SnesBus
         }
     }
 
-    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 13);
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 14);
 
     internal void SaveState(BinaryWriter writer, int stateVersion)
     {
@@ -540,7 +541,7 @@ internal sealed class SnesBus
         Ppu.SaveState(writer, stateVersion);
     }
 
-    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 13);
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 14);
 
     internal void LoadState(BinaryReader reader, int stateVersion)
     {
@@ -785,7 +786,7 @@ internal sealed class SnesBus
                 _wramAddress = (_wramAddress & 0x0FFFF) | ((uint)(value & 1) << 16);
                 break;
             default:
-                Ppu.WriteRegister(address, value);
+                Ppu.WriteRegister(address, value, _scanline);
                 break;
         }
     }

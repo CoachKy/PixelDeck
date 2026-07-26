@@ -1,6 +1,6 @@
 # PixelDeck
 
-PixelDeck is a local, controller-first game dashboard with in-repository NES and early SNES emulators. It scans the repository's `Games` folder and presents the files it discovers in a living-room interface.
+PixelDeck is a local, controller-first game dashboard with in-repository NES, SNES, and early Nintendo 64 emulators. It scans the repository's `Games` folder and presents the files it discovers in a living-room interface.
 
 ## Run
 
@@ -8,17 +8,32 @@ PixelDeck is a local, controller-first game dashboard with in-repository NES and
 dotnet run --project src/PixelDeck.App
 ```
 
-For direct emulator debugging, launch a discovered NES or SNES file without the dashboard:
+For direct emulator debugging, launch a discovered NES, SNES, or supported Nintendo 64 file without the dashboard:
 
 ```powershell
 dotnet run --project src/PixelDeck.App -- --game "Games/Nintendo/My Game.nes"
 ```
 
-Place NES homebrew under `Games/Nintendo` and Super Nintendo homebrew under `Games/SuperNintendo`. Both system folders are created automatically, and the dashboard refreshes when files change.
+Place NES homebrew under `Games/Nintendo`, Super Nintendo homebrew under `Games/SuperNintendo`, and Nintendo 64 homebrew under `Games/Nintendo64`. The system folders are created automatically, and the dashboard refreshes when files change.
 
 To use local artwork, place a `.png`, `.jpg`, `.jpeg`, `.webp`, or `.bmp` beside the game with the same base filename. For example, `My Game.nes` will use `My Game.png`. PixelDeck also captures an in-game frame under `Games/.pixeldeck/screenshots` automatically.
 
 Game titles are resolved locally. PixelDeck prefers an exact SHA-1/CRC match from an offline catalog in `Games/.pixeldeck/metadata`, then a cartridge's embedded title, and uses the filename only when neither source can identify the image. Standard ClrMamePro `.dat` and Logiqx XML catalogs are supported, as is PixelDeck's small JSON catalog format. NES matching checks both the complete iNES file and its headerless PRG/CHR payload, while SNES matching checks both copier-headered and headerless forms. Resolved results are cached in `Games/.pixeldeck/title-cache.json`, so unchanged games are not rehashed on every refresh. PixelDeck never contacts a naming server. See [ROM title metadata](docs/ROM-TITLE-METADATA.md) for details.
+
+### Windows tester ZIP
+
+Create a self-contained Windows x64 package from the repository root:
+
+```powershell
+./scripts/Publish-PixelDeckTester.ps1
+```
+
+The versioned ZIP, its expanded staging directory, and a SHA-256 checksum are
+written beneath `artifacts/releases`. The package includes empty Nintendo,
+Super Nintendo, and Nintendo 64 game folders and the .NET runtime, but never includes ROMs,
+local saves, screenshots, metadata caches, or debug symbols. Friends can
+extract the complete ZIP and run `PixelDeck.App.exe` without installing .NET.
+See the included `README.md` for the tester checklist.
 
 ### Raspberry Pi ARM64
 
@@ -55,7 +70,7 @@ The Settings page uses a scalable controller paper doll. Select Player 1 or Play
 
 PixelDeck uses SDL's standardized gamepad layer on Windows and Linux, including Raspberry Pi ARM64, so Xbox-compatible and PlayStation DualSense controllers can be mixed. Face-button labels show both layouts, such as South (A / Cross), and Settings displays each detected controller's name and the active input backend. XInput remains a Windows fallback if SDL cannot initialize. The dashboard header continuously shows how many controllers are connected, while Settings reports the readiness of the assigned P1 and P2 slots. Existing slots stay stable while PixelDeck is running, including through ordinary hot-plug changes.
 
-Both local controller ports are active during NES and SNES gameplay; Player 1 controls the dashboard, while either controller can open and operate the in-game pause menu. Right Trigger / R2 is reserved in both systems: hold it on either controller for 2X play speed and release it to return immediately to normal speed. NES mono and SNES stereo audio remain active during fast-forward; PixelDeck consumes two emulated audio frames per host frame so music and effects run at twice the speed and pitch without accumulating a delayed queue. Nintendo removes the original eight-sprites-per-scanline limit by default, preventing composite characters from flickering in crowded scenes such as Zelda II towns. The `Remove 8-sprite limit` setting can be disabled when hardware-accurate flicker is preferred. NES accuracy controls select the common RP2C02G or an early RP2C02B-or-older PPU, opt into deterministic electrical OAM decay, and choose a stable or collision-prone CPU/PPU OAM phase. Settings are stored locally in `%LOCALAPPDATA%\PixelDeck\settings.json`.
+Both local controller ports are active during NES, SNES, and Nintendo 64 gameplay; Player 1 controls the dashboard, while either controller can open and operate the in-game pause menu. Nintendo 64 uses the same P1/P2 device assignments and preserves the physical analog stick instead of reducing it to a digital direction; the right stick supplies the four C buttons. Right Trigger / R2 is reserved for 2X play speed on NES and SNES: hold it on either controller and release it to return immediately to normal speed. NES and SNES now share the same 60.0988 Hz absolute host clock and bounded audio-queue feedback at normal speed; fast-forward targets exactly 120.1976 emulated frames per second. NES mono and SNES stereo audio remain active during fast-forward, and rate changes preserve queued samples instead of inserting a silence discontinuity. PixelDeck consumes two emulated audio frames per host frame so music and effects run at twice the speed and pitch without accumulating a delayed queue. Nintendo removes the original eight-sprites-per-scanline limit by default, preventing composite characters from flickering in crowded scenes such as Zelda II towns. The `Remove 8-sprite limit` setting can be disabled when hardware-accurate flicker is preferred. NES accuracy controls select the common RP2C02G or an early RP2C02B-or-older PPU, opt into deterministic electrical OAM decay, and choose a stable or collision-prone CPU/PPU OAM phase. Settings are stored locally in `%LOCALAPPDATA%\PixelDeck\settings.json`.
 
 Inside the emulator, the controller's system button (Xbox Guide or PlayStation PS) opens the pause menu. Escape and Select + Start (View + Menu or Create + Options) are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save opens a per-game slot list with a new-slot choice and overwrite confirmation for existing slots. Load lists the game's existing slots and remains disabled when none exist. Legacy single-state files are preserved as numbered slots. Save states are cartridge-validated and stored locally beneath `Games/.pixeldeck`.
 
@@ -79,7 +94,9 @@ PixelNES 1.15.022 is the current feature build. It retains the 1.14 CPU, PPU, sc
 
 ## SNES core status
 
-PixelSNES 0.14.018 is the current feature-development build of the in-repository SNES core. Its version remains below 1.0 while game compatibility, DSP support, audio, and full gameplay validation are still in progress. NTSC LoROM, HiROM, and ExHiROM images, including FastROM header variants and standard ROM, RAM, battery-backed RAM, DSP-1, or Capcom CX4 cartridge types, are the current target envelope. Copier-headered and headerless standard images are supported.
+PixelSNES 0.15.019 is the current feature-development build of the in-repository SNES core. Its version remains below 1.0 while game compatibility, DSP support, audio, and full gameplay validation are still in progress. NTSC LoROM, HiROM, and ExHiROM images, including FastROM header variants and standard ROM, RAM, battery-backed RAM, DSP-1, or Capcom CX4 cartridge types, are the current target envelope. Copier-headered and headerless standard images are supported.
+
+Development iteration 0.15.019 promotes A Link to the Past from a boot check to a flagship gameplay route. A clean cartridge instance creates a player in fresh SRAM, reaches Link's house, renders a 52-color playable scene, moves Link in response to controller input, produces audible multi-voice S-DSP output without dropping samples, writes a durable 8 KiB battery save, and restores the exact next video frame and audio samples from a gameplay state. The same pass corrects the PPU's vertical mosaic phase: changing `$2106` during a visible field now restarts mosaic grouping from the live V-counter rather than permanently aligning every effect to scanline zero. Save-state format 14 preserves that in-flight phase, while formats 10-13 migrate with a top-of-field default.
 
 Development iteration 0.14.018 replaces the S-CPU core's shared three/four-cycle approximation with the W65C816S base cycle matrix, taken-branch, emulation page-cross, unaligned direct-page, and indexed-read penalties. Every functional CPU access now contributes its mapped 6-, 8-, or 12-master-clock duration; `$420D` switches eligible cartridge banks to FastROM speed; and general DMA contributes global, per-channel, and per-byte CPU stalls. Save-state format 13 preserves FastROM selection and the master-clock phase, while formats 10-12 migrate with slow-ROM defaults. The synthetic timing contracts, 65C816 conformance screens, one-frame local cartridge sweep, and the real Super Mario World progression/save-state route pass under the new scheduler.
 
@@ -89,9 +106,9 @@ Development iteration 0.13.017 replaces the shared approximate layer ordering wi
 
 Development iteration 0.13.015 added Capcom CX4 cartridge detection, its mirrored 8 KiB interface RAM, ROM-to-CX4 DMA, documented math/transform/sprite command interface, and save-state restoration without requiring the proprietary CX4 firmware. Mega Man X2 and Mega Man X3 pass visible and audible 2,400-frame cartridge gates with controller input, exact state restoration, real command-driven scenes, no BRK/COP path, and no unsupported SPC700 opcode. In the recorded certification path, X2 executes CX4 sprite command `$00` 1,963 times; X3 executes it 714 times and the vector-length command `$22` 460 times. The same pass fixes the S-CPU NMI enable edge: restoring `$4200` during VBlank no longer recursively enters an interrupt after software has acknowledged `$4210`. The CX4 behavior was implemented from public hardware documentation after comparing Snes9x's cartridge dispatch and command coverage; PixelSNES remains the only runtime core and no Snes9x code, native dependency, or firmware is included. The prior ExHiROM, DSP-1, PPU, and S-CPU improvements remain active: ROM mirrors follow the physical cartridge address lines, Modes 2/4/6 apply offset-per-tile data, Mode 5 uses horizontal character pairs, HDMA scroll writes use shared hardware latches, and Modes 3/4/7 decode direct color with the hardware bit layout.
 
-OAM uses word-addressed low-table commits plus mirrored high-table access; sprite priority rotation, rectangular object modes, the 32-object and 34-sliver scanline limits, and their STAT77 overflow flags are active. VRAM reads use the hardware prefetch latch and increment port selected by VMAIN. CGRAM, OPHCT/OPVCT, STAT77, and STAT78 now retain their documented PPU data-bus bits, and counter latching follows WRIO bit 7 and its falling edge. The S-CPU multiplication and division registers advance over eight and sixteen CPU cycles rather than completing immediately. Automatic controller reads expose the HVBJOY busy bit for their 4,224-master-clock polling window and publish the hardware bit layout only when that window completes. Save-state format 13 preserves these in-flight operations, PPU read latches, CX4 state, FastROM selection, and master-clock phase; format-10 through format-12 development states migrate with safe defaults for newer hardware state.
+OAM uses word-addressed low-table commits plus mirrored high-table access; sprite priority rotation, rectangular object modes, the 32-object and 34-sliver scanline limits, and their STAT77 overflow flags are active. VRAM reads use the hardware prefetch latch and increment port selected by VMAIN. CGRAM, OPHCT/OPVCT, STAT77, and STAT78 now retain their documented PPU data-bus bits, and counter latching follows WRIO bit 7 and its falling edge. The S-CPU multiplication and division registers advance over eight and sixteen CPU cycles rather than completing immediately. Automatic controller reads expose the HVBJOY busy bit for their 4,224-master-clock polling window and publish the hardware bit layout only when that window completes. Save-state format 14 preserves these in-flight operations, PPU read latches, mosaic phase, CX4 state, FastROM selection, and master-clock phase; format-10 through format-13 development states migrate with safe defaults for newer hardware state.
 
-The local Super Mario World image completes its menus, enters a playable stage, responds to movement, and reproduces the exact next frame after a gameplay-state restore; Zelda advances beyond Nintendo Presents; and Super Mario Kart completes its 1,200-frame DSP/Mode-7 boot check. PixelSNES also passes all 23 pinned 65C816 hardware-reference result screens, while current F-Zero and Pilotwings images complete extended Mode-7 boot checks. The current cartridge audit classified 289 local `.sfc`/`.smc` images as 211 LoROM, 76 HiROM, and 2 ExHiROM; both real 6 MiB ExHiROM images complete 120-frame boot gates, while the local Mega Man X2/X3 CX4 images complete visible, audible, command-driven 2,400-frame gates without a BRK/COP path. Images in the current cartridge envelope run without an unhandled core failure, while unsupported enhancement hardware remains an explicit rejection. These are bounded regression gates, not proof that every scene in those games is correct. DSP-1 calculations still use a wider host representation and quantize their results at the cartridge interface; exact DSP-1B integer edge behavior, every CX4 effect, and completed gameplay certification remain open before PixelSNES reaches 1.0.
+The local Super Mario World image completes its menus, enters a playable stage, responds to movement, and reproduces the exact next frame after a gameplay-state restore. A Link to the Past now creates a clean player file, reaches controllable in-house gameplay with audible audio, moves Link, persists battery SRAM, and reproduces the exact next frame and audio after a gameplay-state restore. Super Mario Kart completes its 1,200-frame DSP/Mode-7 boot check. PixelSNES also passes all 23 pinned 65C816 hardware-reference result screens, while current F-Zero and Pilotwings images complete extended Mode-7 boot checks. The current cartridge audit classified 289 local `.sfc`/`.smc` images as 211 LoROM, 76 HiROM, and 2 ExHiROM; both real 6 MiB ExHiROM images complete 120-frame boot gates, while the local Mega Man X2/X3 CX4 images complete visible, audible, command-driven 2,400-frame gates without a BRK/COP path. Images in the current cartridge envelope run without an unhandled core failure, while unsupported enhancement hardware remains an explicit rejection. These are bounded regression gates, not proof that every scene in those games is correct. DSP-1 calculations still use a wider host representation and quantize their results at the cartridge interface; exact DSP-1B integer edge behavior, every CX4 effect, and completed gameplay certification remain open before PixelSNES reaches 1.0.
 
 PAL, Jumbo/ExLoROM, special peripherals, DSP-2/3/4, Super FX, SA-1, S-DD1, and SPC7110 are still rejected with an explicit dashboard explanation. Files with no credible internal header and reset vectors are rejected as malformed cartridge images rather than launched with a guessed map.
 
@@ -99,12 +116,43 @@ The core implements the complete 65C816 opcode set, S-CPU open-bus behavior need
 
 The audio path runs the SPC700, IPL ROM, communication ports, all three APU timers, and all eight S-DSP voices at 32 kHz stereo. It includes BRR decoding, Gaussian interpolation, ADSR/GAIN envelopes, pitch modulation, noise, echo/FIR, bounded output, overrun accounting, and state restoration. Audio is played through the default Windows output device.
 
-Battery SRAM uses a durable temporary-write/replace sequence with interrupted-write recovery. Save-state format 13 is cartridge-validated, length-bounded, SHA-256 checked, and transactionally loaded so a bad state cannot partially mutate the running machine.
+Battery SRAM uses a durable temporary-write/replace sequence with interrupted-write recovery. Save-state format 14 is cartridge-validated, length-bounded, SHA-256 checked, and transactionally loaded so a bad state cannot partially mutate the running machine.
 
-The earlier SNES certification run booted all six standard LoROM/HiROM cartridge variants, soaked seven local games for 126,000 frames with continuous audio and exact mid-run state restoration, and published Linux x64 and Linux ARM64 builds. PixelSNES 0.14.018 retains the focused PPU/OAM/controller/readback/fine-scroll/Mode-7 regressions and local Mario World, Zelda, Mario Kart, Final Fantasy III, Chrono Trigger, Donkey Kong Country, Super Metroid, Mega Man X, F-Zero, Pilotwings, and ExHiROM smoke coverage, then adds synthetic CX4 memory/command/DMA/state contracts, real X2/X3 boot checks, the Super Mario World overworld OBJ-palette gate, exact background/OBJ priority regressions for Modes 1-7, and access-speed-aware S-CPU scheduling. Subsequent game-playability testing showed that this evidence was not sufficient for a 1.0 claim, so the product version remains pre-release. This is a bounded compatibility core, not a claim of cycle-perfect S-CPU/PPU, DSP-1B, or CX4 timing. WRAM refresh pauses, exact DMA alignment and post-write activation, cycle-stealing HDMA, dummy-access address speeds, mid-instruction event ordering, native 512-pixel high-resolution output, overscan/interlace, PAL, other enhancement chips, exact mid-scanline register timing, and on-device Raspberry Pi validation remain future work.
+The earlier SNES certification run booted all six standard LoROM/HiROM cartridge variants, soaked seven local games for 126,000 frames with continuous audio and exact mid-run state restoration, and published Linux x64 and Linux ARM64 builds. PixelSNES 0.15.019 retains the focused PPU/OAM/controller/readback/fine-scroll/Mode-7 regressions and local Mario World, Zelda, Mario Kart, Final Fantasy III, Chrono Trigger, Donkey Kong Country, Super Metroid, Mega Man X, F-Zero, Pilotwings, and ExHiROM smoke coverage, then adds synthetic CX4 memory/command/DMA/state contracts, real X2/X3 boot checks, the Super Mario World overworld OBJ-palette gate, exact background/OBJ priority regressions for Modes 1-7, access-speed-aware S-CPU scheduling, live-V-counter mosaic phase, and the clean-SRAM A Link to the Past gameplay gate. Subsequent game-playability testing showed that this evidence was not sufficient for a 1.0 claim, so the product version remains pre-release. This is a bounded compatibility core, not a claim of cycle-perfect S-CPU/PPU, DSP-1B, or CX4 timing. WRAM refresh pauses, exact DMA alignment and post-write activation, cycle-stealing HDMA, dummy-access address speeds, mid-instruction event ordering, native 512-pixel high-resolution output, overscan/interlace, PAL, other enhancement chips, exact mid-scanline register timing, and on-device Raspberry Pi validation remain future work.
 
-Run `./scripts/Test-PixelSnesRelease.ps1` from the repository root. The previous certification attempt, required gates, and evidence are retained in [the historical PixelSNES 1.2 certification record](docs/PIXELSNES-1.2-CERTIFICATION.md). PixelSNES 0.14.018 remains a development build until its full gameplay gates pass.
+Run `./scripts/Test-PixelSnesRelease.ps1` from the repository root. The Zelda flagship evidence is recorded in [PixelSNES 0.15 certification](docs/PIXELSNES-0.15-CERTIFICATION.md), and the earlier attempted release envelope remains in the [historical PixelSNES 1.2 certification record](docs/PIXELSNES-1.2-CERTIFICATION.md). PixelSNES 0.15.019 remains a development build until its full gameplay gates pass.
 
 SNES keyboard additions are A/S for X/Y and Q/W for L/R. All eight SNES buttons have their own controller mapping in Settings.
+
+## Nintendo 64 core status
+
+Pixel64 0.1.001 is the first development build of PixelDeck's in-repository
+Nintendo 64 core. It recognizes and normalizes big-endian `.z64`, byte-swapped
+`.v64`, and little-endian `.n64` cartridge images without modifying the source
+file. The current dashboard launch envelope is deliberately limited to Super
+Mario 64 (USA) revision 0 (`NSME`, CIC-6102).
+
+The core currently implements the real CIC-6102 IPL3 execution route, a
+64-bit R4300i interpreter foundation, 8 MiB RDRAM, PI cartridge DMA, MI and VI
+interrupts, SI/PIF controller polling, four logical controller ports, 4 Kbit
+EEPROM persistence, SP memory DMA/status foundations, a VI framebuffer reader,
+and cartridge-validated integrity-checked save states. The local target
+executes 5,745,290 IPL3 instructions and reaches its exact cartridge entry
+point without an unsupported R4300i opcode. A 120-field operating-system gate
+also services VI interrupts without an unhandled CPU instruction.
+
+Pixel64 is not yet gameplay-compatible. RSP vector execution, Fast3D graphics
+tasks, RDP rasterization, complete TLB/exception timing, AI audio, and exact
+controller accessory behavior remain under development. The library marks the
+target `PARTIAL` instead of treating cartridge recognition as proof of a
+working game. PixelDeck's existing gallery, alphabetical sections, title
+count, play history, version footer, fullscreen pause menu, state slots, and
+assigned Player 1/Player 2 controller ports are reused unchanged.
+
+The shared SDL/XInput controller snapshot preserves raw left-stick magnitude
+for the N64 analog stick and maps the right stick to the four C-buttons. A,
+B, Start, Z, L, and R use the existing physical controller assignments and
+shoulder/trigger layout while Pixel64's dedicated remapping page is still in
+development. See [Pixel64 0.1 certification](docs/PIXEL64-0.1-CERTIFICATION.md).
 
 Set `PIXELDECK_GAMES_FOLDER` to override the default games directory.

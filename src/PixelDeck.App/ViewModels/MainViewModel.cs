@@ -7,6 +7,7 @@ using PixelDeck.App.Models;
 using PixelDeck.App.Services;
 using PixelDeck.App.Settings;
 using PixelDeck.Emulation.Nes;
+using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
 
 namespace PixelDeck.App.ViewModels;
@@ -45,7 +46,16 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 "Place Super Nintendo homebrew in Games/SuperNintendo. PixelDeck will pick it up automatically.",
                 ["SNES"],
                 PixelSnesVersionText,
-                () => SelectedLibrarySystem = LibrarySystem.SuperNintendo)
+                () => SelectedLibrarySystem = LibrarySystem.SuperNintendo),
+            new(
+                LibrarySystem.Nintendo64,
+                "Nintendo 64",
+                "Nintendo 64",
+                _library.Nintendo64Folder,
+                "Place Nintendo 64 homebrew in Games/Nintendo64. PixelDeck will pick it up automatically.",
+                ["N64"],
+                PixelN64VersionText,
+                () => SelectedLibrarySystem = LibrarySystem.Nintendo64)
         ];
         LibrarySystems[0].IsSelected = true;
 
@@ -179,6 +189,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public string PixelSnesVersionText { get; } =
         FormatProductVersion("PixelSNES", typeof(SnesMachine).Assembly.GetName().Version);
+
+    public string PixelN64VersionText { get; } =
+        FormatProductVersion("Pixel64", typeof(N64Machine).Assembly.GetName().Version);
 
     public string LibraryEmulatorVersionText => SelectedLibrary.EmulatorVersionText;
 
@@ -1329,7 +1342,8 @@ public enum DashboardPage
 public enum LibrarySystem
 {
     Nintendo,
-    SuperNintendo
+    SuperNintendo,
+    Nintendo64
 }
 
 public enum ControllerSetupPlayer

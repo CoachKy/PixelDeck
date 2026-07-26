@@ -4,8 +4,9 @@ PixelDeck keeps each console library in its own directory:
 
 - `Nintendo` contains NES homebrew and locally owned `.nes` images.
 - `SuperNintendo` contains Super Nintendo `.sfc` and `.smc` images. Supported standard cartridges appear in the same dashboard gallery and launch through PixelDeck's local SNES core.
+- `Nintendo64` contains Nintendo 64 `.z64`, `.v64`, and `.n64` images. Pixel64 currently targets Super Mario 64 (USA) revision 0 as its first development cartridge.
 
-PixelDeck creates both directories automatically and scans their subdirectories.
+PixelDeck creates all three directories automatically and scans their subdirectories.
 
 Supported discovery formats currently include `.nes`, `.fds`, `.sfc`, `.smc`, `.gb`, `.gbc`, `.gba`, `.n64`, `.z64`, `.v64`, `.nds`, `.gcm`, `.rvz`, `.wbfs`, `.iso`, `.dol`, and `.elf`.
 

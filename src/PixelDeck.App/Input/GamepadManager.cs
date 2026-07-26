@@ -28,6 +28,9 @@ internal sealed class GamepadManager : IDisposable
     public GamepadButton ReadButtons(int userIndex) =>
         _disposed ? GamepadButton.None : _backend.ReadButtons(userIndex);
 
+    public GamepadState ReadState(int userIndex) =>
+        _disposed ? default : _backend.ReadState(userIndex);
+
     public string? GetControllerName(int userIndex) =>
         _disposed ? null : _backend.GetControllerName(userIndex);
 

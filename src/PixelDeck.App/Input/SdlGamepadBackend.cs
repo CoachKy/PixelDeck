@@ -72,11 +72,16 @@ internal sealed class SdlGamepadBackend : IGamepadBackend
 
     public GamepadButton ReadButtons(int userIndex)
     {
+        return ReadState(userIndex).Buttons;
+    }
+
+    public GamepadState ReadState(int userIndex)
+    {
         lock (_sync)
         {
             if (_disposed || userIndex is < 0 or >= GamepadManager.MaximumControllers)
             {
-                return GamepadButton.None;
+                return default;
             }
 
             RefreshDevices(force: false);
@@ -88,11 +93,11 @@ internal sealed class SdlGamepadBackend : IGamepadBackend
                 gamepad = _slots[userIndex];
                 if (gamepad is null)
                 {
-                    return GamepadButton.None;
+                    return default;
                 }
             }
 
-            return Translate(gamepad.Handle);
+            return CaptureState(gamepad.Handle);
         }
     }
 
@@ -190,7 +195,7 @@ internal sealed class SdlGamepadBackend : IGamepadBackend
         _slots[index] = null;
     }
 
-    private static GamepadButton Translate(IntPtr gamepad)
+    private static GamepadState CaptureState(IntPtr gamepad)
     {
         var digitalButtons = GamepadButton.None;
         if (Pressed(gamepad, SdlButton.DPadLeft)) digitalButtons |= GamepadButton.DPadLeft;
@@ -209,12 +214,20 @@ internal sealed class SdlGamepadBackend : IGamepadBackend
         if (Pressed(gamepad, SdlButton.LeftStick)) digitalButtons |= GamepadButton.LeftThumb;
         if (Pressed(gamepad, SdlButton.RightStick)) digitalButtons |= GamepadButton.RightThumb;
 
-        return Translate(new SdlGamepadState(
+        var state = new SdlGamepadState(
             digitalButtons,
             SDL.GetGamepadAxis(gamepad, SdlAxis.LeftX),
             SDL.GetGamepadAxis(gamepad, SdlAxis.LeftY),
             SDL.GetGamepadAxis(gamepad, SdlAxis.LeftTrigger),
-            SDL.GetGamepadAxis(gamepad, SdlAxis.RightTrigger)));
+            SDL.GetGamepadAxis(gamepad, SdlAxis.RightTrigger),
+            SDL.GetGamepadAxis(gamepad, SdlAxis.RightX),
+            SDL.GetGamepadAxis(gamepad, SdlAxis.RightY));
+        return new GamepadState(
+            Translate(state),
+            state.LeftX,
+            NegateAxis(state.LeftY),
+            state.RightX,
+            NegateAxis(state.RightY));
     }
 
     internal static GamepadButton Translate(SdlGamepadState state)
@@ -231,6 +244,9 @@ internal sealed class SdlGamepadBackend : IGamepadBackend
         return result;
     }
 
+    private static short NegateAxis(short value) =>
+        value == short.MinValue ? short.MaxValue : (short)-value;
+
     private static bool Pressed(IntPtr gamepad, SdlButton button) =>
         SDL.GetGamepadButton(gamepad, button);
 
@@ -242,4 +258,6 @@ internal readonly record struct SdlGamepadState(
     short LeftX,
     short LeftY,
     short LeftTrigger,
-    short RightTrigger);
+    short RightTrigger,
+    short RightX = 0,
+    short RightY = 0);

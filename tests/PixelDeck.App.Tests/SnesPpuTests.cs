@@ -230,6 +230,55 @@ public sealed class SnesPpuTests
     }
 
     [Fact]
+    public void MosaicVerticalPhaseRestartsAtTheRegisterWriteScanline()
+    {
+        var ppu = new SnesPpu();
+        SetDisplayOn(ppu);
+        WriteColor(ppu, 1, 0x001F);
+        WriteColor(ppu, 2, 0x03E0);
+        WriteVramWord(ppu, 0x0000, 0x0000);
+        // The renderer's visible-line fetch offset makes screen lines two and
+        // six read character rows three and seven respectively.
+        WriteVramWord(ppu, 0x1003, 0x00FF);
+        WriteVramWord(ppu, 0x1007, 0xFF00);
+        ppu.WriteRegister(0x2105, 0x01);
+        ppu.WriteRegister(0x210B, 0x01);
+        ppu.WriteRegister(0x212C, 0x01);
+
+        // Four-line BG1 mosaic begins when MOSAIC changes on scanline two.
+        ppu.WriteRegister(0x2106, 0x31, verticalCounter: 2);
+        ppu.RenderScanline(2);
+        ppu.RenderScanline(5);
+        ppu.RenderScanline(6);
+
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[2 * SnesPpu.Width]);
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[5 * SnesPpu.Width]);
+        Assert.Equal(0xFF00FF00u, ppu.FrameBuffer[6 * SnesPpu.Width]);
+
+        using var state = new MemoryStream();
+        using (var writer = new BinaryWriter(
+                   state,
+                   System.Text.Encoding.UTF8,
+                   leaveOpen: true))
+        {
+            ppu.SaveState(writer);
+        }
+
+        ppu.BeginFrame();
+        state.Position = 0;
+        using (var reader = new BinaryReader(
+                   state,
+                   System.Text.Encoding.UTF8,
+                   leaveOpen: true))
+        {
+            ppu.LoadState(reader);
+        }
+
+        ppu.RenderScanline(5);
+        Assert.Equal(0xFFFF0000u, ppu.FrameBuffer[5 * SnesPpu.Width]);
+    }
+
+    [Fact]
     public void SingleHorizontalScrollWriteUpdatesTheHdmaHighByte()
     {
         var ppu = new SnesPpu();

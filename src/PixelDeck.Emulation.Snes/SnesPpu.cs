@@ -32,6 +32,7 @@ internal sealed class SnesPpu
     private byte _objectSizeAndBase;
     private byte _backgroundMode;
     private byte _mosaic;
+    private int _mosaicStartScanline;
     private byte _bg12TileBase;
     private byte _bg34TileBase;
     private byte _mainScreen;
@@ -94,7 +95,7 @@ internal sealed class SnesPpu
 
     internal bool IsPal { get; set; }
 
-    public void WriteRegister(ushort address, byte value)
+    public void WriteRegister(ushort address, byte value, int verticalCounter = 0)
     {
         RegisterWriteCount++;
         switch (address)
@@ -124,7 +125,12 @@ internal sealed class SnesPpu
                 _backgroundMode = value;
                 break;
             case 0x2106:
-                _mosaic = value;
+                if (_mosaic != value)
+                {
+                    _mosaic = value;
+                    _mosaicStartScanline =
+                        verticalCounter > Height ? 0 : Math.Max(0, verticalCounter);
+                }
                 break;
             case >= 0x2107 and <= 0x210A:
                 _bgScreen[address - 0x2107] = value;
@@ -268,6 +274,14 @@ internal sealed class SnesPpu
         }
     }
 
+    internal void BeginFrame()
+    {
+        // The vertical mosaic phase begins at the top of each field. A
+        // visible-frame MOSAIC write restarts it from that scanline instead;
+        // this matters for the stepped transitions used by A Link to the Past.
+        _mosaicStartScanline = 0;
+    }
+
     internal void BeginVBlank()
     {
         // With the display enabled, the PPU restores the internal byte
@@ -381,7 +395,7 @@ internal sealed class SnesPpu
         }
     }
 
-    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 11);
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 14);
 
     internal void SaveState(BinaryWriter writer, int stateVersion)
     {
@@ -393,6 +407,10 @@ internal sealed class SnesPpu
         writer.Write(_objectSizeAndBase);
         writer.Write(_backgroundMode);
         writer.Write(_mosaic);
+        if (stateVersion >= 14)
+        {
+            writer.Write(_mosaicStartScanline);
+        }
         writer.Write(_bg12TileBase);
         writer.Write(_bg34TileBase);
         writer.Write(_mainScreen);
@@ -448,7 +466,7 @@ internal sealed class SnesPpu
         writer.Write(_windowLogic);
     }
 
-    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 11);
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 14);
 
     internal void LoadState(BinaryReader reader, int stateVersion)
     {
@@ -460,6 +478,7 @@ internal sealed class SnesPpu
         _objectSizeAndBase = reader.ReadByte();
         _backgroundMode = reader.ReadByte();
         _mosaic = reader.ReadByte();
+        _mosaicStartScanline = stateVersion >= 14 ? reader.ReadInt32() : 0;
         _bg12TileBase = reader.ReadByte();
         _bg34TileBase = reader.ReadByte();
         _mainScreen = reader.ReadByte();
@@ -579,7 +598,7 @@ internal sealed class SnesPpu
         if (mosaicEnabled && mosaicSize > 1)
         {
             screenX -= screenX % mosaicSize;
-            screenY -= screenY % mosaicSize;
+            screenY = ApplyVerticalMosaic(screenY, mosaicSize);
         }
 
         var horizontalScale = mode is 5 or 6 ? 2 : 1;
@@ -834,7 +853,7 @@ internal sealed class SnesPpu
         if (mosaicEnabled && mosaicSize > 1)
         {
             screenX -= screenX % mosaicSize;
-            screenY -= screenY % mosaicSize;
+            screenY = ApplyVerticalMosaic(screenY, mosaicSize);
         }
 
         if ((_mode7Control & 0x01) != 0) screenX = Width - 1 - screenX;
@@ -1320,6 +1339,14 @@ internal sealed class SnesPpu
         {
             _fixedColor = (ushort)((_fixedColor & ~0x7C00) | (component << 10));
         }
+    }
+
+    private int ApplyVerticalMosaic(int screenY, int mosaicSize)
+    {
+        var relativeY = screenY - _mosaicStartScanline;
+        return relativeY < 0
+            ? screenY
+            : screenY - (relativeY % mosaicSize);
     }
 
     private bool IsWindowInside(int layer, int x)

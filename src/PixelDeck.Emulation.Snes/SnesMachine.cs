@@ -4,7 +4,7 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 13;
+    private const int SaveStateVersion = 14;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
@@ -150,11 +150,11 @@ public sealed class SnesMachine
 
     internal byte[] SaveState(int stateVersion)
     {
-        if (stateVersion is not (10 or 11 or 12 or SaveStateVersion))
+        if (stateVersion is < 10 or > SaveStateVersion)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(stateVersion),
-                "PixelSNES can only write the current state or its v10-v12 migration fixtures.");
+                "PixelSNES can only write the current state or its v10-v13 migration fixtures.");
         }
 
         using var payloadStream = new MemoryStream();
@@ -207,7 +207,7 @@ public sealed class SnesMachine
         }
 
         var stateVersion = reader.ReadInt32();
-        if (stateVersion is not (10 or 11 or 12 or SaveStateVersion))
+        if (stateVersion is < 10 or > SaveStateVersion)
         {
             throw new InvalidDataException("This is not a compatible PixelDeck SNES save state.");
         }

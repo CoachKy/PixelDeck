@@ -82,12 +82,22 @@ internal sealed class WindowsGamepad
 
     public GamepadButton ReadButtons()
     {
+        return ReadState().Buttons;
+    }
+
+    public GamepadState ReadState()
+    {
         if (!TryReadState(out var state))
         {
-            return GamepadButton.None;
+            return default;
         }
 
-        return Translate(state.Gamepad);
+        return new GamepadState(
+            Translate(state.Gamepad),
+            state.Gamepad.ThumbLX,
+            state.Gamepad.ThumbLY,
+            state.Gamepad.ThumbRX,
+            state.Gamepad.ThumbRY);
     }
 
     private static GamepadButton Translate(XInputGamepad gamepad)
