@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using PixelDeck.App.Services;
+using PixelDeck.Emulation.N64;
 
 namespace PixelDeck.App.Tests;
 
@@ -155,7 +156,36 @@ public sealed class GameLibraryTests
             Assert.Equal("CIC 6102", game.MapperText);
             Assert.Equal("PARTIAL", game.LaunchBadgeText);
             Assert.True(game.CanLaunch);
-            Assert.Contains("development target", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("verified route", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("development", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_AllowsAnUnverifiedNintendo64CartridgeToAttemptLaunch()
+    {
+        var testRoot = CreateTestDirectory();
+        try
+        {
+            var n64Folder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.Nintendo64FolderName));
+            await File.WriteAllBytesAsync(
+                Path.Combine(n64Folder.FullName, "unverified.z64"),
+                CreateN64Image("PIXEL64 UNVERIFIED"));
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("PIXEL64 UNVERIFIED", game.Title);
+            Assert.Equal("Nintendo 64", game.Platform);
+            Assert.Equal("UNKNOWN CIC", game.MapperText);
+            Assert.Equal("PARTIAL", game.LaunchBadgeText);
+            Assert.True(game.CanLaunch);
+            Assert.Contains("boot attempt enabled", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("development", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -406,8 +436,19 @@ public sealed class GameLibraryTests
             GameLibrary.Nintendo64FolderName));
         return Directory.Exists(folder)
             ? Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories)
+                .Where(path =>
+                    Path.GetExtension(path) is ".z64" or ".v64" or ".n64")
                 .FirstOrDefault(path =>
-                    Path.GetExtension(path).Equals(".z64", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        return N64Cartridge.Inspect(path).IsSuperMario64UsRevision0;
+                    }
+                    catch (InvalidDataException)
+                    {
+                        return false;
+                    }
+                })
             : null;
     }
 
@@ -432,6 +473,25 @@ public sealed class GameLibraryTests
             image[15] = defaultInputDevice;
         }
 
+        return image;
+    }
+
+    private static byte[] CreateN64Image(string title)
+    {
+        var image = new byte[0x2000];
+        image[0] = 0x80;
+        image[1] = 0x37;
+        image[2] = 0x12;
+        image[3] = 0x40;
+        image[0x08] = 0x80;
+        image[0x0A] = 0x04;
+        System.Text.Encoding.ASCII.GetBytes(title.PadRight(20))
+            .AsSpan(0, 20)
+            .CopyTo(image.AsSpan(0x20, 20));
+        image[0x3B] = (byte)'N';
+        image[0x3C] = (byte)'P';
+        image[0x3D] = (byte)'X';
+        image[0x3E] = (byte)'E';
         return image;
     }
 

@@ -98,14 +98,18 @@ public sealed class N64Cartridge
         HeaderCrc2 == 0x8B022326 &&
         Rom.Length == 8 * 1024 * 1024;
 
-    public bool IsPixel64TargetSupported =>
+    public bool IsPixel64VerifiedTarget =>
         IsSuperMario64UsRevision0 && Cic is N64Cic.Cic6101 or N64Cic.Cic6102;
 
-    public string CompatibilityMessage => IsPixel64TargetSupported
-        ? "Pixel64 development target: Super Mario 64 (USA) revision 0. " +
-          "Cartridge loading and the base R4300i/VI hardware path are active; " +
-          "RSP/RDP gameplay rendering is still under development."
-        : "Pixel64 currently targets Super Mario 64 (USA) revision 0 only.";
+    public bool CanAttemptPixel64 => true;
+
+    public string CompatibilityMessage => IsPixel64VerifiedTarget
+        ? "Pixel64 verified route: Super Mario 64 (USA) revision 0 reaches controllable castle gameplay; " +
+          "visual output remains partial."
+        : Cic == N64Cic.Unknown
+            ? "Pixel64 boot attempt enabled. This cartridge uses an unrecognized boot security code, " +
+              "so Pixel64 will use its default startup seed and compatibility is unverified."
+            : "Pixel64 boot attempt enabled for this Nintendo 64 cartridge. Compatibility has not yet been verified.";
 
     public static N64Cartridge Load(string path)
     {

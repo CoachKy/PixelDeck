@@ -5,7 +5,7 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Machine
 {
-    private const int StateVersion = 3;
+    private const int StateVersion = 5;
     private static readonly byte[] StateMagic = "P64STATE"u8.ToArray();
 
     private readonly uint[] _frame = new uint[320 * 240];
@@ -58,11 +58,6 @@ public sealed class N64Machine
     public static N64Machine Load(string path, string? savePath = null)
     {
         var cartridge = N64Cartridge.Load(path);
-        if (!cartridge.IsPixel64TargetSupported)
-        {
-            throw new NotSupportedException(cartridge.CompatibilityMessage);
-        }
-
         return new N64Machine(cartridge, savePath);
     }
 

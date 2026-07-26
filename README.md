@@ -126,33 +126,42 @@ SNES keyboard additions are A/S for X/Y and Q/W for L/R. All eight SNES buttons 
 
 ## Nintendo 64 core status
 
-Pixel64 0.1.001 is the first development build of PixelDeck's in-repository
-Nintendo 64 core. It recognizes and normalizes big-endian `.z64`, byte-swapped
-`.v64`, and little-endian `.n64` cartridge images without modifying the source
-file. The current dashboard launch envelope is deliberately limited to Super
-Mario 64 (USA) revision 0 (`NSME`, CIC-6102).
+Pixel64 0.4.006 opens the cartridge-attempt envelope of PixelDeck's
+in-repository Nintendo 64 core. Every structurally valid big-endian `.z64`,
+byte-swapped `.v64`, and little-endian `.n64` image discovered in
+`Games/Nintendo64` can now be launched without modifying the source file.
+Super Mario 64 (USA) revision 0 (`NSME`, CIC-6102) remains the verified route;
+launching another title is an attempt, not a compatibility claim.
 
-The core currently implements the real CIC-6102 IPL3 execution route, a
-64-bit R4300i interpreter foundation, 8 MiB RDRAM, PI cartridge DMA, MI and VI
-interrupts, SI/PIF controller polling, four logical controller ports, 4 Kbit
-EEPROM persistence, SP memory DMA/status foundations, a VI framebuffer reader,
-and cartridge-validated integrity-checked save states. The local target
-executes 5,745,290 IPL3 instructions and reaches its exact cartridge entry
-point without an unsupported R4300i opcode. A 120-field operating-system gate
-also services VI interrupts without an unhandled CPU instruction.
+The core reaches the real cartridge scheduler, handles the target's paired
+64 KiB TLB mapping and FR=0 floating-point register mode, services SP/DP and AI
+tasks, walks segmented Fast3D display lists, transforms and rasterizes
+triangles, copies texture loads into persistent 4 KiB TMEM, clips polygons in
+homogeneous coordinates, and honors the RDP render mode when comparing or
+updating depth. Fast3D clip-space Y now maps into the framebuffer's top-left
+coordinate system with matching front/back winding, so the title and castle
+grounds render upright. Timed SI DMA re-runs the resident PIF controller command
+on every read. A state-driven local trace presses Start after the title becomes
+interactive, selects Mario A, clears the opening dialog, reaches castle area 1,
+leaves the intro action, and proves that holding the analog stick moves Mario
+for 120 additional fields without an unknown CPU or Fast3D opcode.
 
-Pixel64 is not yet gameplay-compatible. RSP vector execution, Fast3D graphics
-tasks, RDP rasterization, complete TLB/exception timing, AI audio, and exact
-controller accessory behavior remain under development. The library marks the
-target `PARTIAL` instead of treating cartridge recognition as proof of a
-working game. PixelDeck's existing gallery, alphabetical sections, title
-count, play history, version footer, fullscreen pause menu, state slots, and
-assigned Player 1/Player 2 controller ports are reused unchanged.
+Pixel64 is not yet graphics-accurate or generally game-compatible. An
+unverified game may stop on CPU, RSP, RDP, or platform behavior the core does
+not implement yet; PixelDeck reports that error in the emulator overlay instead
+of rejecting the cartridge from the library. The upright
+castle grounds execute and accept controller input, but exact TMEM row/swizzle
+addressing, lighting, combining, blending, and VI presentation remain
+incomplete; Mario can still appear as a white silhouette and isolated texture
+strips can be corrupted. The library therefore continues to mark the target
+`PARTIAL`. PixelDeck's existing gallery, alphabetical sections, title count,
+play history, version footer, fullscreen pause menu, state slots, and assigned
+Player 1/Player 2 controller ports are reused unchanged.
 
 The shared SDL/XInput controller snapshot preserves raw left-stick magnitude
 for the N64 analog stick and maps the right stick to the four C-buttons. A,
 B, Start, Z, L, and R use the existing physical controller assignments and
-shoulder/trigger layout while Pixel64's dedicated remapping page is still in
-development. See [Pixel64 0.1 certification](docs/PIXEL64-0.1-CERTIFICATION.md).
+shoulder/trigger layout. Pixel64's dedicated remapping page is not yet
+available. See [Pixel64 0.4 certification](docs/PIXEL64-0.4-CERTIFICATION.md).
 
 Set `PIXELDECK_GAMES_FOLDER` to override the default games directory.

@@ -15,6 +15,8 @@ public sealed class N64Memory
 
     private readonly N64Cartridge _cartridge;
     private readonly N64ControllerState[] _controllers = new N64ControllerState[4];
+    private readonly N64TlbEntry[] _tlb = new N64TlbEntry[32];
+    private byte _tlbAsid;
     private uint _spMemoryAddress;
     private uint _spDramAddress;
     private uint _spStatus = 1;
@@ -26,6 +28,8 @@ public sealed class N64Memory
     private uint _dpcStatus;
     private uint _siDramAddress;
     private uint _siStatus;
+    private int _siDmaDirection;
+    private int _siDmaTicksRemaining;
     private uint _piDramAddress;
     private uint _piCartAddress;
     private uint _viControl;
@@ -93,10 +97,66 @@ public sealed class N64Memory
 
     public long AudioDmasCompleted { get; private set; }
 
-    public uint TranslateVirtualAddress(uint address) =>
-        address is >= 0x80000000 and <= 0xBFFFFFFF
-            ? address & 0x1FFFFFFF
-            : address;
+    public long ControllerPolls { get; private set; }
+
+    public uint LastControllerStateWord { get; private set; }
+
+    public long NonNeutralControllerPolls { get; private set; }
+
+    public long SiDmasStarted { get; private set; }
+
+    public long SiDmasCompleted { get; private set; }
+
+    public byte[] LastPifWrite { get; } = new byte[64];
+
+    public long ControllerStatusQueries { get; private set; }
+
+    public long ControllerReadCommands { get; private set; }
+
+    public uint TranslateVirtualAddress(uint address)
+    {
+        if (address is >= 0x80000000 and <= 0xBFFFFFFF)
+        {
+            return address & 0x1FFFFFFF;
+        }
+
+        foreach (var entry in _tlb)
+        {
+            if (entry.TryTranslate(address, _tlbAsid, out var physicalAddress))
+            {
+                return physicalAddress;
+            }
+        }
+
+        return address;
+    }
+
+    internal void WriteTlbEntry(
+        int index,
+        uint pageMask,
+        uint entryHi,
+        uint entryLo0,
+        uint entryLo1)
+    {
+        _tlb[index & 31] = new N64TlbEntry(pageMask, entryHi, entryLo0, entryLo1);
+    }
+
+    internal N64TlbEntry ReadTlbEntry(int index) => _tlb[index & 31];
+
+    internal int ProbeTlb(uint entryHi)
+    {
+        for (var index = 0; index < _tlb.Length; index++)
+        {
+            if (_tlb[index].Matches(entryHi))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    internal void SetTlbAsid(byte asid) => _tlbAsid = asid;
 
     public byte ReadByte(uint virtualAddress)
     {
@@ -205,6 +265,7 @@ public sealed class N64Memory
     {
         ArgumentOutOfRangeException.ThrowIfNegative(ticks);
         AdvanceAudio(ticks);
+        AdvanceSi(ticks);
         _viTicksInField += ticks;
         while (_viTicksInField >= CpuTicksPerField)
         {
@@ -321,6 +382,10 @@ public sealed class N64Memory
         writer.Write(MiInterruptMask);
         writer.Write(_siDramAddress);
         writer.Write(_siStatus);
+        writer.Write(_siDmaDirection);
+        writer.Write(_siDmaTicksRemaining);
+        writer.Write(ControllerPolls);
+        writer.Write(LastControllerStateWord);
         writer.Write(_spMemoryAddress);
         writer.Write(_spDramAddress);
         writer.Write(_spStatus);
@@ -330,6 +395,14 @@ public sealed class N64Memory
         writer.Write(_dpcCurrent);
         writer.Write(_dpcEnd);
         writer.Write(_dpcStatus);
+        foreach (var entry in _tlb)
+        {
+            writer.Write(entry.PageMask);
+            writer.Write(entry.EntryHi);
+            writer.Write(entry.EntryLo0);
+            writer.Write(entry.EntryLo1);
+        }
+
         writer.Write(Rdram);
         writer.Write(SpDmem);
         writer.Write(SpImem);
@@ -377,6 +450,10 @@ public sealed class N64Memory
         MiInterruptMask = reader.ReadUInt32();
         _siDramAddress = reader.ReadUInt32();
         _siStatus = reader.ReadUInt32();
+        _siDmaDirection = reader.ReadInt32();
+        _siDmaTicksRemaining = reader.ReadInt32();
+        ControllerPolls = reader.ReadInt64();
+        LastControllerStateWord = reader.ReadUInt32();
         _spMemoryAddress = reader.ReadUInt32();
         _spDramAddress = reader.ReadUInt32();
         _spStatus = reader.ReadUInt32();
@@ -386,6 +463,15 @@ public sealed class N64Memory
         _dpcCurrent = reader.ReadUInt32();
         _dpcEnd = reader.ReadUInt32();
         _dpcStatus = reader.ReadUInt32();
+        for (var index = 0; index < _tlb.Length; index++)
+        {
+            _tlb[index] = new N64TlbEntry(
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32());
+        }
+
         reader.ReadExactly(Rdram);
         reader.ReadExactly(SpDmem);
         reader.ReadExactly(SpImem);
@@ -584,10 +670,10 @@ public sealed class N64Memory
                 _siDramAddress = Combine(_siDramAddress, value, mask) & 0x00FFFFFF;
                 break;
             case 0x04800004:
-                CopyPifRamToRdram();
+                StartSiDma(pifToRdram: true);
                 break;
             case 0x04800010:
-                CopyRdramToPifRam();
+                StartSiDma(pifToRdram: false);
                 break;
             case 0x04800018:
                 MiInterrupt &= ~(1u << 1);
@@ -738,12 +824,14 @@ public sealed class N64Memory
             PifRam[index] = Rdram[(_siDramAddress + (uint)index) & RdramMask];
         }
 
+        PifRam.CopyTo(LastPifWrite, 0);
         ProcessPifCommands();
         CompleteSiDma();
     }
 
     private void CopyPifRamToRdram()
     {
+        ProcessPifCommands();
         for (var index = 0; index < PifRam.Length; index++)
         {
             Rdram[(_siDramAddress + (uint)index) & RdramMask] = PifRam[index];
@@ -754,8 +842,50 @@ public sealed class N64Memory
 
     private void CompleteSiDma()
     {
+        _siStatus &= ~1u;
         _siStatus |= 0x1000;
         MiInterrupt |= 1u << 1;
+        SiDmasCompleted++;
+    }
+
+    private void StartSiDma(bool pifToRdram)
+    {
+        if (_siDmaDirection != 0)
+        {
+            _siStatus |= 8;
+            return;
+        }
+
+        _siDmaDirection = pifToRdram ? 1 : 2;
+        _siDmaTicksRemaining = 256;
+        _siStatus |= 1;
+        SiDmasStarted++;
+    }
+
+    private void AdvanceSi(int ticks)
+    {
+        if (_siDmaDirection == 0)
+        {
+            return;
+        }
+
+        _siDmaTicksRemaining -= ticks;
+        if (_siDmaTicksRemaining > 0)
+        {
+            return;
+        }
+
+        var direction = _siDmaDirection;
+        _siDmaDirection = 0;
+        _siDmaTicksRemaining = 0;
+        if (direction == 1)
+        {
+            CopyPifRamToRdram();
+        }
+        else
+        {
+            CopyRdramToPifRam();
+        }
     }
 
     private void ProcessPifCommands()
@@ -843,6 +973,7 @@ public sealed class N64Memory
         {
             case 0x00:
             case 0xFF:
+                ControllerStatusQueries++;
                 if (receiveLength >= 3)
                 {
                     PifRam[responseOffset] = 0x05;
@@ -852,9 +983,20 @@ public sealed class N64Memory
 
                 break;
             case 0x01:
+                ControllerReadCommands++;
                 if (receiveLength >= 4)
                 {
                     var state = _controllers[channel].ToPifWord();
+                    if (channel == 0)
+                    {
+                        ControllerPolls++;
+                        LastControllerStateWord = state;
+                        if (state != 0)
+                        {
+                            NonNeutralControllerPolls++;
+                        }
+                    }
+
                     PifRam[responseOffset] = (byte)(state >> 24);
                     PifRam[responseOffset + 1] = (byte)(state >> 16);
                     PifRam[responseOffset + 2] = (byte)(state >> 8);
@@ -1054,6 +1196,51 @@ public readonly record struct N64RspTask(
     uint DataSize,
     uint YieldDataPointer,
     uint YieldDataSize);
+
+internal readonly record struct N64TlbEntry(
+    uint PageMask,
+    uint EntryHi,
+    uint EntryLo0,
+    uint EntryLo1)
+{
+    private int PageSize =>
+        checked((int)(((PageMask & 0x01FFE000) >> 13) + 1) * 0x1000);
+
+    private bool Global => (EntryLo0 & EntryLo1 & 1) != 0;
+
+    public bool Matches(uint entryHi)
+    {
+        var pairSize = (uint)(PageSize * 2);
+        var addressMask = ~(pairSize - 1);
+        return (EntryHi & addressMask) == (entryHi & addressMask) &&
+               (Global || (EntryHi & 0xFF) == (entryHi & 0xFF));
+    }
+
+    public bool TryTranslate(uint address, byte currentAsid, out uint physicalAddress)
+    {
+        var pageSize = (uint)PageSize;
+        var pairSize = pageSize * 2;
+        var addressMask = ~(pairSize - 1);
+        if ((EntryHi & addressMask) != (address & addressMask) ||
+            (!Global && (EntryHi & 0xFF) != currentAsid))
+        {
+            physicalAddress = 0;
+            return false;
+        }
+
+        var offsetInPair = address & (pairSize - 1);
+        var entryLo = offsetInPair < pageSize ? EntryLo0 : EntryLo1;
+        if ((entryLo & 2) == 0)
+        {
+            physicalAddress = 0;
+            return false;
+        }
+
+        var physicalPage = (entryLo & 0x3FFFFFC0) << 6;
+        physicalAddress = physicalPage | (offsetInPair & (pageSize - 1));
+        return true;
+    }
+}
 
 internal readonly record struct N64AiDma(
     uint Address,

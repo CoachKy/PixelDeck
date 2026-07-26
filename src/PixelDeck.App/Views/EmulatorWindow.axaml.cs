@@ -296,7 +296,7 @@ public partial class EmulatorWindow : Window
 
         if (_n64Machine is not null && !hasUsefulImage)
         {
-            EmulatorStatusText.Text = "PIXEL64 BOOTED · RSP / RDP RENDERER IN DEVELOPMENT";
+            EmulatorStatusText.Text = "PIXEL64 BOOTING - WAITING FOR VIDEO";
             LoadingOverlay.IsVisible = true;
             return;
         }

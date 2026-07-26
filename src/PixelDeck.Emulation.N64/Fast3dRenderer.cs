@@ -11,14 +11,33 @@ public sealed class Fast3dRenderer
     private readonly uint[] _segments = new uint[16];
     private readonly Dictionary<byte, long> _unsupportedCommandCounts = new();
     private readonly Fast3dVertex[] _vertices = new Fast3dVertex[16];
+    private readonly Fast3dTile[] _tiles = new Fast3dTile[8];
+    private readonly LoadedTexture[] _loadedTextures = new LoadedTexture[512];
+    private readonly byte[] _textureMemory = new byte[4 * 1024];
     private readonly Stack<Matrix4x4> _modelViewStack = new();
     private uint _colorImageAddress;
     private int _colorImageWidth = 320;
     private int _colorImageSize;
+    private uint _depthImageAddress = uint.MaxValue;
+    private float[] _depthBuffer = Array.Empty<float>();
+    private int _depthBufferWidth;
+    private int _depthBufferHeight;
     private uint _fillColor;
     private Matrix4x4 _projection = Matrix4x4.Identity;
     private Vector4 _viewportScale = new(160, 120, 511, 0);
     private Vector4 _viewportTranslate = new(160, 120, 0, 0);
+    private uint _geometryMode;
+    private bool _textureEnabled;
+    private int _textureTile;
+    private float _textureScaleS = 1;
+    private float _textureScaleT = 1;
+    private uint _textureImageAddress;
+    private int _textureImageFormat;
+    private int _textureImageSize;
+    private int _textureImageWidth = 1;
+    private bool _combinerUsesTexture;
+    private Vector4 _primitiveColor = Vector4.One;
+    private uint _otherModeLow;
 
     public Fast3dRenderer(N64Memory memory)
     {
@@ -35,6 +54,26 @@ public sealed class Fast3dRenderer
 
     public long VerticesTransformed { get; private set; }
 
+    public long TexturedPixelsDrawn { get; private set; }
+
+    public long TextureRectanglesDrawn { get; private set; }
+
+    public long DepthPixelsRejected { get; private set; }
+
+    public long TriviallyClippedTriangles { get; private set; }
+
+    public float MaximumTriangleWidth { get; private set; }
+
+    public float MaximumTriangleHeight { get; private set; }
+
+    public uint ColorImageAddress => _colorImageAddress;
+
+    public int ColorImageWidth => _colorImageWidth;
+
+    public int ColorImageSize => _colorImageSize;
+
+    internal uint OtherModeLow => _otherModeLow;
+
     public long UnsupportedCommands { get; private set; }
 
     public IReadOnlyDictionary<byte, long> UnsupportedCommandCounts => _unsupportedCommandCounts;
@@ -48,6 +87,16 @@ public sealed class Fast3dRenderer
         _projection = Matrix4x4.Identity;
         _viewportScale = new Vector4(160, 120, 511, 0);
         _viewportTranslate = new Vector4(160, 120, 0, 0);
+        _geometryMode = 0;
+        _textureEnabled = false;
+        _textureTile = 0;
+        _textureScaleS = 1;
+        _textureScaleT = 1;
+        _textureImageAddress = 0;
+        _textureImageFormat = 0;
+        _textureImageSize = 0;
+        _textureImageWidth = 1;
+        _primitiveColor = Vector4.One;
         var remainingBudget = MaximumCommandsPerTask;
         ExecuteDisplayList(
             ResolveAddress(task.DataPointer),
@@ -124,6 +173,15 @@ public sealed class Fast3dRenderer
                 case 0xBF: // F3D G_TRI1
                     DrawTriangle(word1);
                     break;
+                case 0xB6: // F3D G_CLEARGEOMETRYMODE
+                    _geometryMode &= ~word1;
+                    break;
+                case 0xB7: // F3D G_SETGEOMETRYMODE
+                    _geometryMode |= word1;
+                    break;
+                case 0xBB: // F3D G_TEXTURE
+                    SetTexture(word0, word1);
+                    break;
                 case 0xDE: // F3DEX2 G_DL
                 {
                     var target = ResolveAddress(word1);
@@ -147,36 +205,200 @@ public sealed class Fast3dRenderer
                 case 0xF7: // G_SETFILLCOLOR
                     _fillColor = word1;
                     break;
+                case 0xF2: // G_SETTILESIZE
+                    SetTileSize(word0, word1);
+                    break;
+                case 0xF3: // G_LOADBLOCK
+                    LoadTextureBlock(word0, word1);
+                    break;
+                case 0xF5: // G_SETTILE
+                    SetTile(word0, word1);
+                    break;
+                case 0xFD: // G_SETTIMG
+                    SetTextureImage(word0, word1);
+                    break;
+                case 0xFC: // G_SETCOMBINE
+                    _combinerUsesTexture = CombineUsesTexture(word0, word1);
+                    break;
+                case 0xFE: // G_SETZIMG
+                    _depthImageAddress = ResolveAddress(word1);
+                    break;
                 case 0xFF: // G_SETCIMG
                     _colorImageSize = (int)((word0 >> 19) & 3);
                     _colorImageWidth = (int)(word0 & 0xFFF) + 1;
                     _colorImageAddress = ResolveAddress(word1);
                     break;
+                case 0xB9: // G_SETOTHERMODE_L
+                    SetOtherModeLow(word0, word1);
+                    break;
                 case 0x00:
-                case 0xB6:
-                case 0xB7:
-                case 0xB9:
                 case 0xBA:
-                case 0xBB:
                 case 0xE7:
                 case 0xE6:
                 case 0xE8:
                 case 0xE9:
                 case 0xED:
-                case 0xF2:
-                case 0xF3:
-                case 0xF5:
                 case 0xFB:
-                case 0xFD:
-                case 0xFC:
-                case 0xFE:
                 case 0xB4:
+                    break;
+                case 0xE4: // G_TEXRECT
+                case 0xE5: // G_TEXRECTFLIP
+                {
+                    if (remainingBudget < 2)
+                    {
+                        return;
+                    }
+
+                    var halfOne = _memory.ReadUInt32(address + 4);
+                    var halfTwo = _memory.ReadUInt32(address + 12);
+                    address += 16;
+                    commandsInList += 2;
+                    remainingBudget -= 2;
+                    CommandsProcessed += 2;
+                    DrawTextureRectangle(word0, word1, halfOne, halfTwo, opcode == 0xE5);
+                    break;
+                }
+                case 0xF9: // G_SETBLENDCOLOR
+                    break;
+                case 0xFA: // G_SETPRIMCOLOR
+                    _primitiveColor = DecodeRgba32(word1);
                     break;
                 default:
                     UnsupportedCommands++;
                     _unsupportedCommandCounts[opcode] =
                         _unsupportedCommandCounts.GetValueOrDefault(opcode) + 1;
                     break;
+            }
+        }
+    }
+
+    private void SetTexture(uint word0, uint word1)
+    {
+        _textureEnabled = (word0 & 0xFF) != 0;
+        _textureTile = (int)((word0 >> 8) & 7);
+        _textureScaleS = ((word1 >> 16) & 0xFFFF) / 65536f;
+        _textureScaleT = (word1 & 0xFFFF) / 65536f;
+    }
+
+    private void SetOtherModeLow(uint word0, uint word1)
+    {
+        var shift = (int)((word0 >> 8) & 0xFF);
+        var length = (int)(word0 & 0xFF);
+        if (shift is < 0 or > 31 || length <= 0)
+        {
+            return;
+        }
+
+        length = Math.Min(length, 32 - shift);
+        var valueMask = length == 32
+            ? uint.MaxValue
+            : ((1u << length) - 1u) << shift;
+        _otherModeLow = (_otherModeLow & ~valueMask) | (word1 & valueMask);
+    }
+
+    private void SetTextureImage(uint word0, uint word1)
+    {
+        _textureImageFormat = (int)((word0 >> 21) & 7);
+        _textureImageSize = (int)((word0 >> 19) & 3);
+        _textureImageWidth = (int)(word0 & 0xFFF) + 1;
+        _textureImageAddress = ResolveAddress(word1);
+    }
+
+    private void SetTile(uint word0, uint word1)
+    {
+        var tileIndex = (int)((word1 >> 24) & 7);
+        _tiles[tileIndex] = _tiles[tileIndex] with
+        {
+            Format = (int)((word0 >> 21) & 7),
+            Size = (int)((word0 >> 19) & 3),
+            Line = (int)((word0 >> 9) & 0x1FF),
+            Tmem = (int)(word0 & 0x1FF),
+            Palette = (int)((word1 >> 20) & 0xF),
+            ClampT = ((word1 >> 19) & 1) != 0,
+            MirrorT = ((word1 >> 18) & 1) != 0,
+            MaskT = (int)((word1 >> 14) & 0xF),
+            ShiftT = (int)((word1 >> 10) & 0xF),
+            ClampS = ((word1 >> 9) & 1) != 0,
+            MirrorS = ((word1 >> 8) & 1) != 0,
+            MaskS = (int)((word1 >> 4) & 0xF),
+            ShiftS = (int)(word1 & 0xF)
+        };
+    }
+
+    private void SetTileSize(uint word0, uint word1)
+    {
+        var tileIndex = (int)((word1 >> 24) & 7);
+        _tiles[tileIndex] = _tiles[tileIndex] with
+        {
+            UpperLeftS = (int)((word0 >> 12) & 0xFFF),
+            UpperLeftT = (int)(word0 & 0xFFF),
+            LowerRightS = (int)((word1 >> 12) & 0xFFF),
+            LowerRightT = (int)(word1 & 0xFFF)
+        };
+    }
+
+    private void LoadTextureBlock(uint word0, uint word1)
+    {
+        var tileIndex = (int)((word1 >> 24) & 7);
+        var tmem = _tiles[tileIndex].Tmem;
+        var upperLeftS = (int)((word0 >> 12) & 0xFFF) >> 2;
+        var upperLeftT = (int)(word0 & 0xFFF) >> 2;
+        var texels = (int)((word1 >> 12) & 0xFFF) + 1;
+        var bitsPerTexel = BitsPerTexel(_textureImageSize);
+        var sourceTexel = (upperLeftT * _textureImageWidth) + upperLeftS;
+        var sourceBitOffset = sourceTexel * bitsPerTexel;
+        var destinationBitOffset = tmem * 64;
+        var bitCount = texels * bitsPerTexel;
+        CopyRdramBitsToTmem(
+            _textureImageAddress,
+            sourceBitOffset,
+            destinationBitOffset,
+            bitCount);
+        _loadedTextures[tmem] = new LoadedTexture(
+            _textureImageAddress,
+            _textureImageFormat,
+            _textureImageSize,
+            texels,
+            tmem,
+            bitCount);
+    }
+
+    private void CopyRdramBitsToTmem(
+        uint sourceAddress,
+        int sourceBitOffset,
+        int destinationBitOffset,
+        int bitCount)
+    {
+        if ((sourceBitOffset & 7) == 0 &&
+            (destinationBitOffset & 7) == 0 &&
+            (bitCount & 7) == 0)
+        {
+            var sourceByteOffset = sourceBitOffset >> 3;
+            var destinationByteOffset = destinationBitOffset >> 3;
+            for (var index = 0; index < (bitCount >> 3); index++)
+            {
+                _textureMemory[(destinationByteOffset + index) & 0xFFF] =
+                    _memory.ReadByte(sourceAddress + (uint)(sourceByteOffset + index));
+            }
+
+            return;
+        }
+
+        for (var bit = 0; bit < bitCount; bit++)
+        {
+            var source = sourceBitOffset + bit;
+            var sourceByte = _memory.ReadByte(sourceAddress + (uint)(source >> 3));
+            var sourceMask = 1 << (7 - (source & 7));
+            var destination = destinationBitOffset + bit;
+            var destinationByte = (destination >> 3) & 0xFFF;
+            var destinationMask = (byte)(1 << (7 - (destination & 7)));
+            if ((sourceByte & sourceMask) != 0)
+            {
+                _textureMemory[destinationByte] |= destinationMask;
+            }
+            else
+            {
+                _textureMemory[destinationByte] &= (byte)~destinationMask;
             }
         }
     }
@@ -286,19 +508,19 @@ public sealed class Fast3dRenderer
                 (short)_memory.ReadUInt16(vertexAddress + 4),
                 1);
             var clip = Vector4.Transform(position, combined);
-            var inverseW = Math.Abs(clip.W) > 0.000001f ? 1f / clip.W : 0;
-            var screen = new Vector3(
-                (clip.X * inverseW * _viewportScale.X) + _viewportTranslate.X,
-                (clip.Y * inverseW * _viewportScale.Y) + _viewportTranslate.Y,
-                (clip.Z * inverseW * _viewportScale.Z) + _viewportTranslate.Z);
-            _vertices[destination + index] = new Fast3dVertex(
-                screen,
-                new Vector4(
-                    _memory.ReadByte(vertexAddress + 12) / 255f,
-                    _memory.ReadByte(vertexAddress + 13) / 255f,
-                    _memory.ReadByte(vertexAddress + 14) / 255f,
-                    _memory.ReadByte(vertexAddress + 15) / 255f),
-                clip.W > 0.000001f);
+            var lightingEnabled = (_geometryMode & 0x00020000) != 0;
+            _vertices[destination + index] = CreateVertex(
+                clip,
+                lightingEnabled
+                    ? Vector4.One
+                    : new Vector4(
+                        _memory.ReadByte(vertexAddress + 12) / 255f,
+                        _memory.ReadByte(vertexAddress + 13) / 255f,
+                        _memory.ReadByte(vertexAddress + 14) / 255f,
+                        _memory.ReadByte(vertexAddress + 15) / 255f),
+                new Vector2(
+                    (short)_memory.ReadUInt16(vertexAddress + 8) / 32f * _textureScaleS,
+                    (short)_memory.ReadUInt16(vertexAddress + 10) / 32f * _textureScaleT));
             VerticesTransformed++;
         }
     }
@@ -321,8 +543,120 @@ public sealed class Fast3dRenderer
             return;
         }
 
-        RasterizeTriangle(a, b, c);
+        Span<Fast3dVertex> source = stackalloc Fast3dVertex[16];
+        Span<Fast3dVertex> destination = stackalloc Fast3dVertex[16];
+        source[0] = a;
+        source[1] = b;
+        source[2] = c;
+        var vertexCount = 3;
+        for (var plane = 0; plane < 7; plane++)
+        {
+            vertexCount = ClipPolygonAgainstPlane(
+                source,
+                vertexCount,
+                destination,
+                plane);
+            if (vertexCount < 3)
+            {
+                TriviallyClippedTriangles++;
+                return;
+            }
+
+            var swap = source;
+            source = destination;
+            destination = swap;
+        }
+
+        for (var index = 1; index < vertexCount - 1; index++)
+        {
+            RasterizeTriangle(source[0], source[index], source[index + 1]);
+        }
     }
+
+    private Fast3dVertex CreateVertex(
+        Vector4 clipPosition,
+        Vector4 color,
+        Vector2 textureCoordinate)
+    {
+        var inverseW = Math.Abs(clipPosition.W) > 0.000001f
+            ? 1f / clipPosition.W
+            : 0;
+        var screen = ProjectClipToScreen(
+            clipPosition,
+            inverseW,
+            _viewportScale,
+            _viewportTranslate);
+        return new Fast3dVertex(
+            clipPosition,
+            screen,
+            color,
+            textureCoordinate,
+            inverseW,
+            ComputeClipFlags(clipPosition),
+            float.IsFinite(screen.X) &&
+            float.IsFinite(screen.Y) &&
+            float.IsFinite(screen.Z));
+    }
+
+    internal static Vector3 ProjectClipToScreen(
+        Vector4 clipPosition,
+        float inverseW,
+        Vector4 viewportScale,
+        Vector4 viewportTranslate) =>
+        new(
+            (clipPosition.X * inverseW * viewportScale.X) + viewportTranslate.X,
+            viewportTranslate.Y - (clipPosition.Y * inverseW * viewportScale.Y),
+            (clipPosition.Z * inverseW * viewportScale.Z) + viewportTranslate.Z);
+
+    private int ClipPolygonAgainstPlane(
+        ReadOnlySpan<Fast3dVertex> source,
+        int sourceCount,
+        Span<Fast3dVertex> destination,
+        int plane)
+    {
+        var destinationCount = 0;
+        var previous = source[sourceCount - 1];
+        var previousDistance = ClipDistance(previous.ClipPosition, plane);
+        var previousInside = previousDistance >= 0;
+        for (var index = 0; index < sourceCount; index++)
+        {
+            var current = source[index];
+            var currentDistance = ClipDistance(current.ClipPosition, plane);
+            var currentInside = currentDistance >= 0;
+            if (currentInside != previousInside)
+            {
+                var amount = previousDistance / (previousDistance - currentDistance);
+                destination[destinationCount++] = CreateVertex(
+                    Vector4.Lerp(previous.ClipPosition, current.ClipPosition, amount),
+                    Vector4.Lerp(previous.Color, current.Color, amount),
+                    Vector2.Lerp(previous.TextureCoordinate, current.TextureCoordinate, amount));
+            }
+
+            if (currentInside)
+            {
+                destination[destinationCount++] = current;
+            }
+
+            previous = current;
+            previousDistance = currentDistance;
+            previousInside = currentInside;
+        }
+
+        return destinationCount;
+    }
+
+    private static float ClipDistance(Vector4 position, int plane) =>
+        plane switch
+        {
+            0 => position.W - 0.000001f,
+            1 => position.X + position.W,
+            2 => position.W - position.X,
+            3 => position.Y + position.W,
+            4 => position.W - position.Y,
+            5 => position.Z + position.W,
+            6 => position.W - position.Z,
+            _ => throw new ArgumentOutOfRangeException(nameof(plane))
+        };
 
     private void RasterizeTriangle(Fast3dVertex a, Fast3dVertex b, Fast3dVertex c)
     {
@@ -339,6 +673,11 @@ public sealed class Fast3dRenderer
             return;
         }
 
+        if (ShouldCullTriangle(_geometryMode, area))
+        {
+            return;
+        }
+
         var bytesPerPixel = _colorImageSize == 2 ? 2 : 4;
         var remainingBytes = N64Memory.RdramSize - (int)_colorImageAddress;
         var maximumHeight = Math.Clamp(
@@ -349,6 +688,8 @@ public sealed class Fast3dRenderer
         var rawMaxX = (int)MathF.Ceiling(MathF.Max(a.Position.X, MathF.Max(b.Position.X, c.Position.X)));
         var rawMinY = (int)MathF.Floor(MathF.Min(a.Position.Y, MathF.Min(b.Position.Y, c.Position.Y)));
         var rawMaxY = (int)MathF.Ceiling(MathF.Max(a.Position.Y, MathF.Max(b.Position.Y, c.Position.Y)));
+        MaximumTriangleWidth = Math.Max(MaximumTriangleWidth, rawMaxX - rawMinX);
+        MaximumTriangleHeight = Math.Max(MaximumTriangleHeight, rawMaxY - rawMinY);
         if (rawMaxX < 0 ||
             rawMinX >= _colorImageWidth ||
             rawMaxY < 0 ||
@@ -362,6 +703,18 @@ public sealed class Fast3dRenderer
         var minY = Math.Clamp(rawMinY, 0, maximumHeight - 1);
         var maxY = Math.Clamp(rawMaxY, 0, maximumHeight - 1);
         var inverseArea = 1f / area;
+        const uint zCompare = 0x10;
+        const uint zUpdate = 0x20;
+        var hasDepth =
+            (_geometryMode & 1) != 0 &&
+            _depthImageAddress < N64Memory.RdramSize;
+        var compareDepth = hasDepth && (_otherModeLow & zCompare) != 0;
+        var updateDepth = hasDepth && (_otherModeLow & zUpdate) != 0;
+        if (compareDepth || updateDepth)
+        {
+            EnsureDepthBuffer(_colorImageWidth, maximumHeight);
+        }
+
         for (var y = minY; y <= maxY; y++)
         {
             for (var x = minX; x <= maxX; x++)
@@ -376,10 +729,51 @@ public sealed class Fast3dRenderer
                     continue;
                 }
 
-                WriteColorPixel(
-                    x,
-                    y,
-                    (a.Color * weightA) + (b.Color * weightB) + (c.Color * weightC));
+                var depthIndex = (y * _colorImageWidth) + x;
+                var depth =
+                    (a.Position.Z * weightA) +
+                    (b.Position.Z * weightB) +
+                    (c.Position.Z * weightC);
+                if (compareDepth && depth > _depthBuffer[depthIndex])
+                {
+                    DepthPixelsRejected++;
+                    continue;
+                }
+
+                var color =
+                    (a.Color * weightA) + (b.Color * weightB) + (c.Color * weightC);
+                if (_textureEnabled &&
+                    _combinerUsesTexture &&
+                    HasTextureForTile(_textureTile))
+                {
+                    var reciprocalW =
+                        (weightA * a.ReciprocalW) +
+                        (weightB * b.ReciprocalW) +
+                        (weightC * c.ReciprocalW);
+                    if (Math.Abs(reciprocalW) > 0.000001f)
+                    {
+                        var textureCoordinate =
+                            ((a.TextureCoordinate * (weightA * a.ReciprocalW)) +
+                             (b.TextureCoordinate * (weightB * b.ReciprocalW)) +
+                             (c.TextureCoordinate * (weightC * c.ReciprocalW))) /
+                            reciprocalW;
+                        var textureColor = SampleTexture(textureCoordinate);
+                        if (textureColor.W <= 0)
+                        {
+                            continue;
+                        }
+
+                        color *= textureColor;
+                        TexturedPixelsDrawn++;
+                    }
+                }
+
+                if (updateDepth)
+                {
+                    _depthBuffer[depthIndex] = depth;
+                }
+
+                WriteColorPixel(x, y, color);
             }
         }
 
@@ -388,6 +782,255 @@ public sealed class Fast3dRenderer
 
     private static float Edge(Vector3 a, Vector3 b, float x, float y) =>
         ((x - a.X) * (b.Y - a.Y)) - ((y - a.Y) * (b.X - a.X));
+
+    internal static bool ShouldCullTriangle(uint geometryMode, float signedArea)
+    {
+        const uint cullFront = 0x00001000;
+        const uint cullBack = 0x00002000;
+        return ((geometryMode & cullBack) != 0 && signedArea < 0) ||
+               ((geometryMode & cullFront) != 0 && signedArea > 0);
+    }
+
+    internal static byte ComputeClipFlags(Vector4 clip)
+    {
+        byte flags = 0;
+        if (clip.X < -clip.W)
+        {
+            flags |= 1 << 0;
+        }
+        else if (clip.X > clip.W)
+        {
+            flags |= 1 << 1;
+        }
+
+        if (clip.Y < -clip.W)
+        {
+            flags |= 1 << 2;
+        }
+        else if (clip.Y > clip.W)
+        {
+            flags |= 1 << 3;
+        }
+
+        if (clip.Z < -clip.W)
+        {
+            flags |= 1 << 4;
+        }
+        else if (clip.Z > clip.W)
+        {
+            flags |= 1 << 5;
+        }
+
+        return flags;
+    }
+
+    private void DrawTextureRectangle(
+        uint word0,
+        uint word1,
+        uint textureOrigin,
+        uint textureStep,
+        bool flip)
+    {
+        if (_colorImageAddress >= N64Memory.RdramSize ||
+            _colorImageWidth <= 0 ||
+            _colorImageSize is not (2 or 3) ||
+            !HasTextureForTile((int)((word1 >> 24) & 7)))
+        {
+            return;
+        }
+
+        var tileIndex = (int)((word1 >> 24) & 7);
+        var left = (int)((word1 >> 12) & 0xFFF) / 4;
+        var top = (int)(word1 & 0xFFF) / 4;
+        var right = (int)((word0 >> 12) & 0xFFF) / 4;
+        var bottom = (int)(word0 & 0xFFF) / 4;
+        var startS = (short)(textureOrigin >> 16) / 32f;
+        var startT = (short)textureOrigin / 32f;
+        var stepS = (short)(textureStep >> 16) / 1024f;
+        var stepT = (short)textureStep / 1024f;
+        if (right < left || bottom < top)
+        {
+            return;
+        }
+
+        var maximumHeight = Math.Min(
+            480,
+            Math.Max(
+                1,
+                (N64Memory.RdramSize - (int)_colorImageAddress) /
+                (_colorImageWidth * (_colorImageSize == 2 ? 2 : 4))));
+        var firstX = Math.Clamp(left, 0, _colorImageWidth - 1);
+        var lastX = Math.Clamp(right, 0, _colorImageWidth - 1);
+        var firstY = Math.Clamp(top, 0, maximumHeight - 1);
+        var lastY = Math.Clamp(bottom, 0, maximumHeight - 1);
+        for (var y = firstY; y <= lastY; y++)
+        {
+            for (var x = firstX; x <= lastX; x++)
+            {
+                var deltaX = x - left;
+                var deltaY = y - top;
+                var textureCoordinate = flip
+                    ? new Vector2(startS + (deltaY * stepS), startT + (deltaX * stepT))
+                    : new Vector2(startS + (deltaX * stepS), startT + (deltaY * stepT));
+                var color = SampleTexture(textureCoordinate, tileIndex);
+                if (color.W <= 0)
+                {
+                    continue;
+                }
+
+                WriteColorPixel(x, y, color * _primitiveColor);
+                TexturedPixelsDrawn++;
+            }
+        }
+
+        TextureRectanglesDrawn++;
+    }
+
+    private Vector4 SampleTexture(Vector2 textureCoordinate, int? selectedTile = null)
+    {
+        var tileIndex = Math.Clamp(selectedTile ?? _textureTile, 0, _tiles.Length - 1);
+        var tile = _tiles[tileIndex];
+        var width = Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1);
+        var height = Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1);
+        var s = ApplyTextureShift(textureCoordinate.X - (tile.UpperLeftS / 4f), tile.ShiftS);
+        var t = ApplyTextureShift(textureCoordinate.Y - (tile.UpperLeftT / 4f), tile.ShiftT);
+        var x = ApplyTextureAddressing((int)MathF.Floor(s), width, tile.MaskS, tile.ClampS, tile.MirrorS);
+        var y = ApplyTextureAddressing((int)MathF.Floor(t), height, tile.MaskT, tile.ClampT, tile.MirrorT);
+
+        var format = tile.Format;
+        var size = tile.Size;
+        var texel = (y * width) + x;
+        var bitOffset = (tile.Tmem * 64) + (texel * BitsPerTexel(size));
+        return (format, size) switch
+        {
+            (0, 2) => DecodeRgba16(ReadTmemUInt16(bitOffset >> 3)),
+            (0, 3) => DecodeRgba32(ReadTmemUInt32(bitOffset >> 3)),
+            (3, 1) => DecodeIntensityAlpha8(ReadTmemByte(bitOffset >> 3)),
+            (3, 2) => DecodeIntensityAlpha16(ReadTmemUInt16(bitOffset >> 3)),
+            (4, 0) => DecodeIntensity4(
+                ReadTmemByte(bitOffset >> 3),
+                x),
+            (4, 1) => DecodeIntensity8(ReadTmemByte(bitOffset >> 3)),
+            _ => Vector4.One
+        };
+    }
+
+    private byte ReadTmemByte(int address) => _textureMemory[address & 0xFFF];
+
+    private ushort ReadTmemUInt16(int address) =>
+        (ushort)((ReadTmemByte(address) << 8) | ReadTmemByte(address + 1));
+
+    private uint ReadTmemUInt32(int address) =>
+        ((uint)ReadTmemByte(address) << 24) |
+        ((uint)ReadTmemByte(address + 1) << 16) |
+        ((uint)ReadTmemByte(address + 2) << 8) |
+        ReadTmemByte(address + 3);
+
+    private static int BitsPerTexel(int size) => size switch
+    {
+        0 => 4,
+        1 => 8,
+        2 => 16,
+        3 => 32,
+        _ => 8
+    };
+
+    internal static bool CombineUsesTexture(uint word0, uint word1)
+    {
+        static bool IsColorTexture(int source) =>
+            source is 1 or 2 or 8 or 9;
+
+        static bool IsAlphaTexture(int source) =>
+            source is 1 or 2;
+
+        return
+            IsColorTexture((int)((word0 >> 20) & 0xF)) ||
+            IsColorTexture((int)((word0 >> 15) & 0x1F)) ||
+            IsAlphaTexture((int)((word0 >> 12) & 0x7)) ||
+            IsAlphaTexture((int)((word0 >> 9) & 0x7)) ||
+            IsColorTexture((int)((word0 >> 5) & 0xF)) ||
+            IsColorTexture((int)(word0 & 0x1F)) ||
+            IsColorTexture((int)((word1 >> 28) & 0xF)) ||
+            IsColorTexture((int)((word1 >> 24) & 0xF)) ||
+            IsAlphaTexture((int)((word1 >> 21) & 0x7)) ||
+            IsAlphaTexture((int)((word1 >> 18) & 0x7)) ||
+            IsColorTexture((int)((word1 >> 15) & 0x7)) ||
+            IsAlphaTexture((int)((word1 >> 12) & 0x7)) ||
+            IsAlphaTexture((int)((word1 >> 9) & 0x7)) ||
+            IsColorTexture((int)((word1 >> 6) & 0x7)) ||
+            IsAlphaTexture((int)((word1 >> 3) & 0x7)) ||
+            IsAlphaTexture((int)(word1 & 0x7));
+    }
+
+    private bool HasTextureForTile(int tileIndex)
+    {
+        var tile = _tiles[Math.Clamp(tileIndex, 0, _tiles.Length - 1)];
+        return _loadedTextures[tile.Tmem].Valid;
+    }
+
+    private static float ApplyTextureShift(float coordinate, int shift) =>
+        shift <= 10 ? coordinate / (1 << shift) : coordinate * (1 << (16 - shift));
+
+    private static int ApplyTextureAddressing(
+        int coordinate,
+        int dimension,
+        int mask,
+        bool clamp,
+        bool mirror)
+    {
+        if (clamp || mask == 0)
+        {
+            return Math.Clamp(coordinate, 0, dimension - 1);
+        }
+
+        var period = 1 << mask;
+        var value = ((coordinate % period) + period) % period;
+        if (mirror && ((coordinate / period) & 1) != 0)
+        {
+            value = period - 1 - value;
+        }
+
+        return Math.Clamp(value, 0, dimension - 1);
+    }
+
+    private static Vector4 DecodeRgba16(ushort pixel) =>
+        new(
+            ((pixel >> 11) & 31) / 31f,
+            ((pixel >> 6) & 31) / 31f,
+            ((pixel >> 1) & 31) / 31f,
+            (pixel & 1) != 0 ? 1 : 0);
+
+    private static Vector4 DecodeRgba32(uint pixel) =>
+        new(
+            ((pixel >> 24) & 0xFF) / 255f,
+            ((pixel >> 16) & 0xFF) / 255f,
+            ((pixel >> 8) & 0xFF) / 255f,
+            (pixel & 0xFF) / 255f);
+
+    private static Vector4 DecodeIntensityAlpha8(byte pixel)
+    {
+        var intensity = (pixel >> 4) / 15f;
+        return new Vector4(intensity, intensity, intensity, (pixel & 0xF) / 15f);
+    }
+
+    private static Vector4 DecodeIntensityAlpha16(ushort pixel)
+    {
+        var intensity = (pixel >> 8) / 255f;
+        return new Vector4(intensity, intensity, intensity, (pixel & 0xFF) / 255f);
+    }
+
+    private static Vector4 DecodeIntensity4(byte packed, int x)
+    {
+        var intensity = (x & 1) == 0 ? packed >> 4 : packed & 0xF;
+        var value = intensity / 15f;
+        return new Vector4(value, value, value, value);
+    }
+
+    private static Vector4 DecodeIntensity8(byte pixel)
+    {
+        var value = pixel / 255f;
+        return new Vector4(value, value, value, value);
+    }
 
     private void WriteColorPixel(int x, int y, Vector4 color)
     {
@@ -448,6 +1091,19 @@ public sealed class Fast3dRenderer
         }
 
         var bytesPerPixel = _colorImageSize == 2 ? 2u : 4u;
+        var clearingDepth =
+            _colorImageAddress == _depthImageAddress &&
+            _depthImageAddress < N64Memory.RdramSize;
+        if (clearingDepth)
+        {
+            var remainingBytes = N64Memory.RdramSize - (int)_colorImageAddress;
+            var maximumHeight = Math.Clamp(
+                remainingBytes / (_colorImageWidth * (int)bytesPerPixel),
+                1,
+                480);
+            EnsureDepthBuffer(_colorImageWidth, maximumHeight);
+        }
+
         for (var y = Math.Max(0, top); y <= bottom; y++)
         {
             for (var x = Math.Max(0, left); x <= right && x < _colorImageWidth; x++)
@@ -457,6 +1113,14 @@ public sealed class Fast3dRenderer
                 if (destination + bytesPerPixel > N64Memory.RdramSize)
                 {
                     continue;
+                }
+
+                if (clearingDepth &&
+                    y < _depthBufferHeight &&
+                    x < _depthBufferWidth)
+                {
+                    _depthBuffer[(y * _depthBufferWidth) + x] =
+                        float.PositiveInfinity;
                 }
 
                 if (_colorImageSize == 2)
@@ -473,5 +1137,60 @@ public sealed class Fast3dRenderer
         FillRectanglesDrawn++;
     }
 
-    private readonly record struct Fast3dVertex(Vector3 Position, Vector4 Color, bool Valid);
+    private void EnsureDepthBuffer(int width, int height)
+    {
+        if (_depthBufferWidth == width &&
+            _depthBufferHeight == height &&
+            _depthBuffer.Length == width * height)
+        {
+            return;
+        }
+
+        _depthBufferWidth = width;
+        _depthBufferHeight = height;
+        _depthBuffer = new float[width * height];
+        Array.Fill(_depthBuffer, float.PositiveInfinity);
+    }
+
+    private readonly record struct Fast3dVertex(
+        Vector4 ClipPosition,
+        Vector3 Position,
+        Vector4 Color,
+        Vector2 TextureCoordinate,
+        float ReciprocalW,
+        byte ClipFlags,
+        bool Valid);
+
+    private readonly record struct Fast3dTile(
+        int Format,
+        int Size,
+        int Line,
+        int Tmem,
+        int Palette,
+        bool ClampT,
+        bool MirrorT,
+        int MaskT,
+        int ShiftT,
+        bool ClampS,
+        bool MirrorS,
+        int MaskS,
+        int ShiftS,
+        int UpperLeftS,
+        int UpperLeftT,
+        int LowerRightS,
+        int LowerRightT);
+
+    private readonly record struct LoadedTexture(
+        uint SourceAddress,
+        int Format,
+        int Size,
+        int Texels,
+        int Tmem,
+        int Bits)
+    {
+        public bool Valid =>
+            SourceAddress < N64Memory.RdramSize &&
+            Texels > 0 &&
+            Bits > 0;
+    }
 }

@@ -2,7 +2,14 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class Vr4300Cpu
 {
+    private const int Cp0Index = 0;
+    private const int Cp0Random = 1;
+    private const int Cp0EntryLo0 = 2;
+    private const int Cp0EntryLo1 = 3;
+    private const int Cp0PageMask = 5;
+    private const int Cp0Wired = 6;
     private const int Cp0Count = 9;
+    private const int Cp0EntryHi = 10;
     private const int Cp0Compare = 11;
     private const int Cp0Status = 12;
     private const int Cp0Cause = 13;
@@ -77,6 +84,7 @@ public sealed class Vr4300Cpu
         for (var index = 0; index < _registers.Length; index++) _registers[index] = reader.ReadUInt64();
         for (var index = 0; index < _floatingRegisters.Length; index++) _floatingRegisters[index] = reader.ReadUInt64();
         for (var index = 0; index < _coprocessor0.Length; index++) _coprocessor0[index] = reader.ReadUInt32();
+        _memory.SetTlbAsid((byte)_coprocessor0[Cp0EntryHi]);
         _registers[0] = 0;
     }
 
@@ -115,6 +123,8 @@ public sealed class Vr4300Cpu
         _coprocessor0[Cp0PrId] = 0x00000B00;
         _coprocessor0[Cp0Config] = 0x7006E463;
         _coprocessor0[Cp0Count] = 0x00005000;
+        _coprocessor0[Cp0Random] = 31;
+        _memory.SetTlbAsid(0);
 
         ProgramCounter = 0xA4000040;
         _nextProgramCounter = ProgramCounter + 4;
@@ -290,7 +300,9 @@ public sealed class Vr4300Cpu
                 WriteRegister(rt, _memory.ReadUInt64(EffectiveAddress(rs, signedImmediate)));
                 break;
             case 0x35:
-                _floatingRegisters[rt] = _memory.ReadUInt64(EffectiveAddress(rs, signedImmediate));
+                SetFprLong(
+                    rt,
+                    unchecked((long)_memory.ReadUInt64(EffectiveAddress(rs, signedImmediate))));
                 break;
             case 0x37:
                 WriteRegister(rt, _memory.ReadUInt64(EffectiveAddress(rs, signedImmediate)));
@@ -300,10 +312,14 @@ public sealed class Vr4300Cpu
                 WriteRegister(rt, 1);
                 break;
             case 0x39:
-                _memory.WriteUInt32(EffectiveAddress(rs, signedImmediate), (uint)_floatingRegisters[rt]);
+                _memory.WriteUInt32(
+                    EffectiveAddress(rs, signedImmediate),
+                    GetFprWord(rt));
                 break;
             case 0x3D:
-                _memory.WriteUInt64(EffectiveAddress(rs, signedImmediate), _floatingRegisters[rt]);
+                _memory.WriteUInt64(
+                    EffectiveAddress(rs, signedImmediate),
+                    unchecked((ulong)GetFprLong(rt)));
                 break;
             case 0x3F:
                 _memory.WriteUInt64(EffectiveAddress(rs, signedImmediate), _registers[rt]);
@@ -565,8 +581,39 @@ public sealed class Vr4300Cpu
                 {
                     _coprocessor0[Cp0Cause] &= ~(1u << 15);
                 }
+                else if (rd == Cp0EntryHi)
+                {
+                    _memory.SetTlbAsid((byte)_coprocessor0[Cp0EntryHi]);
+                }
+                else if (rd == Cp0Wired)
+                {
+                    _coprocessor0[Cp0Random] = 31;
+                }
 
                 break;
+            case 0x10 when (instruction & 0x3F) == 0x01: // TLBR
+            {
+                var entry = _memory.ReadTlbEntry((int)_coprocessor0[Cp0Index]);
+                _coprocessor0[Cp0PageMask] = entry.PageMask;
+                _coprocessor0[Cp0EntryHi] = entry.EntryHi;
+                _coprocessor0[Cp0EntryLo0] = entry.EntryLo0;
+                _coprocessor0[Cp0EntryLo1] = entry.EntryLo1;
+                _memory.SetTlbAsid((byte)entry.EntryHi);
+                break;
+            }
+            case 0x10 when (instruction & 0x3F) == 0x02: // TLBWI
+                WriteTlbEntry((int)_coprocessor0[Cp0Index]);
+                break;
+            case 0x10 when (instruction & 0x3F) == 0x06: // TLBWR
+                WriteTlbEntry((int)_coprocessor0[Cp0Random]);
+                break;
+            case 0x10 when (instruction & 0x3F) == 0x08: // TLBP
+            {
+                var index = _memory.ProbeTlb(_coprocessor0[Cp0EntryHi]);
+                _coprocessor0[Cp0Index] =
+                    index >= 0 ? (uint)index : 0x80000000;
+                break;
+            }
             case 0x10 when (instruction & 0x3F) == 0x18:
                 _coprocessor0[Cp0Status] &= ~2u;
                 ProgramCounter = _coprocessor0[Cp0Epc];
@@ -576,12 +623,22 @@ public sealed class Vr4300Cpu
             default:
                 if (operation == 0x10)
                 {
-                    return; // TLB operations are not needed by the boot ROM's unmapped segments.
+                    return;
                 }
 
                 Unsupported(ProgramCounter - 4, instruction);
                 break;
         }
+    }
+
+    private void WriteTlbEntry(int index)
+    {
+        _memory.WriteTlbEntry(
+            index,
+            _coprocessor0[Cp0PageMask],
+            _coprocessor0[Cp0EntryHi],
+            _coprocessor0[Cp0EntryLo0],
+            _coprocessor0[Cp0EntryLo1]);
     }
 
     private void ExecuteCoprocessor1(uint instruction, int format, int rt, int rd, uint instructionAddress)
@@ -592,10 +649,10 @@ public sealed class Vr4300Cpu
         switch (format)
         {
             case 0x00:
-                WriteRegister(rt, SignExtend32((uint)_floatingRegisters[rd]));
+                WriteRegister(rt, SignExtend32(GetFprWord(rd)));
                 return;
             case 0x01:
-                WriteRegister(rt, _floatingRegisters[rd]);
+                WriteRegister(rt, unchecked((ulong)GetFprLong(rd)));
                 return;
             case 0x02:
                 WriteRegister(rt, rd == 31 ? _coprocessor0[31] : 0);
@@ -604,7 +661,7 @@ public sealed class Vr4300Cpu
                 SetFprWord(rd, (uint)_registers[rt]);
                 return;
             case 0x05:
-                _floatingRegisters[rd] = _registers[rt];
+                SetFprLong(rd, unchecked((long)_registers[rt]));
                 return;
             case 0x06:
                 if (rd == 31)
@@ -640,8 +697,8 @@ public sealed class Vr4300Cpu
         var ft = rt;
         if (format == 0x10)
         {
-            var left = BitConverter.Int32BitsToSingle((int)_floatingRegisters[fs]);
-            var right = BitConverter.Int32BitsToSingle((int)_floatingRegisters[ft]);
+            var left = BitConverter.Int32BitsToSingle((int)GetFprWord(fs));
+            var right = BitConverter.Int32BitsToSingle((int)GetFprWord(ft));
             ExecuteFloatingOperation(
                 instructionAddress,
                 instruction,
@@ -655,8 +712,8 @@ public sealed class Vr4300Cpu
 
         if (format == 0x11)
         {
-            var left = BitConverter.Int64BitsToDouble((long)_floatingRegisters[fs]);
-            var right = BitConverter.Int64BitsToDouble((long)_floatingRegisters[ft]);
+            var left = BitConverter.Int64BitsToDouble(GetFprLong(fs));
+            var right = BitConverter.Int64BitsToDouble(GetFprLong(ft));
             ExecuteFloatingOperation(
                 instructionAddress,
                 instruction,
@@ -669,8 +726,8 @@ public sealed class Vr4300Cpu
         }
 
         var integer = format == 0x14
-            ? (long)(int)_floatingRegisters[fs]
-            : (long)_floatingRegisters[fs];
+            ? (long)(int)GetFprWord(fs)
+            : GetFprLong(fs);
         switch (function)
         {
             case 0x20:
@@ -794,8 +851,29 @@ public sealed class Vr4300Cpu
         }
     }
 
-    private void SetFprLong(int register, long value) =>
-        _floatingRegisters[register] = unchecked((ulong)value);
+    private void SetFprLong(int register, long value)
+    {
+        var bits = unchecked((ulong)value);
+        _floatingRegisters[FullWidthFloatingRegisters ? register : register & ~1] = bits;
+    }
+
+    private long GetFprLong(int register)
+        => unchecked((long)_floatingRegisters[
+            FullWidthFloatingRegisters ? register : register & ~1]);
+
+    private uint GetFprWord(int register)
+    {
+        if (FullWidthFloatingRegisters)
+        {
+            return (uint)_floatingRegisters[register];
+        }
+
+        var bits = _floatingRegisters[register & ~1];
+        return (uint)(bits >> ((register & 1) * 32));
+    }
+
+    private bool FullWidthFloatingRegisters =>
+        (_coprocessor0[Cp0Status] & 0x04000000) != 0;
 
     private FloatingRoundingMode GetFloatingRoundingMode() =>
         (FloatingRoundingMode)(_coprocessor0[31] & 3);
@@ -1087,15 +1165,27 @@ public sealed class Vr4300Cpu
         }
     }
 
-    private void SetFprWord(int register, uint value) =>
-        _floatingRegisters[register] =
-            (_floatingRegisters[register] & 0xFFFFFFFF00000000) | value;
+    private void SetFprWord(int register, uint value)
+    {
+        if (FullWidthFloatingRegisters)
+        {
+            _floatingRegisters[register] =
+                (_floatingRegisters[register] & 0xFFFFFFFF00000000) | value;
+            return;
+        }
+
+        var physicalRegister = register & ~1;
+        var shift = (register & 1) * 32;
+        var mask = 0xFFFFFFFFul << shift;
+        _floatingRegisters[physicalRegister] =
+            (_floatingRegisters[physicalRegister] & ~mask) | ((ulong)value << shift);
+    }
 
     private void SetFprSingle(int register, double value) =>
         SetFprWord(register, (uint)BitConverter.SingleToInt32Bits((float)value));
 
     private void SetFprDouble(int register, double value) =>
-        _floatingRegisters[register] = (ulong)BitConverter.DoubleToInt64Bits(value);
+        SetFprLong(register, BitConverter.DoubleToInt64Bits(value));
 
     private void Unsupported(uint address, uint instruction)
     {

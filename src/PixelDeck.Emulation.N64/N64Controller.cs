@@ -4,20 +4,20 @@ namespace PixelDeck.Emulation.N64;
 public enum N64Button : ushort
 {
     None = 0,
-    DPadRight = 0x0001,
-    DPadLeft = 0x0002,
-    DPadDown = 0x0004,
-    DPadUp = 0x0008,
-    Start = 0x0010,
-    Z = 0x0020,
-    B = 0x0040,
-    A = 0x0080,
-    CRight = 0x0100,
-    CLeft = 0x0200,
-    CDown = 0x0400,
-    CUp = 0x0800,
-    R = 0x1000,
-    L = 0x2000
+    CRight = 0x0001,
+    CLeft = 0x0002,
+    CDown = 0x0004,
+    CUp = 0x0008,
+    R = 0x0010,
+    L = 0x0020,
+    DPadRight = 0x0100,
+    DPadLeft = 0x0200,
+    DPadDown = 0x0400,
+    DPadUp = 0x0800,
+    Start = 0x1000,
+    Z = 0x2000,
+    B = 0x4000,
+    A = 0x8000
 }
 
 public readonly record struct N64ControllerState(N64Button Buttons, sbyte StickX, sbyte StickY)

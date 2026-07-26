@@ -187,12 +187,12 @@ public sealed class GameLibrary
                 return new Compatibility(
                     null,
                     0,
-                    cartridge.IsPixel64TargetSupported,
+                    cartridge.CanAttemptPixel64,
                     cartridge.CompatibilityMessage,
                     cartridge.Cic == N64Cic.Unknown
                         ? "UNKNOWN CIC"
                         : cartridge.Cic.ToString().Replace("Cic", "CIC "),
-                    cartridge.IsPixel64TargetSupported,
+                    true,
                     cartridge.Title);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)

@@ -1,3 +1,4 @@
+using System.Numerics;
 using PixelDeck.Emulation.N64;
 using Xunit.Abstractions;
 
@@ -24,6 +25,42 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void MachineLoadAllowsAnUnverifiedRecognizedCartridgeToAttemptBoot()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"Pixel64-{Guid.NewGuid():N}.z64");
+        try
+        {
+            File.WriteAllBytes(path, CreateCartridgeImage());
+
+            var machine = N64Machine.Load(path);
+
+            Assert.Equal("PIXEL64 TEST", machine.Cartridge.Title);
+            Assert.False(machine.Cartridge.IsPixel64VerifiedTarget);
+            Assert.Equal(N64Cic.Unknown, machine.Cartridge.Cic);
+            machine.RunInstructions(1);
+            Assert.Equal(1, machine.Cpu.InstructionsExecuted);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void EveryLocalNintendo64CartridgeIsRecognizedAndCanAttemptBoot()
+    {
+        foreach (var path in FindLocalNintendo64Cartridges())
+        {
+            var cartridge = N64Cartridge.Inspect(path);
+
+            Assert.True(cartridge.CanAttemptPixel64);
+            output.WriteLine(
+                $"{Path.GetFileName(path)}: {cartridge.Title}, {cartridge.GameCode}, " +
+                $"{cartridge.Cic}, {cartridge.SourceByteOrder}");
+        }
+    }
+
+    [Fact]
     public void ControllerSerializesButtonsAndSignedAnalogStick()
     {
         var controller = new N64ControllerState(
@@ -31,7 +68,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
             StickX: -80,
             StickY: 72);
 
-        Assert.Equal(0x0190B048u, controller.ToPifWord());
+        Assert.Equal(0x9001B048u, controller.ToPifWord());
     }
 
     [Fact]
@@ -61,6 +98,22 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         machine.RunInstructions(5);
 
         Assert.Equal(3u, (uint)machine.Cpu.Registers[9]);
+    }
+
+    [Fact]
+    public void DoublePrecisionUsesEvenOddRegisterPairsWhenStatusFrIsClear()
+    {
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        machine.Memory.WriteUInt32(0xA4000040, 0x40806000);
+        machine.Memory.WriteUInt32(0xA4000044, 0x3C083FF8);
+        machine.Memory.WriteUInt32(0xA4000048, 0x44800000);
+        machine.Memory.WriteUInt32(0xA400004C, 0x44880800);
+        machine.Memory.WriteUInt32(0xA4000050, 0x46200080);
+        machine.Memory.WriteUInt32(0xA4000054, 0x44291000);
+
+        machine.RunInstructions(6);
+
+        Assert.Equal(0x4008000000000000ul, machine.Cpu.Registers[9]);
     }
 
     [Fact]
@@ -132,6 +185,23 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void TlbMapsPairedSixtyFourKilobytePagesIntoUserVirtualMemory()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        memory.WriteUInt32(0x803B0668, 0x0000D1D4);
+        memory.WriteUInt32(0x803C0668, 0x12345678);
+        memory.WriteTlbEntry(
+            index: 0,
+            pageMask: 0x001E000,
+            entryHi: 0x04000000,
+            entryLo0: (0x003B0000 >> 6) | 31u,
+            entryLo1: (0x003C0000 >> 6) | 31u);
+
+        Assert.Equal(0x0000D1D4u, memory.ReadUInt32(0x04000668));
+        Assert.Equal(0x12345678u, memory.ReadUInt32(0x04010668));
+    }
+
+    [Fact]
     public void SiPifReturnsPortOneButtonsAndAnalogStick()
     {
         var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
@@ -146,10 +216,19 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
         memory.WriteUInt32(0xA4800000, 0x100);
         memory.WriteUInt32(0xA4800010, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
         memory.WriteUInt32(0xA4800004, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
 
-        Assert.Equal(0x00A0C42Au, memory.ReadUInt32(0x80000103));
+        Assert.Equal(0xA000C42Au, memory.ReadUInt32(0x80000103));
         Assert.NotEqual(0u, memory.MiInterrupt & (1u << 1));
+
+        memory.SetControllerState(1, new N64ControllerState(N64Button.Start, 0, 0));
+        memory.WriteUInt32(0xA4800004, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+
+        Assert.Equal(0x10000000u, memory.ReadUInt32(0x80000103));
+        Assert.True(memory.ControllerPolls >= 2);
     }
 
     [Fact]
@@ -219,6 +298,161 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         Assert.Equal(0x7C1Fu, machine.Memory.ReadUInt16(0x80002000));
         Assert.Equal(0x7C1Fu, machine.Memory.ReadUInt16(0x8000201E));
         Assert.Equal(1, machine.Renderer.FillRectanglesDrawn);
+    }
+
+    [Fact]
+    public void Fast3dTextureRectangleSamplesAnRgba16Texture()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        memory.WriteUInt16(0x100, 0xF801);
+        memory.WriteUInt16(0x102, 0x07C1);
+        memory.WriteUInt16(0x104, 0x003F);
+        memory.WriteUInt16(0x106, 0xFFFF);
+        memory.WriteUInt32(0x200, 0xFD100000);
+        memory.WriteUInt32(0x204, 0x00000100);
+        memory.WriteUInt32(0x208, 0xF5100200);
+        memory.WriteUInt32(0x20C, 0);
+        memory.WriteUInt32(0x210, 0xF3000000);
+        memory.WriteUInt32(0x214, 0x00003000);
+        memory.WriteUInt32(0x218, 0xF2000000);
+        memory.WriteUInt32(0x21C, 0x00004004);
+        memory.WriteUInt32(0x220, 0xFF100003);
+        memory.WriteUInt32(0x224, 0x00000400);
+        memory.WriteUInt32(0x228, 0xE4008008);
+        memory.WriteUInt32(0x22C, 0);
+        memory.WriteUInt32(0x230, 0xB3000000);
+        memory.WriteUInt32(0x234, 0);
+        memory.WriteUInt32(0x238, 0xB2000000);
+        memory.WriteUInt32(0x23C, 0x04000400);
+        memory.WriteUInt32(0x240, 0xB8000000);
+        memory.WriteUInt32(0x244, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 72, 0, 0));
+
+        Assert.Equal(0xF801, memory.ReadUInt16(0x400));
+        Assert.Equal(0x07C1, memory.ReadUInt16(0x402));
+        Assert.Equal(0x003F, memory.ReadUInt16(0x408));
+        Assert.Equal(0xFFFF, memory.ReadUInt16(0x40A));
+        Assert.Equal(1, renderer.TextureRectanglesDrawn);
+    }
+
+    [Fact]
+    public void Fast3dTextureLoadCopiesRdramIntoPersistentTmem()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        memory.WriteUInt16(0x100, 0xF801);
+        memory.WriteUInt16(0x102, 0x07C1);
+        memory.WriteUInt16(0x104, 0x003F);
+        memory.WriteUInt16(0x106, 0xFFFF);
+        memory.WriteUInt32(0x200, 0xFD100000);
+        memory.WriteUInt32(0x204, 0x00000100);
+        memory.WriteUInt32(0x208, 0xF5100000);
+        memory.WriteUInt32(0x20C, 0x07000000);
+        memory.WriteUInt32(0x210, 0xF3000000);
+        memory.WriteUInt32(0x214, 0x07003000);
+        memory.WriteUInt32(0x218, 0xB8000000);
+        memory.WriteUInt32(0x21C, 0);
+        memory.WriteUInt32(0x300, 0xF5100200);
+        memory.WriteUInt32(0x304, 0);
+        memory.WriteUInt32(0x308, 0xF2000000);
+        memory.WriteUInt32(0x30C, 0x00004004);
+        memory.WriteUInt32(0x310, 0xFF100003);
+        memory.WriteUInt32(0x314, 0x00000400);
+        memory.WriteUInt32(0x318, 0xE4008008);
+        memory.WriteUInt32(0x31C, 0);
+        memory.WriteUInt32(0x320, 0xB3000000);
+        memory.WriteUInt32(0x324, 0);
+        memory.WriteUInt32(0x328, 0xB2000000);
+        memory.WriteUInt32(0x32C, 0x04000400);
+        memory.WriteUInt32(0x330, 0xB8000000);
+        memory.WriteUInt32(0x334, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 32, 0, 0));
+        memory.WriteUInt32(0x100, 0);
+        memory.WriteUInt32(0x104, 0);
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x300, 56, 0, 0));
+
+        Assert.Equal(0xF801, memory.ReadUInt16(0x400));
+        Assert.Equal(0x07C1, memory.ReadUInt16(0x402));
+        Assert.Equal(0x003F, memory.ReadUInt16(0x408));
+        Assert.Equal(0xFFFF, memory.ReadUInt16(0x40A));
+        Assert.Equal(1, renderer.TextureRectanglesDrawn);
+    }
+
+    [Fact]
+    public void Fast3dCombinerDetectsWhetherAColorCycleUsesTexture()
+    {
+        Assert.False(Fast3dRenderer.CombineUsesTexture(0xFCFFFFFF, 0xFFFE793C));
+        Assert.True(Fast3dRenderer.CombineUsesTexture(0xFC100000, 0));
+    }
+
+    [Fact]
+    public void Fast3dClipFlagsIdentifyVerticesOutsideEachHomogeneousPlane()
+    {
+        Assert.Equal(0, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 0, 0, 1)));
+        Assert.Equal(1 << 0, Fast3dRenderer.ComputeClipFlags(new Vector4(-2, 0, 0, 1)));
+        Assert.Equal(1 << 1, Fast3dRenderer.ComputeClipFlags(new Vector4(2, 0, 0, 1)));
+        Assert.Equal(1 << 2, Fast3dRenderer.ComputeClipFlags(new Vector4(0, -2, 0, 1)));
+        Assert.Equal(1 << 3, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 2, 0, 1)));
+        Assert.Equal(1 << 4, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 0, -2, 1)));
+        Assert.Equal(1 << 5, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 0, 2, 1)));
+    }
+
+    [Fact]
+    public void Fast3dViewportMapsPositiveClipYTowardTheTopOfTheFramebuffer()
+    {
+        var scale = new Vector4(160, 120, 511, 0);
+        var translate = new Vector4(160, 120, 0, 0);
+
+        var top = Fast3dRenderer.ProjectClipToScreen(
+            new Vector4(0, 1, 0, 1),
+            1,
+            scale,
+            translate);
+        var bottom = Fast3dRenderer.ProjectClipToScreen(
+            new Vector4(0, -1, 0, 1),
+            1,
+            scale,
+            translate);
+
+        Assert.Equal(new Vector3(160, 0, 0), top);
+        Assert.Equal(new Vector3(160, 240, 0), bottom);
+    }
+
+    [Fact]
+    public void Fast3dCullingUsesTopLeftFramebufferWinding()
+    {
+        const uint cullFront = 0x00001000;
+        const uint cullBack = 0x00002000;
+
+        Assert.True(Fast3dRenderer.ShouldCullTriangle(cullFront, 1));
+        Assert.False(Fast3dRenderer.ShouldCullTriangle(cullFront, -1));
+        Assert.True(Fast3dRenderer.ShouldCullTriangle(cullBack, -1));
+        Assert.False(Fast3dRenderer.ShouldCullTriangle(cullBack, 1));
+        Assert.False(Fast3dRenderer.ShouldCullTriangle(0, 1));
+    }
+
+    [Fact]
+    public void Fast3dSetOtherModeLowPreservesUnchangedBitsAndTracksDepthModes()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        memory.WriteUInt32(0x200, 0xB900031D);
+        memory.WriteUInt32(0x204, 0x00000030);
+        memory.WriteUInt32(0x208, 0xB9000002);
+        memory.WriteUInt32(0x20C, 0x00000001);
+        memory.WriteUInt32(0x210, 0xB8000000);
+        memory.WriteUInt32(0x214, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 24, 0, 0));
+
+        Assert.Equal(0x31u, renderer.OtherModeLow & 0x3Fu);
     }
 
     [Fact]
@@ -445,9 +679,107 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         var path = FindLocalSuperMario64();
         Assert.NotNull(path);
         var machine = N64Machine.Load(path);
-        for (var field = 0; field < 600; field++)
+        uint[]? bestFrame = null;
+        var mostNonBlackPixels = -1;
+        var bestFrameField = -1;
+        var previousGraphicsTasks = 0L;
+        var autoplay = string.Equals(
+            Environment.GetEnvironmentVariable("PIXEL64_AUTOPLAY"),
+            "1",
+            StringComparison.Ordinal);
+        ushort observedButtonDown = 0;
+        ushort observedButtonPressed = 0;
+        ushort observedRawPad = 0;
+        var marioPositionBeforeMovement = Vector3.Zero;
+        var playableField = -1;
+        var playableFrames = 0;
+        var fieldsRun = 0;
+        var controllerTransitions = new List<string>();
+        var maximumFields = autoplay ? 6_000 : 600;
+        for (var field = 0; field < maximumFields; field++)
         {
+            if (autoplay)
+            {
+                var controllerState =
+                    field switch
+                    {
+                        >= 300 and < 320 => new N64ControllerState(N64Button.Start, 0, 0),
+                        >= 480 and < 500 => new N64ControllerState(N64Button.Start, 0, 0),
+                        >= 650 and < 670 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 780 and < 800 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 950 and < 970 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 1_100 and < 1_120 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 1_250 and < 1_270 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 1_450 and < 1_470 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 1_600 and < 1_620 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 1_750 and < 1_770 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 2_200 and < 2_220 => new N64ControllerState(N64Button.Start, 0, 0),
+                        >= 2_500 and < 2_520 => new N64ControllerState(N64Button.A, 0, 0),
+                        >= 2_800 and < 2_820 => new N64ControllerState(N64Button.A, 0, 0),
+                        _ => N64ControllerState.Neutral
+                    };
+                if (field >= 3_000 &&
+                    machine.Memory.ReadUInt16(0x80331484) != ushort.MaxValue)
+                {
+                    controllerState = field % 90 < 20
+                        ? new N64ControllerState(N64Button.A, 0, 0)
+                        : N64ControllerState.Neutral;
+                }
+                else if (field >= 3_000 &&
+                    machine.Memory.ReadUInt16(0x8033BACA) == 1 &&
+                    machine.Memory.ReadUInt32(0x8033B17C) is not (0 or 0x04001301))
+                {
+                    if (playableField < 0)
+                    {
+                        playableField = field;
+                        marioPositionBeforeMovement = ReadSm64MarioPosition(machine.Memory);
+                    }
+
+                    controllerState = new N64ControllerState(N64Button.None, 0, 60);
+                }
+
+                machine.SetControllerState(
+                    1,
+                    controllerState);
+            }
+
             machine.RunFrame();
+            fieldsRun = field + 1;
+            if (playableField >= 0 && ++playableFrames >= 120)
+            {
+                break;
+            }
+            var buttonDown = machine.Memory.ReadUInt16(0x8033AFA0);
+            var buttonPressed = machine.Memory.ReadUInt16(0x8033AFA2);
+            var rawPad = machine.Memory.ReadUInt16(0x8033AFF8);
+            observedButtonDown |= buttonDown;
+            observedButtonPressed |= buttonPressed;
+            observedRawPad |= rawPad;
+            if (autoplay &&
+                (field is >= 295 and < 330 ||
+                 field is >= 475 and < 510 ||
+                 field is >= 645 and < 680 ||
+                 buttonPressed != 0))
+            {
+                controllerTransitions.Add(
+                    $"field={field} p1=0x{machine.Memory.ReadUInt32(0x8032D5E4):X8} " +
+                    $"down=0x{buttonDown:X4} pressed=0x{buttonPressed:X4} " +
+                    $"pad=0x{rawPad:X4} pif=0x{machine.Memory.LastControllerStateWord:X8}");
+            }
+            if (machine.GraphicsTasksSubmitted == previousGraphicsTasks)
+            {
+                continue;
+            }
+
+            previousGraphicsTasks = machine.GraphicsTasksSubmitted;
+            var candidate = machine.CurrentFrame.ToArray();
+            var nonBlackPixels = candidate.Count(pixel => (pixel & 0x00FFFFFF) != 0);
+            if (nonBlackPixels > mostNonBlackPixels)
+            {
+                bestFrame = candidate;
+                mostNonBlackPixels = nonBlackPixels;
+                bestFrameField = field;
+            }
         }
         machine.RunInstructions(100_000);
 
@@ -547,6 +879,12 @@ public sealed class N64MachineTests(ITestOutputHelper output)
             $"fills={machine.Renderer.FillRectanglesDrawn} " +
             $"vertices={machine.Renderer.VerticesTransformed} " +
             $"triangles={machine.Renderer.TrianglesDrawn} " +
+            $"texture-rects={machine.Renderer.TextureRectanglesDrawn} " +
+            $"textured-pixels={machine.Renderer.TexturedPixelsDrawn} " +
+            $"depth-rejected={machine.Renderer.DepthPixelsRejected} " +
+            $"clip-rejected={machine.Renderer.TriviallyClippedTriangles} " +
+            $"max-triangle={machine.Renderer.MaximumTriangleWidth}x" +
+            $"{machine.Renderer.MaximumTriangleHeight} " +
             $"unsupported={machine.Renderer.UnsupportedCommands} " +
             $"opcodes={string.Join(", ", machine.Renderer.UnsupportedCommandCounts.OrderBy(pair => pair.Key).Select(pair => $"0x{pair.Key:X2}:{pair.Value}"))}");
         output.WriteLine(
@@ -557,6 +895,93 @@ public sealed class N64MachineTests(ITestOutputHelper output)
             $"compare=0x{machine.Cpu.ReadCoprocessor0(11):X8} " +
             $"status=0x{machine.Cpu.ReadCoprocessor0(12):X8} " +
             $"cause=0x{machine.Cpu.ReadCoprocessor0(13):X8}");
+        output.WriteLine(
+            $"SM64 state save={machine.Memory.ReadUInt16(0x8032DDF4)} " +
+            $"level={machine.Memory.ReadUInt16(0x8032DDF8)} " +
+            $"course={machine.Memory.ReadUInt16(0x8033BAC6)} " +
+            $"area={machine.Memory.ReadUInt16(0x8033BACA)} " +
+            $"dialog={machine.Memory.ReadUInt16(0x80331484)} " +
+            $"action=0x{machine.Memory.ReadUInt32(0x8033B17C):X8} " +
+            $"mario={marioPositionBeforeMovement}->{ReadSm64MarioPosition(machine.Memory)} " +
+            $"playable-field={playableField} fields={fieldsRun} " +
+            $"controller-polls={machine.Memory.ControllerPolls} " +
+            $"active-polls={machine.Memory.NonNeutralControllerPolls} " +
+            $"last-controller=0x{machine.Memory.LastControllerStateWord:X8} " +
+            $"si={machine.Memory.SiDmasCompleted}/{machine.Memory.SiDmasStarted} " +
+            $"si-status=0x{machine.Memory.ReadUInt32(0xA4800018):X8} " +
+            $"pif-control=0x{machine.Memory.PifRam[63]:X2} " +
+            $"status-queries={machine.Memory.ControllerStatusQueries} " +
+            $"read-commands={machine.Memory.ControllerReadCommands} " +
+            $"game-buttons=0x{observedButtonDown:X4}/0x{observedButtonPressed:X4} " +
+            $"raw-pad=0x{observedRawPad:X4}");
+        output.WriteLine(
+            "last-pif-write=" +
+            Convert.ToHexString(machine.Memory.LastPifWrite));
+        output.WriteLine(
+            "controller-transitions=" +
+            Environment.NewLine +
+            string.Join(Environment.NewLine, controllerTransitions));
+        output.WriteLine(
+            "gd_exit code: " +
+            string.Join(
+                " ",
+                Enumerable.Range(0, 16)
+                    .Select(index =>
+                        $"0x{machine.Memory.ReadUInt32(0x8019BB0C + ((uint)index * 4)):X8}")));
+        output.WriteLine(
+            "fatal_printf code: " +
+            string.Join(
+                " ",
+                Enumerable.Range(0, 32)
+                    .Select(index =>
+                        $"0x{machine.Memory.ReadUInt32(0x8018D298 + ((uint)index * 4)):X8}")));
+        output.WriteLine(
+            "proc_dynlist code: " +
+            string.Join(
+                " ",
+                Enumerable.Range(0, 24)
+                    .Select(index =>
+                        $"0x{machine.Memory.ReadUInt32(0x80183B20 + ((uint)index * 4)):X8}")));
+        output.WriteLine(
+            "game stack: " +
+            string.Join(
+                " ",
+                Enumerable.Range(0, 40)
+                    .Select(index =>
+                        $"0x{machine.Memory.ReadUInt32((uint)machine.Cpu.Registers[29] + ((uint)index * 4)):X8}")));
+        foreach (var (name, address) in new[]
+                 {
+                     ("projection", 0x00220D40u),
+                     ("model-view", 0x00220D00u),
+                     ("viewport", 0x00220CC0u),
+                     ("model-a", 0x0021FB80u),
+                     ("model-b", 0x0021FB40u)
+                 })
+        {
+            output.WriteLine(
+                $"{name}= " +
+                string.Join(
+                    " | ",
+                    Enumerable.Range(0, 4).Select(row =>
+                        string.Join(
+                            " ",
+                            Enumerable.Range(0, 4).Select(column =>
+                                ReadN64MatrixElement(
+                                    machine.Memory,
+                                    address,
+                                    (row * 4) + column).ToString("0.000"))))));
+        }
+        foreach (var address in new[] { 0x00076A40u, 0x00076A78u, 0x00076AA8u })
+        {
+            output.WriteLine(
+                $"intro-dl 0x{address:X8}= " +
+                string.Join(
+                    " ",
+                    Enumerable.Range(0, 12)
+                        .Select(index =>
+                            $"0x{machine.Memory.ReadUInt32(address + ((uint)index * 4)):X8}")));
+        }
+
         if (string.Equals(
                 Environment.GetEnvironmentVariable("PIXEL64_DUMP_FRAME"),
                 "1",
@@ -575,6 +1000,50 @@ public sealed class N64MachineTests(ITestOutputHelper output)
             }
 
             output.WriteLine($"frame={framePath}");
+
+            var renderTargetPath = Path.Combine(Path.GetTempPath(), "pixel64-sm64-render-target.ppm");
+            using var renderTarget = File.Create(renderTargetPath);
+            using var renderTargetWriter = new BinaryWriter(renderTarget);
+            renderTargetWriter.Write(System.Text.Encoding.ASCII.GetBytes(
+                $"P6\n{machine.Width} {machine.Height}\n255\n"));
+            for (var y = 0; y < machine.Height; y++)
+            {
+                for (var x = 0; x < machine.Width; x++)
+                {
+                    var source =
+                        machine.Renderer.ColorImageAddress +
+                        (uint)(((y * machine.Renderer.ColorImageWidth) + x) * 2);
+                    var pixel = machine.Memory.ReadUInt16(source);
+                    var red = (byte)((((pixel >> 11) & 31) << 3) | ((pixel >> 13) & 7));
+                    var green = (byte)((((pixel >> 6) & 31) << 3) | ((pixel >> 8) & 7));
+                    var blue = (byte)((((pixel >> 1) & 31) << 3) | ((pixel >> 3) & 7));
+                    renderTargetWriter.Write(red);
+                    renderTargetWriter.Write(green);
+                    renderTargetWriter.Write(blue);
+                }
+            }
+
+            output.WriteLine(
+                $"render-target={renderTargetPath} " +
+                $"address=0x{machine.Renderer.ColorImageAddress:X8}");
+            if (bestFrame is not null)
+            {
+                var bestFramePath = Path.Combine(Path.GetTempPath(), "pixel64-sm64-best-frame.ppm");
+                using var bestFrameStream = File.Create(bestFramePath);
+                using var bestFrameWriter = new BinaryWriter(bestFrameStream);
+                bestFrameWriter.Write(System.Text.Encoding.ASCII.GetBytes(
+                    $"P6\n{machine.Width} {machine.Height}\n255\n"));
+                foreach (var pixel in bestFrame)
+                {
+                    bestFrameWriter.Write((byte)(pixel >> 16));
+                    bestFrameWriter.Write((byte)(pixel >> 8));
+                    bestFrameWriter.Write((byte)pixel);
+                }
+
+                output.WriteLine(
+                    $"best-frame={bestFramePath} field={bestFrameField} " +
+                    $"non-black={mostNonBlackPixels}");
+            }
         }
 
         if (machine.LastGraphicsTask is { Type: 1 } task)
@@ -591,6 +1060,22 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
     private static string? FindLocalSuperMario64()
     {
+        return FindLocalNintendo64Cartridges()
+            .FirstOrDefault(path =>
+            {
+                try
+                {
+                    return N64Cartridge.Inspect(path).IsSuperMario64UsRevision0;
+                }
+                catch (InvalidDataException)
+                {
+                    return false;
+                }
+            });
+    }
+
+    private static IEnumerable<string> FindLocalNintendo64Cartridges()
+    {
         var configured = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
         var gamesFolder = string.IsNullOrWhiteSpace(configured)
             ? Path.GetFullPath(Path.Combine(
@@ -605,19 +1090,25 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         var nintendo64Folder = Path.Combine(gamesFolder, "Nintendo64");
         return Directory.Exists(nintendo64Folder)
             ? Directory.EnumerateFiles(nintendo64Folder, "*", SearchOption.AllDirectories)
-                .Where(path => Path.GetExtension(path) is ".z64" or ".n64" or ".v64")
-                .FirstOrDefault(path =>
-                {
-                    try
-                    {
-                        return N64Cartridge.Inspect(path).IsSuperMario64UsRevision0;
-                    }
-                    catch (InvalidDataException)
-                    {
-                        return false;
-                    }
-                })
-            : null;
+                .Where(path =>
+                    Path.GetExtension(path).Equals(".z64", StringComparison.OrdinalIgnoreCase) ||
+                    Path.GetExtension(path).Equals(".n64", StringComparison.OrdinalIgnoreCase) ||
+                    Path.GetExtension(path).Equals(".v64", StringComparison.OrdinalIgnoreCase))
+            : [];
+    }
+
+    private static Vector3 ReadSm64MarioPosition(N64Memory memory) =>
+        new(
+            BitConverter.Int32BitsToSingle(unchecked((int)memory.ReadUInt32(0x8033B1AC))),
+            BitConverter.Int32BitsToSingle(unchecked((int)memory.ReadUInt32(0x8033B1B0))),
+            BitConverter.Int32BitsToSingle(unchecked((int)memory.ReadUInt32(0x8033B1B4))));
+
+    private static float ReadN64MatrixElement(N64Memory memory, uint address, int index)
+    {
+        var integer = memory.ReadUInt16(address + (uint)(index * 2));
+        var fraction = memory.ReadUInt16(address + 32 + (uint)(index * 2));
+        var fixedPoint = ((uint)integer << 16) | fraction;
+        return unchecked((int)fixedPoint) / 65536f;
     }
 
     private static byte[] CreateCartridgeImage()
