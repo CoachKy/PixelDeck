@@ -175,21 +175,32 @@ public sealed class SnesReleaseCertificationTests
             mapModeByte: 0x20,
             cartridgeType: 0x13,
             destinationCode: 0x01);
+
+        var enhancementInfo = SnesCartridge.Inspect(enhancement.Path);
+
+        Assert.False(enhancementInfo.IsSupported);
+        Assert.Contains("enhancement-chip", enhancementInfo.CompatibilityMessage);
+        Assert.Throws<NotSupportedException>(() => SnesMachine.Load(enhancement.Path));
+    }
+
+    [Fact]
+    public void PalCartridgesAreSupportedWithPalTimingReported()
+    {
+        // PAL only changes field rate and scanline count (both already
+        // read from SnesCartridgeInfo.IsPal); it isn't a distinct hardware
+        // envelope, so PAL carts run rather than being rejected outright.
         using var pal = CertificationSnesImage.Create(
             SnesMapMode.LoRom,
             mapModeByte: 0x20,
             cartridgeType: 0x00,
             destinationCode: 0x02);
 
-        var enhancementInfo = SnesCartridge.Inspect(enhancement.Path);
         var palInfo = SnesCartridge.Inspect(pal.Path);
 
-        Assert.False(enhancementInfo.IsSupported);
-        Assert.Contains("enhancement-chip", enhancementInfo.CompatibilityMessage);
-        Assert.False(palInfo.IsSupported);
+        Assert.True(palInfo.IsSupported);
+        Assert.True(palInfo.IsPal);
         Assert.Contains("PAL", palInfo.CompatibilityMessage);
-        Assert.Throws<NotSupportedException>(() => SnesMachine.Load(enhancement.Path));
-        Assert.Throws<NotSupportedException>(() => SnesMachine.Load(pal.Path));
+        Assert.NotNull(SnesMachine.Load(pal.Path));
     }
 
     [Fact]

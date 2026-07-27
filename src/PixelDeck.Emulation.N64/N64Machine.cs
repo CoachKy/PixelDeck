@@ -6,10 +6,19 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Machine
 {
-    private const int StateVersion = 6;
+    private const int StateVersion = 7;
     private static readonly byte[] StateMagic = "P64STATE"u8.ToArray();
 
-    private readonly uint[] _frame = new uint[320 * 240];
+    /// <summary>
+    /// The video interface can be programmed for anything up to a 640x480
+    /// progressive image, so the frame buffer is allocated for the maximum
+    /// and <see cref="Width"/>/<see cref="Height"/> report the live size.
+    /// </summary>
+    public const int MaximumWidth = N64Memory.MaximumVideoWidth;
+
+    public const int MaximumHeight = N64Memory.MaximumVideoHeight;
+
+    private readonly uint[] _frame = new uint[MaximumWidth * MaximumHeight];
     private readonly byte[] _cartridgeIdentity;
     private readonly string? _savePath;
     private readonly Fast3dRenderer _renderer;
@@ -42,14 +51,14 @@ public sealed class N64Machine
 
     public Vr4300Cpu Cpu { get; }
 
-    public int Width => 320;
+    public int Width => Memory.VideoWidth;
 
-    public int Height => 240;
+    public int Height => Memory.VideoHeight;
 
     public double FramesPerSecond =>
         Cartridge.VideoRegion == N64VideoRegion.Ntsc ? NtscFramesPerSecond : 50.0;
 
-    public ReadOnlySpan<uint> CurrentFrame => _frame;
+    public ReadOnlySpan<uint> CurrentFrame => _frame.AsSpan(0, Width * Height);
 
     public long FrameNumber { get; private set; }
 
@@ -92,7 +101,7 @@ public sealed class N64Machine
         RunInstructions(Memory.CpuTicksPerField);
         RenderVideoInterface();
         FrameNumber++;
-        return _frame;
+        return CurrentFrame;
     }
 
     public void RunInstructions(int count)
@@ -179,7 +188,7 @@ public sealed class N64Machine
 
         var payloadLength = reader.ReadInt32();
         var expectedIntegrity = reader.ReadBytes(32);
-        if (payloadLength < 0 || payloadLength > 16 * 1024 * 1024)
+        if (payloadLength < 0 || payloadLength > 24 * 1024 * 1024)
         {
             throw new InvalidDataException("The Pixel64 save-state payload length is invalid.");
         }
@@ -259,7 +268,11 @@ public sealed class N64Machine
     private void RenderVideoInterface()
     {
         var format = Memory.ViControl & 3;
-        var sourceWidth = (int)Math.Clamp(Memory.ViWidth, 1, Width);
+        // The VI width register is the frame-buffer stride; games can run
+        // wider than our 320-pixel output (GoldenEye uses 440), in which
+        // case we show the left 320 columns rather than shearing rows.
+        var sourceStride = (int)Math.Max(Memory.ViWidth, 1);
+        var sourceWidth = Math.Min(sourceStride, Width);
         var origin = Memory.ViOrigin & 0x7FFFFF;
         if (format is not (2u or 3u))
         {
@@ -269,10 +282,10 @@ public sealed class N64Machine
 
         // The frame buffer always lives in RDRAM; convert it from one direct
         // span instead of resolving every pixel address through the bus.
-        var sourceBytes = (long)Height * sourceWidth * (format == 2 ? 2 : 4);
+        var sourceBytes = (long)Height * sourceStride * (format == 2 ? 2 : 4);
         if (origin + sourceBytes <= Memory.Rdram.Length)
         {
-            RenderVideoInterfaceFromRdram(format, sourceWidth, origin);
+            RenderVideoInterfaceFromRdram(format, sourceStride, sourceWidth, origin);
             return;
         }
 
@@ -286,7 +299,7 @@ public sealed class N64Machine
                     continue;
                 }
 
-                var pixelIndex = (uint)((y * sourceWidth) + x);
+                var pixelIndex = (uint)((y * sourceStride) + x);
                 _frame[(y * Width) + x] = format == 2
                     ? ConvertRgba5551(Memory.ReadUInt16(origin + (pixelIndex * 2)))
                     : ConvertRgba8888(Memory.ReadUInt32(origin + (pixelIndex * 4)));
@@ -294,13 +307,13 @@ public sealed class N64Machine
         }
     }
 
-    private void RenderVideoInterfaceFromRdram(uint format, int sourceWidth, uint origin)
+    private void RenderVideoInterfaceFromRdram(uint format, int sourceStride, int sourceWidth, uint origin)
     {
         var source = Memory.Rdram.AsSpan((int)origin);
         for (var y = 0; y < Height; y++)
         {
             var row = y * Width;
-            var sourceRow = y * sourceWidth;
+            var sourceRow = y * sourceStride;
             if (format == 2)
             {
                 for (var x = 0; x < sourceWidth; x++)

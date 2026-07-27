@@ -5,6 +5,8 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Memory
 {
+    public const int MaximumVideoWidth = 640;
+    public const int MaximumVideoHeight = 480;
     public const int RdramSize = 8 * 1024 * 1024;
     public const int SpMemorySize = 4 * 1024;
     public const int NtscCpuTicksPerField = 781_250;
@@ -98,6 +100,45 @@ public sealed class N64Memory
 
     public uint ViCurrent => _viCurrent;
 
+    public uint ViHorizontalVideo => _viHorizontalVideo;
+
+    public uint ViVerticalVideo => _viVerticalVideo;
+
+    public uint ViXScale => _viXScale;
+
+    public uint ViYScale => _viYScale;
+
+    /// <summary>
+    /// The live output size derived from the video interface: VI_WIDTH is the
+    /// frame-buffer stride and the visible height is the active scan window
+    /// scaled by VI_Y_SCALE. Verified against four commercial cartridges —
+    /// Super Mario 64, Quest 64, and Ocarina of Time program 320 wide while
+    /// GoldenEye 007 programs 440.
+    /// </summary>
+    public int VideoWidth { get; private set; } = 320;
+
+    public int VideoHeight { get; private set; } = 240;
+
+    private void UpdateVideoResolution()
+    {
+        var verticalStart = (int)((_viVerticalVideo >> 16) & 0x3FF);
+        var verticalEnd = (int)(_viVerticalVideo & 0x3FF);
+        var verticalScale = (int)(_viYScale & 0xFFF);
+        var width = (int)_viWidth;
+        if (width <= 0 || verticalEnd <= verticalStart || verticalScale <= 0)
+        {
+            // The cartridge has not finished programming the video interface;
+            // keep the last valid size rather than collapsing the image.
+            return;
+        }
+
+        VideoWidth = Math.Clamp(width, 1, MaximumVideoWidth);
+        VideoHeight = Math.Clamp(
+            (verticalEnd - verticalStart) / 2 * verticalScale / 1024,
+            1,
+            MaximumVideoHeight);
+    }
+
     public uint SpStatus => _spStatus;
 
     public int CpuTicksPerField { get; }
@@ -140,6 +181,39 @@ public sealed class N64Memory
         }
 
         return address;
+    }
+
+    /// <summary>
+    /// Translation as the CPU sees it: KSEG0/KSEG1 map directly, everything
+    /// else requires a TLB entry. A miss reports Refill (vector 0x80000000)
+    /// while a matched entry whose valid bit is clear reports Invalid
+    /// (general vector) — demand-paging games such as GoldenEye rely on that
+    /// distinction. Debug and DMA callers keep using the pass-through
+    /// <see cref="TranslateVirtualAddress"/> instead.
+    /// </summary>
+    public N64TlbFault TranslateCpuAddress(uint address, out uint physicalAddress)
+    {
+        if (address is >= 0x80000000 and <= 0xBFFFFFFF)
+        {
+            physicalAddress = address & 0x1FFFFFFF;
+            return N64TlbFault.None;
+        }
+
+        var matchedInvalid = false;
+        foreach (var entry in _tlb)
+        {
+            switch (entry.Lookup(address, _tlbAsid, out physicalAddress))
+            {
+                case N64TlbLookup.Valid:
+                    return N64TlbFault.None;
+                case N64TlbLookup.Invalid:
+                    matchedInvalid = true;
+                    break;
+            }
+        }
+
+        physicalAddress = 0;
+        return matchedInvalid ? N64TlbFault.Invalid : N64TlbFault.Refill;
     }
 
     internal void WriteTlbEntry(
@@ -213,9 +287,11 @@ public sealed class N64Memory
         return null;
     }
 
-    public byte ReadByte(uint virtualAddress)
+    public byte ReadByte(uint virtualAddress) =>
+        ReadBytePhysical(TranslateVirtualAddress(virtualAddress));
+
+    public byte ReadBytePhysical(uint address)
     {
-        var address = TranslateVirtualAddress(virtualAddress);
         var region = TryGetDirectRegion(address, 1, writable: false, out var offset);
         if (region is not null)
         {
@@ -225,48 +301,56 @@ public sealed class N64Memory
         return (byte)(ReadIoWord(address & ~3u) >> (int)((3 - (address & 3)) * 8));
     }
 
-    public ushort ReadUInt16(uint address)
+    public ushort ReadUInt16(uint address) =>
+        ReadUInt16Physical(TranslateVirtualAddress(address));
+
+    public ushort ReadUInt16Physical(uint physical)
     {
-        var physical = TranslateVirtualAddress(address);
         var region = TryGetDirectRegion(physical, 2, writable: false, out var offset);
         if (region is not null)
         {
             return BinaryPrimitives.ReadUInt16BigEndian(region.AsSpan(offset, 2));
         }
 
-        return (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
+        return (ushort)((ReadBytePhysical(physical) << 8) | ReadBytePhysical(physical + 1));
     }
 
-    public uint ReadUInt32(uint address)
+    public uint ReadUInt32(uint address) =>
+        ReadUInt32Physical(TranslateVirtualAddress(address));
+
+    public uint ReadUInt32Physical(uint physical)
     {
-        var physical = TranslateVirtualAddress(address);
         var region = TryGetDirectRegion(physical, 4, writable: false, out var offset);
         if (region is not null)
         {
             return BinaryPrimitives.ReadUInt32BigEndian(region.AsSpan(offset, 4));
         }
 
-        return ((uint)ReadByte(address) << 24) |
-               ((uint)ReadByte(address + 1) << 16) |
-               ((uint)ReadByte(address + 2) << 8) |
-               ReadByte(address + 3);
+        return ((uint)ReadBytePhysical(physical) << 24) |
+               ((uint)ReadBytePhysical(physical + 1) << 16) |
+               ((uint)ReadBytePhysical(physical + 2) << 8) |
+               ReadBytePhysical(physical + 3);
     }
 
-    public ulong ReadUInt64(uint address)
+    public ulong ReadUInt64(uint address) =>
+        ReadUInt64Physical(TranslateVirtualAddress(address));
+
+    public ulong ReadUInt64Physical(uint physical)
     {
-        var physical = TranslateVirtualAddress(address);
         var region = TryGetDirectRegion(physical, 8, writable: false, out var offset);
         if (region is not null)
         {
             return BinaryPrimitives.ReadUInt64BigEndian(region.AsSpan(offset, 8));
         }
 
-        return ((ulong)ReadUInt32(address) << 32) | ReadUInt32(address + 4);
+        return ((ulong)ReadUInt32Physical(physical) << 32) | ReadUInt32Physical(physical + 4);
     }
 
-    public void WriteByte(uint virtualAddress, byte value)
+    public void WriteByte(uint virtualAddress, byte value) =>
+        WriteBytePhysical(TranslateVirtualAddress(virtualAddress), value);
+
+    public void WriteBytePhysical(uint address, byte value)
     {
-        var address = TranslateVirtualAddress(virtualAddress);
         var region = TryGetDirectRegion(address, 1, writable: true, out var offset);
         if (region is not null)
         {
@@ -280,9 +364,11 @@ public sealed class N64Memory
         WriteIoWord(alignedAddress, (ReadIoWord(alignedAddress) & ~mask) | ((uint)value << shift), mask);
     }
 
-    public void WriteUInt16(uint address, ushort value)
+    public void WriteUInt16(uint address, ushort value) =>
+        WriteUInt16Physical(TranslateVirtualAddress(address), value);
+
+    public void WriteUInt16Physical(uint physical, ushort value)
     {
-        var physical = TranslateVirtualAddress(address);
         var region = TryGetDirectRegion(physical, 2, writable: true, out var offset);
         if (region is not null)
         {
@@ -290,13 +376,15 @@ public sealed class N64Memory
             return;
         }
 
-        WriteByte(address, (byte)(value >> 8));
-        WriteByte(address + 1, (byte)value);
+        WriteBytePhysical(physical, (byte)(value >> 8));
+        WriteBytePhysical(physical + 1, (byte)value);
     }
 
-    public void WriteUInt32(uint address, uint value)
+    public void WriteUInt32(uint address, uint value) =>
+        WriteUInt32Physical(TranslateVirtualAddress(address), value);
+
+    public void WriteUInt32Physical(uint physical, uint value)
     {
-        var physical = TranslateVirtualAddress(address);
         var region = TryGetDirectRegion(physical, 4, writable: true, out var offset);
         if (region is not null)
         {
@@ -306,21 +394,23 @@ public sealed class N64Memory
 
         if (IsDirectMemory(physical))
         {
-            // The access straddles a direct-region boundary; write each byte
-            // through its own translation exactly as before.
-            WriteByte(address, (byte)(value >> 24));
-            WriteByte(address + 1, (byte)(value >> 16));
-            WriteByte(address + 2, (byte)(value >> 8));
-            WriteByte(address + 3, (byte)value);
+            // The access straddles a direct-region boundary; fall back to
+            // byte writes against the same physical addresses.
+            WriteBytePhysical(physical, (byte)(value >> 24));
+            WriteBytePhysical(physical + 1, (byte)(value >> 16));
+            WriteBytePhysical(physical + 2, (byte)(value >> 8));
+            WriteBytePhysical(physical + 3, (byte)value);
             return;
         }
 
         WriteIoWord(physical, value, uint.MaxValue);
     }
 
-    public void WriteUInt64(uint address, ulong value)
+    public void WriteUInt64(uint address, ulong value) =>
+        WriteUInt64Physical(TranslateVirtualAddress(address), value);
+
+    public void WriteUInt64Physical(uint physical, ulong value)
     {
-        var physical = TranslateVirtualAddress(address);
         var region = TryGetDirectRegion(physical, 8, writable: true, out var offset);
         if (region is not null)
         {
@@ -328,8 +418,8 @@ public sealed class N64Memory
             return;
         }
 
-        WriteUInt32(address, (uint)(value >> 32));
-        WriteUInt32(address + 4, (uint)value);
+        WriteUInt32Physical(physical, (uint)(value >> 32));
+        WriteUInt32Physical(physical + 4, (uint)value);
     }
 
     public void AdvanceCpuTicks(int ticks)
@@ -566,6 +656,8 @@ public sealed class N64Memory
                 reader.ReadSByte(),
                 reader.ReadSByte());
         }
+
+        UpdateVideoResolution();
     }
 
     private static bool IsDirectMemory(uint address) =>
@@ -675,6 +767,7 @@ public sealed class N64Memory
                 break;
             case 0x04400008:
                 _viWidth = Combine(_viWidth, value, mask) & 0xFFF;
+                UpdateVideoResolution();
                 break;
             case 0x0440000C:
                 _viVerticalInterrupt = Combine(_viVerticalInterrupt, value, mask) & 0x3FF;
@@ -701,6 +794,7 @@ public sealed class N64Memory
                 break;
             case 0x04400028:
                 _viVerticalVideo = Combine(_viVerticalVideo, value, mask) & 0x03FF03FF;
+                UpdateVideoResolution();
                 break;
             case 0x0440002C:
                 _viVerticalBurst = Combine(_viVerticalBurst, value, mask) & 0x03FF03FF;
@@ -710,6 +804,7 @@ public sealed class N64Memory
                 break;
             case 0x04400034:
                 _viYScale = Combine(_viYScale, value, mask) & 0x0FFF0FFF;
+                UpdateVideoResolution();
                 break;
             case 0x04500000:
                 _aiDramAddress = Combine(_aiDramAddress, value, mask) & 0x00FFFFF8;
@@ -1368,7 +1463,10 @@ internal readonly record struct N64TlbEntry(
                (Global || (EntryHi & 0xFF) == (entryHi & 0xFF));
     }
 
-    public bool TryTranslate(uint address, byte currentAsid, out uint physicalAddress)
+    public bool TryTranslate(uint address, byte currentAsid, out uint physicalAddress) =>
+        Lookup(address, currentAsid, out physicalAddress) == N64TlbLookup.Valid;
+
+    public N64TlbLookup Lookup(uint address, byte currentAsid, out uint physicalAddress)
     {
         var pageSize = (uint)PageSize;
         var pairSize = pageSize * 2;
@@ -1377,7 +1475,7 @@ internal readonly record struct N64TlbEntry(
             (!Global && (EntryHi & 0xFF) != currentAsid))
         {
             physicalAddress = 0;
-            return false;
+            return N64TlbLookup.NoMatch;
         }
 
         var offsetInPair = address & (pairSize - 1);
@@ -1385,13 +1483,27 @@ internal readonly record struct N64TlbEntry(
         if ((entryLo & 2) == 0)
         {
             physicalAddress = 0;
-            return false;
+            return N64TlbLookup.Invalid;
         }
 
         var physicalPage = (entryLo & 0x3FFFFFC0) << 6;
         physicalAddress = physicalPage | (offsetInPair & (pageSize - 1));
-        return true;
+        return N64TlbLookup.Valid;
     }
+}
+
+public enum N64TlbFault
+{
+    None,
+    Refill,
+    Invalid
+}
+
+internal enum N64TlbLookup
+{
+    NoMatch,
+    Invalid,
+    Valid
 }
 
 internal readonly record struct N64AiDma(

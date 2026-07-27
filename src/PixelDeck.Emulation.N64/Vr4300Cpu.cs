@@ -6,7 +6,9 @@ public sealed class Vr4300Cpu
     private const int Cp0Random = 1;
     private const int Cp0EntryLo0 = 2;
     private const int Cp0EntryLo1 = 3;
+    private const int Cp0Context = 4;
     private const int Cp0PageMask = 5;
+    private const int Cp0BadVAddr = 8;
     private const int Cp0Wired = 6;
     private const int Cp0Count = 9;
     private const int Cp0EntryHi = 10;
@@ -147,7 +149,17 @@ public sealed class Vr4300Cpu
         _executingDelaySlot = _nextInstructionIsDelaySlot;
         _executingDelaySlotBranchAddress = _nextDelaySlotBranchAddress;
         _nextInstructionIsDelaySlot = false;
-        var instruction = _memory.ReadUInt32(instructionAddress);
+        var fetchFault = _memory.TranslateCpuAddress(instructionAddress, out var fetchPhysical);
+        if (fetchFault != N64TlbFault.None)
+        {
+            EnterTlbException(instructionAddress, isStore: false, fetchFault, instructionAddress);
+            InstructionsExecuted++;
+            AdvanceClock();
+            _registers[0] = 0;
+            return;
+        }
+
+        var instruction = _memory.ReadUInt32Physical(fetchPhysical);
         LastInstruction = instruction;
         ProgramCounter = _nextProgramCounter;
         _nextProgramCounter += 4;
@@ -238,92 +250,194 @@ public sealed class Vr4300Cpu
                 WriteRegister(rt, unchecked(_registers[rs] + (ulong)(long)signedImmediate));
                 break;
             case 0x1A:
-                LoadDoubleLeft(rt, EffectiveAddress(rs, signedImmediate));
+                LoadDoubleLeft(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x1B:
-                LoadDoubleRight(rt, EffectiveAddress(rs, signedImmediate));
+                LoadDoubleRight(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x20:
-                WriteRegister(rt, SignExtend64((sbyte)_memory.ReadByte(EffectiveAddress(rs, signedImmediate))));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, SignExtend64((sbyte)_memory.ReadBytePhysical(physical)));
+                }
+
                 break;
+            }
             case 0x21:
-                WriteRegister(rt, SignExtend64((short)_memory.ReadUInt16(EffectiveAddress(rs, signedImmediate))));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, SignExtend64((short)_memory.ReadUInt16Physical(physical)));
+                }
+
                 break;
+            }
             case 0x22:
-                LoadWordLeft(rt, EffectiveAddress(rs, signedImmediate));
+                LoadWordLeft(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x23:
-                WriteRegister(rt, SignExtend32(_memory.ReadUInt32(EffectiveAddress(rs, signedImmediate))));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, SignExtend32(_memory.ReadUInt32Physical(physical)));
+                }
+
                 break;
+            }
             case 0x24:
-                WriteRegister(rt, _memory.ReadByte(EffectiveAddress(rs, signedImmediate)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, _memory.ReadBytePhysical(physical));
+                }
+
                 break;
+            }
             case 0x25:
-                WriteRegister(rt, _memory.ReadUInt16(EffectiveAddress(rs, signedImmediate)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, _memory.ReadUInt16Physical(physical));
+                }
+
                 break;
+            }
             case 0x26:
-                LoadWordRight(rt, EffectiveAddress(rs, signedImmediate));
+                LoadWordRight(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x27:
-                WriteRegister(rt, _memory.ReadUInt32(EffectiveAddress(rs, signedImmediate)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, _memory.ReadUInt32Physical(physical));
+                }
+
                 break;
+            }
             case 0x28:
-                _memory.WriteByte(EffectiveAddress(rs, signedImmediate), (byte)_registers[rt]);
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteBytePhysical(physical, (byte)_registers[rt]);
+                }
+
                 break;
+            }
             case 0x29:
-                _memory.WriteUInt16(EffectiveAddress(rs, signedImmediate), (ushort)_registers[rt]);
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteUInt16Physical(physical, (ushort)_registers[rt]);
+                }
+
                 break;
+            }
             case 0x2A:
-                StoreWordLeft(rt, EffectiveAddress(rs, signedImmediate));
+                StoreWordLeft(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x2B:
-                _memory.WriteUInt32(EffectiveAddress(rs, signedImmediate), (uint)_registers[rt]);
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteUInt32Physical(physical, (uint)_registers[rt]);
+                }
+
                 break;
+            }
             case 0x2C:
-                StoreDoubleLeft(rt, EffectiveAddress(rs, signedImmediate));
+                StoreDoubleLeft(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x2D:
-                StoreDoubleRight(rt, EffectiveAddress(rs, signedImmediate));
+                StoreDoubleRight(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x2E:
-                StoreWordRight(rt, EffectiveAddress(rs, signedImmediate));
+                StoreWordRight(rt, EffectiveAddress(rs, signedImmediate), instructionAddress);
                 break;
             case 0x2F:
                 break; // CACHE is observable only through timing in the current interpreter.
             case 0x30:
-                WriteRegister(rt, SignExtend32(_memory.ReadUInt32(EffectiveAddress(rs, signedImmediate))));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, SignExtend32(_memory.ReadUInt32Physical(physical)));
+                }
+
                 break;
+            }
             case 0x31:
-                SetFprWord(rt, _memory.ReadUInt32(EffectiveAddress(rs, signedImmediate)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    SetFprWord(rt, _memory.ReadUInt32Physical(physical));
+                }
+
                 break;
+            }
             case 0x34:
-                WriteRegister(rt, _memory.ReadUInt64(EffectiveAddress(rs, signedImmediate)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, _memory.ReadUInt64Physical(physical));
+                }
+
                 break;
+            }
             case 0x35:
-                SetFprLong(
-                    rt,
-                    unchecked((long)_memory.ReadUInt64(EffectiveAddress(rs, signedImmediate))));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    SetFprLong(rt, unchecked((long)_memory.ReadUInt64Physical(physical)));
+                }
+
                 break;
+            }
             case 0x37:
-                WriteRegister(rt, _memory.ReadUInt64(EffectiveAddress(rs, signedImmediate)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), false, instructionAddress, out var physical))
+                {
+                    WriteRegister(rt, _memory.ReadUInt64Physical(physical));
+                }
+
                 break;
+            }
             case 0x38:
-                _memory.WriteUInt32(EffectiveAddress(rs, signedImmediate), (uint)_registers[rt]);
-                WriteRegister(rt, 1);
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteUInt32Physical(physical, (uint)_registers[rt]);
+                    WriteRegister(rt, 1);
+                }
+
                 break;
+            }
             case 0x39:
-                _memory.WriteUInt32(
-                    EffectiveAddress(rs, signedImmediate),
-                    GetFprWord(rt));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteUInt32Physical(physical, GetFprWord(rt));
+                }
+
                 break;
+            }
             case 0x3D:
-                _memory.WriteUInt64(
-                    EffectiveAddress(rs, signedImmediate),
-                    unchecked((ulong)GetFprLong(rt)));
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteUInt64Physical(physical, unchecked((ulong)GetFprLong(rt)));
+                }
+
                 break;
+            }
             case 0x3F:
-                _memory.WriteUInt64(EffectiveAddress(rs, signedImmediate), _registers[rt]);
+            {
+                if (TryGetPhysicalAddress(EffectiveAddress(rs, signedImmediate), true, instructionAddress, out var physical))
+                {
+                    _memory.WriteUInt64Physical(physical, _registers[rt]);
+                }
+
                 break;
+            }
             default:
                 Unsupported(instructionAddress, instruction);
                 break;
@@ -933,113 +1047,157 @@ public sealed class Vr4300Cpu
     private uint EffectiveAddress(int register, short immediate) =>
         unchecked((uint)(_registers[register] + (ulong)(long)immediate));
 
-    private void LoadWordLeft(int register, uint address)
+    // The unaligned load/store pairs touch bytes within a single aligned
+    // word or doubleword, so one translation covers every byte: TLB pages
+    // are at least 4 KiB, and an aligned unit never straddles a page.
+
+    private void LoadWordLeft(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: false, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = (uint)_registers[register];
         var offset = (int)(address & 3);
         for (var index = 0; index < 4 - offset; index++)
         {
             var shift = (3 - index) * 8;
             value = (value & ~(0xFFu << shift)) |
-                    ((uint)_memory.ReadByte(address + (uint)index) << shift);
+                    ((uint)_memory.ReadBytePhysical(physical + (uint)index) << shift);
         }
 
         WriteRegister(register, SignExtend32(value));
     }
 
-    private void LoadWordRight(int register, uint address)
+    private void LoadWordRight(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: false, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = (uint)_registers[register];
         var offset = (int)(address & 3);
-        var aligned = address & ~3u;
+        var aligned = physical & ~3u;
         for (var index = 0; index <= offset; index++)
         {
             var targetByte = 3 - offset + index;
             var shift = (3 - targetByte) * 8;
             value = (value & ~(0xFFu << shift)) |
-                    ((uint)_memory.ReadByte(aligned + (uint)index) << shift);
+                    ((uint)_memory.ReadBytePhysical(aligned + (uint)index) << shift);
         }
 
         WriteRegister(register, SignExtend32(value));
     }
 
-    private void StoreWordLeft(int register, uint address)
+    private void StoreWordLeft(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: true, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = (uint)_registers[register];
         var offset = (int)(address & 3);
         for (var index = 0; index < 4 - offset; index++)
         {
-            _memory.WriteByte(
-                address + (uint)index,
+            _memory.WriteBytePhysical(
+                physical + (uint)index,
                 (byte)(value >> ((3 - index) * 8)));
         }
     }
 
-    private void StoreWordRight(int register, uint address)
+    private void StoreWordRight(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: true, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = (uint)_registers[register];
         var offset = (int)(address & 3);
-        var aligned = address & ~3u;
+        var aligned = physical & ~3u;
         for (var index = 0; index <= offset; index++)
         {
             var sourceByte = 3 - offset + index;
-            _memory.WriteByte(
+            _memory.WriteBytePhysical(
                 aligned + (uint)index,
                 (byte)(value >> ((3 - sourceByte) * 8)));
         }
     }
 
-    private void LoadDoubleLeft(int register, uint address)
+    private void LoadDoubleLeft(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: false, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = _registers[register];
         var offset = (int)(address & 7);
         for (var index = 0; index < 8 - offset; index++)
         {
             var shift = (7 - index) * 8;
             value = (value & ~(0xFFul << shift)) |
-                    ((ulong)_memory.ReadByte(address + (uint)index) << shift);
+                    ((ulong)_memory.ReadBytePhysical(physical + (uint)index) << shift);
         }
 
         WriteRegister(register, value);
     }
 
-    private void LoadDoubleRight(int register, uint address)
+    private void LoadDoubleRight(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: false, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = _registers[register];
         var offset = (int)(address & 7);
-        var aligned = address & ~7u;
+        var aligned = physical & ~7u;
         for (var index = 0; index <= offset; index++)
         {
             var targetByte = 7 - offset + index;
             var shift = (7 - targetByte) * 8;
             value = (value & ~(0xFFul << shift)) |
-                    ((ulong)_memory.ReadByte(aligned + (uint)index) << shift);
+                    ((ulong)_memory.ReadBytePhysical(aligned + (uint)index) << shift);
         }
 
         WriteRegister(register, value);
     }
 
-    private void StoreDoubleLeft(int register, uint address)
+    private void StoreDoubleLeft(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: true, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = _registers[register];
         var offset = (int)(address & 7);
         for (var index = 0; index < 8 - offset; index++)
         {
-            _memory.WriteByte(
-                address + (uint)index,
+            _memory.WriteBytePhysical(
+                physical + (uint)index,
                 (byte)(value >> ((7 - index) * 8)));
         }
     }
 
-    private void StoreDoubleRight(int register, uint address)
+    private void StoreDoubleRight(int register, uint address, uint instructionAddress)
     {
+        if (!TryGetPhysicalAddress(address, isStore: true, instructionAddress, out var physical))
+        {
+            return;
+        }
+
         var value = _registers[register];
         var offset = (int)(address & 7);
-        var aligned = address & ~7u;
+        var aligned = physical & ~7u;
         for (var index = 0; index <= offset; index++)
         {
             var sourceByte = 7 - offset + index;
-            _memory.WriteByte(
+            _memory.WriteBytePhysical(
                 aligned + (uint)index,
                 (byte)(value >> ((7 - sourceByte) * 8)));
         }
@@ -1105,7 +1263,10 @@ public sealed class Vr4300Cpu
         }
     }
 
-    private void EnterException(int code, uint instructionAddress)
+    private void EnterException(int code, uint instructionAddress) =>
+        EnterExceptionAt(code, instructionAddress, 0x80000180);
+
+    private void EnterExceptionAt(int code, uint instructionAddress, uint vector)
     {
         _coprocessor0[Cp0Cause] = (_coprocessor0[Cp0Cause] & ~0x7Cu) | ((uint)code << 2);
         if (_executingDelaySlot)
@@ -1120,9 +1281,51 @@ public sealed class Vr4300Cpu
         }
 
         _coprocessor0[Cp0Status] |= 2;
-        ProgramCounter = 0x80000180;
+        ProgramCounter = vector;
         _nextProgramCounter = ProgramCounter + 4;
         _nextInstructionIsDelaySlot = false;
+    }
+
+    /// <summary>
+    /// Raises a TLB exception: BadVAddr, Context.BadVPN2, and EntryHi.VPN2
+    /// describe the faulting page so the OS handler can install a mapping
+    /// and retry. First-level refill misses vector to 0x80000000; a matched
+    /// entry whose valid bit is clear (TLB Invalid) and any nested miss use
+    /// the general vector at 0x80000180.
+    /// </summary>
+    private void EnterTlbException(
+        uint badVirtualAddress,
+        bool isStore,
+        N64TlbFault fault,
+        uint instructionAddress)
+    {
+        _coprocessor0[Cp0BadVAddr] = badVirtualAddress;
+        _coprocessor0[Cp0Context] =
+            (_coprocessor0[Cp0Context] & 0xFF800000) | ((badVirtualAddress >> 13) << 4);
+        _coprocessor0[Cp0EntryHi] =
+            (badVirtualAddress & 0xFFFFE000) | (_coprocessor0[Cp0EntryHi] & 0xFF);
+        var useGeneralVector =
+            fault == N64TlbFault.Invalid || (_coprocessor0[Cp0Status] & 2) != 0;
+        EnterExceptionAt(
+            isStore ? 3 : 2,
+            instructionAddress,
+            useGeneralVector ? 0x80000180u : 0x80000000u);
+    }
+
+    private bool TryGetPhysicalAddress(
+        uint virtualAddress,
+        bool isStore,
+        uint instructionAddress,
+        out uint physicalAddress)
+    {
+        var fault = _memory.TranslateCpuAddress(virtualAddress, out physicalAddress);
+        if (fault == N64TlbFault.None)
+        {
+            return true;
+        }
+
+        EnterTlbException(virtualAddress, isStore, fault, instructionAddress);
+        return false;
     }
 
     private void UpdateInterruptLines()
@@ -1144,6 +1347,13 @@ public sealed class Vr4300Cpu
         {
             _coprocessor0[Cp0Cause] |= 1u << 15;
         }
+
+        // Random cycles down through [Wired, 31] so TLBWR spreads refills
+        // across the unwired entries instead of thrashing a single slot.
+        var random = _coprocessor0[Cp0Random];
+        _coprocessor0[Cp0Random] = random <= (_coprocessor0[Cp0Wired] & 31)
+            ? 31u
+            : random - 1;
 
         _memory.AdvanceCpuTicks(1);
     }

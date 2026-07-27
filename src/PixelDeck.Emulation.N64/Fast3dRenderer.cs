@@ -24,6 +24,18 @@ public sealed class Fast3dRenderer
     private int _depthBufferWidth;
     private int _depthBufferHeight;
     private uint _fillColor;
+    private readonly Vector3[] _lightColors = new Vector3[8];
+    private readonly Vector3[] _lightDirections = new Vector3[8];
+    private int _lightCount;
+    private bool _lightsLoaded;
+    private readonly Fast3dRectangleTrace[] _rectangleTrace = new Fast3dRectangleTrace[64];
+    private int _rectangleTraceCount;
+    private readonly Fast3dTriangleTrace[] _triangleTrace = new Fast3dTriangleTrace[64];
+    private int _triangleTraceCount;
+    private int _scissorLeft;
+    private int _scissorTop;
+    private int _scissorRight = 320;
+    private int _scissorBottom = 240;
     private Matrix4x4 _projection = Matrix4x4.Identity;
     private Vector4 _viewportScale = new(160, 120, 511, 0);
     private Vector4 _viewportTranslate = new(160, 120, 0, 0);
@@ -104,6 +116,8 @@ public sealed class Fast3dRenderer
         _textureImageSize = 0;
         _textureImageWidth = 1;
         _primitiveColor = Vector4.One;
+        _rectangleTraceCount = 0;
+        _triangleTraceCount = 0;
         var remainingBudget = MaximumCommandsPerTask;
         ExecuteDisplayList(
             ResolveAddress(task.DataPointer),
@@ -180,6 +194,21 @@ public sealed class Fast3dRenderer
                 case 0xBF: // F3D G_TRI1
                     DrawTriangle(word1);
                     break;
+                case 0xB1: // F3D G_TRI4: four triangles as packed nibble indices
+                    for (var triangle = 0; triangle < 4; triangle++)
+                    {
+                        var first = (int)((word0 >> (triangle * 4)) & 0xF);
+                        var second = (int)((word1 >> (triangle * 8)) & 0xF);
+                        var third = (int)((word1 >> ((triangle * 8) + 4)) & 0xF);
+                        if (first == second && second == third)
+                        {
+                            continue; // unused slot padding
+                        }
+
+                        DrawTriangleIndices(first, second, third);
+                    }
+
+                    break;
                 case 0xB6: // F3D G_CLEARGEOMETRYMODE
                     _geometryMode &= ~word1;
                     break;
@@ -243,6 +272,12 @@ public sealed class Fast3dRenderer
                     break;
                 case 0xF0: // G_LOADTLUT
                     LoadTextureLookupTable(word0, word1);
+                    break;
+                case 0xF8: // G_SETSCISSOR
+                    _scissorLeft = (int)((word0 >> 12) & 0xFFF) / 4;
+                    _scissorTop = (int)(word0 & 0xFFF) / 4;
+                    _scissorRight = (int)((word1 >> 12) & 0xFFF) / 4;
+                    _scissorBottom = (int)(word1 & 0xFFF) / 4;
                     break;
                 case 0x00:
                 case 0xE7:
@@ -464,8 +499,16 @@ public sealed class Fast3dRenderer
 
     private void MoveWord(uint word0, uint word1)
     {
+        const int numberOfLightsIndex = 0x02;
         const int segmentMoveWordIndex = 0x06;
         var index = (int)(word0 & 0xFF);
+        if (index == numberOfLightsIndex)
+        {
+            // Encoded as NUMLIGHTS_n = 0x80000000 + (n + 1) * 32.
+            _lightCount = Math.Clamp((int)((word1 - 0x80000000) / 32) - 1, 0, 7);
+            return;
+        }
+
         if (index != segmentMoveWordIndex)
         {
             return;
@@ -482,7 +525,28 @@ public sealed class Fast3dRenderer
     private void MoveMemory(uint word0, uint word1)
     {
         const int viewportIndex = 0x80;
+        const int firstLightIndex = 0x86;
+        const int lastLightIndex = 0x94;
         var index = (int)((word0 >> 16) & 0xFF);
+        if (index is >= firstLightIndex and <= lastLightIndex && (index & 1) == 0)
+        {
+            // Light_t: color bytes 0-2 (repeated at 4-6), signed direction
+            // bytes 8-10. The ambient light is loaded one slot past the
+            // directional lights and carries no direction.
+            var lightAddress = ResolveAddress(word1);
+            var slot = (index - firstLightIndex) / 2;
+            _lightColors[slot] = new Vector3(
+                _memory.ReadByte(lightAddress) / 255f,
+                _memory.ReadByte(lightAddress + 1) / 255f,
+                _memory.ReadByte(lightAddress + 2) / 255f);
+            _lightDirections[slot] = new Vector3(
+                (sbyte)_memory.ReadByte(lightAddress + 8) / 128f,
+                (sbyte)_memory.ReadByte(lightAddress + 9) / 128f,
+                (sbyte)_memory.ReadByte(lightAddress + 10) / 128f);
+            _lightsLoaded = true;
+            return;
+        }
+
         if (index != viewportIndex)
         {
             return;
@@ -499,6 +563,43 @@ public sealed class Fast3dRenderer
             (short)_memory.ReadUInt16(address + 10) / 4f,
             (short)_memory.ReadUInt16(address + 12) / 4f,
             (short)_memory.ReadUInt16(address + 14) / 4f);
+    }
+
+    private Vector4 ComputeLitVertexColor(uint vertexAddress, Matrix4x4 modelView)
+    {
+        var alpha = _memory.ReadByte(vertexAddress + 15) / 255f;
+        if (!_lightsLoaded)
+        {
+            return new Vector4(1, 1, 1, alpha);
+        }
+
+        var normal = new Vector3(
+            (sbyte)_memory.ReadByte(vertexAddress + 12) / 128f,
+            (sbyte)_memory.ReadByte(vertexAddress + 13) / 128f,
+            (sbyte)_memory.ReadByte(vertexAddress + 14) / 128f);
+        var rotated = Vector3.TransformNormal(normal, modelView);
+        var lengthSquared = rotated.LengthSquared();
+        if (lengthSquared > 0.000001f)
+        {
+            rotated /= MathF.Sqrt(lengthSquared);
+        }
+
+        // The ambient light occupies the slot after the directional lights.
+        var color = _lightColors[Math.Min(_lightCount, _lightColors.Length - 1)];
+        for (var light = 0; light < _lightCount; light++)
+        {
+            var intensity = Vector3.Dot(rotated, _lightDirections[light]);
+            if (intensity > 0)
+            {
+                color += _lightColors[light] * intensity;
+            }
+        }
+
+        return new Vector4(
+            Math.Min(color.X, 1),
+            Math.Min(color.Y, 1),
+            Math.Min(color.Z, 1),
+            alpha);
     }
 
     private void LoadMatrix(uint word0, uint word1)
@@ -571,7 +672,7 @@ public sealed class Fast3dRenderer
             _vertices[destination + index] = CreateVertex(
                 clip,
                 lightingEnabled
-                    ? Vector4.One
+                    ? ComputeLitVertexColor(vertexAddress, _modelViewStack.Peek())
                     : new Vector4(
                         _memory.ReadByte(vertexAddress + 12) / 255f,
                         _memory.ReadByte(vertexAddress + 13) / 255f,
@@ -584,11 +685,14 @@ public sealed class Fast3dRenderer
         }
     }
 
-    private void DrawTriangle(uint word1)
+    private void DrawTriangle(uint word1) =>
+        DrawTriangleIndices(
+            (int)((word1 >> 16) & 0xFF) / 10,
+            (int)((word1 >> 8) & 0xFF) / 10,
+            (int)(word1 & 0xFF) / 10);
+
+    private void DrawTriangleIndices(int first, int second, int third)
     {
-        var first = (int)((word1 >> 16) & 0xFF) / 10;
-        var second = (int)((word1 >> 8) & 0xFF) / 10;
-        var third = (int)(word1 & 0xFF) / 10;
         if (first >= _vertices.Length || second >= _vertices.Length || third >= _vertices.Length)
         {
             return;
@@ -757,10 +861,62 @@ public sealed class Fast3dRenderer
             return;
         }
 
-        var minX = Math.Clamp(rawMinX, 0, _colorImageWidth - 1);
-        var maxX = Math.Clamp(rawMaxX, 0, _colorImageWidth - 1);
-        var minY = Math.Clamp(rawMinY, 0, maximumHeight - 1);
-        var maxY = Math.Clamp(rawMaxY, 0, maximumHeight - 1);
+        if (TraceEnabled &&
+            _triangleTraceCount < _triangleTrace.Length &&
+            _textureEnabled &&
+            _combinerUsesTexture)
+        {
+            var tile = _tiles[Math.Clamp(_textureTile, 0, _tiles.Length - 1)];
+            var tileWidth = Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1);
+            var duplicate = false;
+            for (var existing = 0; existing < _triangleTraceCount; existing++)
+            {
+                var seen = _triangleTrace[existing];
+                if (seen.TileWidth == tileWidth &&
+                    seen.Line == tile.Line &&
+                    seen.MaskS == tile.MaskS &&
+                    seen.ClampS == tile.ClampS &&
+                    seen.UpperLeftS == tile.UpperLeftS)
+                {
+                    duplicate = true;
+                    break;
+                }
+            }
+
+            if (duplicate)
+            {
+                goto skipTrace;
+            }
+
+            _triangleTrace[_triangleTraceCount++] = new Fast3dTriangleTrace(
+                rawMinX,
+                rawMinY,
+                rawMaxX,
+                rawMaxY,
+                a.TextureCoordinate,
+                b.TextureCoordinate,
+                c.TextureCoordinate,
+                Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1),
+                Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1),
+                tile.MaskS,
+                tile.MaskT,
+                tile.ClampS,
+                tile.ClampT,
+                tile.ShiftS,
+                tile.ShiftT,
+                _textureScaleS,
+                _textureScaleT,
+                tile.Line,
+                tile.Size,
+                tile.UpperLeftS,
+                tile.UpperLeftT);
+        }
+
+        skipTrace:
+        var minX = Math.Clamp(Math.Max(rawMinX, _scissorLeft), 0, _colorImageWidth - 1);
+        var maxX = Math.Clamp(Math.Min(rawMaxX, _scissorRight - 1), 0, _colorImageWidth - 1);
+        var minY = Math.Clamp(Math.Max(rawMinY, _scissorTop), 0, maximumHeight - 1);
+        var maxY = Math.Clamp(Math.Min(rawMaxY, _scissorBottom - 1), 0, maximumHeight - 1);
         var inverseArea = 1f / area;
         const uint zCompare = 0x10;
         const uint zUpdate = 0x20;
@@ -928,6 +1084,27 @@ public sealed class Fast3dRenderer
             return;
         }
 
+        if (TraceEnabled && _rectangleTraceCount < _rectangleTrace.Length)
+        {
+            var tile = _tiles[Math.Clamp(tileIndex, 0, _tiles.Length - 1)];
+            _rectangleTrace[_rectangleTraceCount++] = new Fast3dRectangleTrace(
+                left,
+                top,
+                right,
+                bottom,
+                startS,
+                startT,
+                stepS,
+                stepT,
+                Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1),
+                Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1),
+                tile.MaskS,
+                tile.MaskT,
+                tile.ClampS,
+                tile.ClampT,
+                CycleType);
+        }
+
         var maximumHeight = Math.Min(
             480,
             Math.Max(
@@ -986,6 +1163,9 @@ public sealed class Fast3dRenderer
                     ? ReadTmemByte(bitOffset >> 3) >> 4
                     : ReadTmemByte(bitOffset >> 3) & 0xF)),
             (2, 1) => DecodePaletteTexel(ReadTmemByte(bitOffset >> 3)),
+            (3, 0) => DecodeIntensityAlpha4(
+                ReadTmemByte(bitOffset >> 3),
+                x),
             (3, 1) => DecodeIntensityAlpha8(ReadTmemByte(bitOffset >> 3)),
             (3, 2) => DecodeIntensityAlpha16(ReadTmemUInt16(bitOffset >> 3)),
             (4, 0) => DecodeIntensity4(
@@ -1098,6 +1278,13 @@ public sealed class Fast3dRenderer
             ((pixel >> 16) & 0xFF) / 255f,
             ((pixel >> 8) & 0xFF) / 255f,
             (pixel & 0xFF) / 255f);
+
+    private static Vector4 DecodeIntensityAlpha4(byte packed, int x)
+    {
+        var texel = (x & 1) == 0 ? packed >> 4 : packed & 0xF;
+        var intensity = (texel >> 1) / 7f;
+        return new Vector4(intensity, intensity, intensity, texel & 1);
+    }
 
     private static Vector4 DecodeIntensityAlpha8(byte pixel)
     {
@@ -1282,6 +1469,65 @@ public sealed class Fast3dRenderer
         int UpperLeftT,
         int LowerRightS,
         int LowerRightT);
+
+    /// <summary>Diagnostic capture of texture rectangles for the trace tools.</summary>
+    internal readonly record struct Fast3dRectangleTrace(
+        int Left,
+        int Top,
+        int Right,
+        int Bottom,
+        float StartS,
+        float StartT,
+        float StepS,
+        float StepT,
+        int TileWidth,
+        int TileHeight,
+        int MaskS,
+        int MaskT,
+        bool ClampS,
+        bool ClampT,
+        uint CycleType);
+
+    /// <summary>
+    /// Enables the diagnostic capture below. Off by default: the capture
+    /// de-duplicates against everything recorded so far, which is far too
+    /// costly to run per triangle during normal play.
+    /// </summary>
+    internal bool TraceEnabled { get; set; }
+
+    internal ReadOnlySpan<Fast3dRectangleTrace> RecentTextureRectangles =>
+        _rectangleTrace.AsSpan(0, _rectangleTraceCount);
+
+    internal void ClearTextureRectangleTrace() => _rectangleTraceCount = 0;
+
+    /// <summary>Diagnostic capture of textured triangles for the trace tools.</summary>
+    internal readonly record struct Fast3dTriangleTrace(
+        int MinX,
+        int MinY,
+        int MaxX,
+        int MaxY,
+        Vector2 TextureA,
+        Vector2 TextureB,
+        Vector2 TextureC,
+        int TileWidth,
+        int TileHeight,
+        int MaskS,
+        int MaskT,
+        bool ClampS,
+        bool ClampT,
+        int ShiftS,
+        int ShiftT,
+        float ScaleS,
+        float ScaleT,
+        int Line,
+        int Size,
+        int UpperLeftS,
+        int UpperLeftT);
+
+    internal ReadOnlySpan<Fast3dTriangleTrace> RecentTexturedTriangles =>
+        _triangleTrace.AsSpan(0, _triangleTraceCount);
+
+    internal void ClearTexturedTriangleTrace() => _triangleTraceCount = 0;
 
     private readonly record struct LoadedTexture(
         uint SourceAddress,

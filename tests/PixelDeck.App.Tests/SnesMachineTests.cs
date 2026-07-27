@@ -731,6 +731,12 @@ public sealed class SnesMachineTests
                 var gameName = Path.GetFileName(gamePath);
                 var frameCount = requestedFrameCount ?? RequiredBootFrames(gameName);
                 uint[] frame = [];
+                // Distinct() over a full 256x224 frame allocates a fresh
+                // HashSet every call; doing that every frame across up to
+                // 1,200 frames for each of ~270 games generates enormous GC
+                // churn. Reusing one HashSet keeps this a crash/color audit
+                // instead of a memory-pressure test in its own right.
+                var seenColors = new HashSet<uint>();
                 var maximumColors = 0;
                 var visibleFrames = 0;
                 var audioBuffer = new float[4096];
@@ -758,7 +764,7 @@ public sealed class SnesMachineTests
                     {
                         zeldaStartFrames--;
                     }
-                    frame = machine.RunFrame().ToArray();
+                    var buffer = machine.RunFrame();
                     int chunkRead;
                     while ((chunkRead = machine.ReadAudioSamples(audioBuffer)) > 0)
                     {
@@ -769,10 +775,21 @@ public sealed class SnesMachineTests
                         }
                     }
 
-                    maximumColors = Math.Max(maximumColors, frame.Distinct().Count());
+                    seenColors.Clear();
+                    foreach (var pixel in buffer)
+                    {
+                        seenColors.Add(pixel);
+                    }
+
+                    maximumColors = Math.Max(maximumColors, seenColors.Count);
                     if (!machine.IsDisplayBlanked)
                     {
                         visibleFrames++;
+                    }
+
+                    if (index == frameCount - 1)
+                    {
+                        frame = buffer.ToArray();
                     }
                 }
 

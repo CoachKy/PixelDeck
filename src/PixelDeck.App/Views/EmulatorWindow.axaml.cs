@@ -171,8 +171,18 @@ public partial class EmulatorWindow : Window
                     {
                         lock (_presentationLock)
                         {
-                            RunMachineFrame(_presentationPixels
-                                ?? throw new InvalidOperationException("The emulator display buffer is not initialized."));
+                            // A Nintendo 64 frame can change resolution while
+                            // it runs, so reserve the largest image the video
+                            // interface can produce before stepping it.
+                            var requiredPixels = _n64Machine is not null
+                                ? N64Machine.MaximumWidth * N64Machine.MaximumHeight
+                                : MachineWidth * MachineHeight;
+                            if (_presentationPixels is null || _presentationPixels.Length < requiredPixels)
+                            {
+                                _presentationPixels = new uint[requiredPixels];
+                            }
+
+                            RunMachineFrame(_presentationPixels);
                             _presentationFrameNumber = frameNumber;
                         }
 
@@ -277,15 +287,33 @@ public partial class EmulatorWindow : Window
             NesFramePresentation.MaskHorizontalOverscan(pixels, MachineWidth, MachineHeight);
         }
 
-        var bitmap = _frameBitmap ?? throw new InvalidOperationException("The emulator display is not initialized.");
+        // The Nintendo 64 video interface can be reprogrammed at any time, so
+        // the target bitmap has to follow the machine's live output size.
+        var width = MachineWidth;
+        var height = MachineHeight;
+        if (_frameBitmap is null ||
+            _frameBitmap.PixelSize.Width != width ||
+            _frameBitmap.PixelSize.Height != height)
+        {
+            _frameBitmap?.Dispose();
+            _frameBitmap = new WriteableBitmap(
+                new PixelSize(width, height),
+                new Vector(96, 96),
+                PixelFormat.Bgra8888,
+                AlphaFormat.Opaque);
+            FrameImage.Source = _frameBitmap;
+        }
+
+        var bitmap = _frameBitmap;
         using (var framebuffer = bitmap.Lock())
         {
             fixed (uint* source = pixels)
             {
-                var sourceRowBytes = MachineWidth * sizeof(uint);
-                for (var row = 0; row < MachineHeight; row++)
+                var sourceRowBytes = width * sizeof(uint);
+                var rows = Math.Min(height, pixels.Length / Math.Max(width, 1));
+                for (var row = 0; row < rows; row++)
                 {
-                    var sourceRow = source + (row * MachineWidth);
+                    var sourceRow = source + (row * width);
                     var destinationRow = (byte*)framebuffer.Address + (row * framebuffer.RowBytes);
                     Buffer.MemoryCopy(sourceRow, destinationRow, framebuffer.RowBytes, sourceRowBytes);
                 }

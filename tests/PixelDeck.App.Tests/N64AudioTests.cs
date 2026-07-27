@@ -160,13 +160,35 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             $"{cartridge.Title} ({cartridge.GameCode}) {cartridge.Cic} entry=0x{cartridge.EntryPoint:X8}");
 
         var machine = N64Machine.Create(cartridge);
+        machine.Renderer.TraceEnabled = true;
         var failure = default(Exception);
         var fields = 0;
+        var bestFrame = default(uint[]);
+        var bestNonBlack = -1;
+        var bestField = -1;
+        var maximumFields = int.TryParse(
+            Environment.GetEnvironmentVariable("PIXEL64_TRACE_FIELDS"),
+            out var configuredFields)
+            ? configuredFields
+            : 600;
         try
         {
-            for (; fields < 600; fields++)
+            for (; fields < maximumFields; fields++)
             {
                 machine.RunFrame();
+                if (fields % 10 != 9)
+                {
+                    continue;
+                }
+
+                var candidate = machine.CurrentFrame.ToArray();
+                var nonBlack = candidate.Count(pixel => (pixel & 0x00FFFFFF) != 0);
+                if (nonBlack > bestNonBlack)
+                {
+                    bestFrame = candidate;
+                    bestNonBlack = nonBlack;
+                    bestField = fields;
+                }
             }
         }
         catch (Exception exception)
@@ -230,6 +252,95 @@ public sealed class N64AudioTests(ITestOutputHelper output)
                 $"PC sample: 0x{machine.Cpu.ProgramCounter:X8} " +
                 $"instr=0x{machine.Cpu.LastInstruction:X8}");
         }
+
+        foreach (var triangle in machine.Renderer.RecentTexturedTriangles)
+        {
+            output.WriteLine(
+                $"  tri ({triangle.MinX},{triangle.MinY})-({triangle.MaxX},{triangle.MaxY}) " +
+                $"uv=[{triangle.TextureA.X:0.0},{triangle.TextureA.Y:0.0} " +
+                $"{triangle.TextureB.X:0.0},{triangle.TextureB.Y:0.0} " +
+                $"{triangle.TextureC.X:0.0},{triangle.TextureC.Y:0.0}] " +
+                $"tile={triangle.TileWidth}x{triangle.TileHeight} " +
+                $"mask={triangle.MaskS},{triangle.MaskT} " +
+                $"clamp={triangle.ClampS},{triangle.ClampT} " +
+                $"shift={triangle.ShiftS},{triangle.ShiftT} " +
+                $"scale={triangle.ScaleS:0.000},{triangle.ScaleT:0.000} " +
+                $"LINE={triangle.Line} size={triangle.Size} " +
+                $"ul={triangle.UpperLeftS},{triangle.UpperLeftT} " +
+                $"widthBits={triangle.TileWidth * BitsFor(triangle.Size)} lineBits={triangle.Line * 64}");
+        }
+
+        output.WriteLine(
+            $"color image=0x{machine.Renderer.ColorImageAddress:X8} " +
+            $"width={machine.Renderer.ColorImageWidth} " +
+            $"vs VI origin=0x{machine.Memory.ViOrigin & 0x7FFFFF:X8} width={machine.Memory.ViWidth}");
+        var horizontal = machine.Memory.ViHorizontalVideo;
+        var vertical = machine.Memory.ViVerticalVideo;
+        output.WriteLine(
+            $"VI regs: width={machine.Memory.ViWidth} " +
+            $"hVideo={(horizontal >> 16) & 0x3FF}..{horizontal & 0x3FF} " +
+            $"vVideo={(vertical >> 16) & 0x3FF}..{vertical & 0x3FF} " +
+            $"xScale=0x{machine.Memory.ViXScale & 0xFFF:X3} " +
+            $"yScale=0x{machine.Memory.ViYScale & 0xFFF:X3} " +
+            $"control=0x{machine.Memory.ViControl:X5}");
+        output.WriteLine($"texture rectangles drawn={machine.Renderer.TextureRectanglesDrawn:N0}");
+        foreach (var rectangle in machine.Renderer.RecentTextureRectangles)
+        {
+            output.WriteLine(
+                $"  rect ({rectangle.Left},{rectangle.Top})-({rectangle.Right},{rectangle.Bottom}) " +
+                $"size={rectangle.Right - rectangle.Left}x{rectangle.Bottom - rectangle.Top} " +
+                $"s={rectangle.StartS:0.0}/{rectangle.StepS:0.000} " +
+                $"t={rectangle.StartT:0.0}/{rectangle.StepT:0.000} " +
+                $"tile={rectangle.TileWidth}x{rectangle.TileHeight} " +
+                $"mask={rectangle.MaskS},{rectangle.MaskT} " +
+                $"clamp={rectangle.ClampS},{rectangle.ClampT} cycle={rectangle.CycleType}");
+        }
+
+        WritePpm(
+            Path.Combine(Path.GetTempPath(), "pixel64-cart-frame.ppm"),
+            machine.CurrentFrame.ToArray(),
+            machine.Width,
+            machine.Height,
+            output);
+        if (bestFrame is not null)
+        {
+            output.WriteLine($"best frame: field={bestField} non-black={bestNonBlack}");
+            WritePpm(
+                Path.Combine(Path.GetTempPath(), "pixel64-cart-best-frame.ppm"),
+                bestFrame,
+                machine.Width,
+                machine.Height,
+                output);
+        }
+    }
+
+    private static int BitsFor(int size) => size switch
+    {
+        0 => 4,
+        1 => 8,
+        2 => 16,
+        3 => 32,
+        _ => 8
+    };
+
+    private static void WritePpm(
+        string path,
+        uint[] pixels,
+        int width,
+        int height,
+        ITestOutputHelper output)
+    {
+        using var frame = File.Create(path);
+        using var writer = new BinaryWriter(frame);
+        writer.Write(System.Text.Encoding.ASCII.GetBytes($"P6\n{width} {height}\n255\n"));
+        foreach (var pixel in pixels)
+        {
+            writer.Write((byte)(pixel >> 16));
+            writer.Write((byte)(pixel >> 8));
+            writer.Write((byte)pixel);
+        }
+
+        output.WriteLine($"frame={path}");
     }
 
     private static void WriteCommandList(N64Memory memory, uint address, uint[] commands)

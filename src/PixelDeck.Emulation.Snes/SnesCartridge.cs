@@ -251,13 +251,22 @@ public sealed class SnesCartridge
         var ramSize = header.RamSizeExponent is > 0 and < 16
             ? 1 << (header.RamSizeExponent + 10)
             : 0;
-        var hasSupportedMapByte = header.MapMode switch
-        {
-            SnesMapMode.LoRom => header.MapModeByte is 0x20 or 0x30,
-            SnesMapMode.HiRom => header.MapModeByte is 0x21 or 0x31,
-            SnesMapMode.ExHiRom => header.MapModeByte is 0x25 or 0x35,
-            _ => false
-        };
+        // The SNES hardware itself never reads this byte; it exists purely
+        // for tools. Real commercial carts occasionally ship with stray bits
+        // here (e.g. Contra III's $53, Super Adventure Island's $44 instead
+        // of $20), so once the checksum has already proven this is the
+        // genuine header at this offset, the map mode that offset was
+        // located under is trusted over a literal byte match.
+        var hasSupportedMapByte =
+            header.MapMode is SnesMapMode.LoRom or SnesMapMode.HiRom or SnesMapMode.ExHiRom &&
+            (header.ChecksumValid ||
+                header.MapMode switch
+                {
+                    SnesMapMode.LoRom => header.MapModeByte is 0x20 or 0x30,
+                    SnesMapMode.HiRom => header.MapModeByte is 0x21 or 0x31,
+                    SnesMapMode.ExHiRom => header.MapModeByte is 0x25 or 0x35,
+                    _ => false
+                });
         // The low nibble describes the installed storage while the high
         // nibble selects a coprocessor family. $03-$06 with high nibble zero
         // are DSP-family boards. PixelSNES currently implements DSP-1, the
@@ -272,18 +281,23 @@ public sealed class SnesCartridge
             !hasCx4;
         var hasBatteryBackedRam = header.CartridgeType is 0x02 or 0x05 or 0x06;
         var isPal = IsPalRegion(header.DestinationCode);
-        var isSupported = hasSupportedMapByte && !hasUnsupportedEnhancementChip && !isPal;
+        var isSupported = hasSupportedMapByte && !hasUnsupportedEnhancementChip;
+        // PAL only changes the field rate and scanline count (50 Hz/312 lines
+        // vs. NTSC's 60 Hz/262), both of which are already read from
+        // SnesCartridgeInfo.IsPal by SnesBus/SnesPpu/SnesMachine rather than
+        // assumed. The CPU/PPU/APU cycle ratios that matter for emulation
+        // stay identical across regions, so there was no functional reason
+        // to reject these carts.
+        var region = isPal ? "PAL" : "NTSC";
         var compatibility = !hasSupportedMapByte
             ? $"SNES map mode ${header.MapModeByte:X2} is not implemented yet."
             : hasUnsupportedEnhancementChip
                 ? $"SNES enhancement-chip cartridge type ${header.CartridgeType:X2} is not implemented yet."
-                : isPal
-                    ? "PAL SNES timing is not certified yet."
-                    : hasDsp1
-                        ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC, DSP-1). CPU, PPU video, and S-DSP stereo audio are active."
-                        : hasCx4
-                            ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC, CX4). CPU, PPU video, CX4 graphics commands, and S-DSP stereo audio are active."
-                        : $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, NTSC). CPU, PPU video, and S-DSP stereo audio are active.";
+                : hasDsp1
+                    ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, {region}, DSP-1). CPU, PPU video, and S-DSP stereo audio are active."
+                    : hasCx4
+                        ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, {region}, CX4). CPU, PPU video, CX4 graphics commands, and S-DSP stereo audio are active."
+                    : $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, {region}). CPU, PPU video, and S-DSP stereo audio are active.";
 
         var info = new SnesCartridgeInfo(
             header.Title,
@@ -401,7 +415,8 @@ public sealed class SnesCartridge
         }
 
         var score = printableTitleBytes >= 18 ? 4 : printableTitleBytes >= 12 ? 2 : -3;
-        if ((checksum ^ complement) == 0xFFFF && checksum != 0)
+        var checksumValid = (checksum ^ complement) == 0xFFFF && checksum != 0;
+        if (checksumValid)
         {
             score += 8;
         }
@@ -429,7 +444,8 @@ public sealed class SnesCartridge
             ramSize,
             destination,
             resetVector,
-            score);
+            score,
+            checksumValid);
     }
 
     private static ushort ReadWord(byte[] data, int offset) =>
@@ -485,5 +501,6 @@ public sealed class SnesCartridge
         byte RamSizeExponent,
         byte DestinationCode,
         ushort ResetVector,
-        int Score);
+        int Score,
+        bool ChecksumValid);
 }

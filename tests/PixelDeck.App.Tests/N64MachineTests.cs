@@ -60,6 +60,39 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         }
     }
 
+    [Theory]
+    // Verified against the real cartridges: SM64/Quest 64/Ocarina program a
+    // 320-wide frame buffer, GoldenEye 007 programs 440.
+    [InlineData(320u, 0x400u, 320, 237)]
+    [InlineData(440u, 0x580u, 440, 325)]
+    [InlineData(640u, 0x400u, 640, 237)]
+    public void VideoResolutionFollowsTheVideoInterfaceRegisters(
+        uint viWidth,
+        uint verticalScale,
+        int expectedWidth,
+        int expectedHeight)
+    {
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        machine.Memory.WriteUInt32(0xA4400008, viWidth);
+        machine.Memory.WriteUInt32(0xA4400028, (37u << 16) | 511u);
+        machine.Memory.WriteUInt32(0xA4400034, verticalScale);
+
+        Assert.Equal(expectedWidth, machine.Width);
+        Assert.Equal(expectedHeight, machine.Height);
+        Assert.Equal(expectedWidth * expectedHeight, machine.CurrentFrame.Length);
+    }
+
+    [Fact]
+    public void VideoResolutionKeepsTheLastValidSizeWhileTheInterfaceIsUnprogrammed()
+    {
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+
+        machine.Memory.WriteUInt32(0xA4400008, 0);
+
+        Assert.Equal(320, machine.Width);
+        Assert.Equal(240, machine.Height);
+    }
+
     [Fact]
     public void ControllerSerializesButtonsAndSignedAnalogStick()
     {
