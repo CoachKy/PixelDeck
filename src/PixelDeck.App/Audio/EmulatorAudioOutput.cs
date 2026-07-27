@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using NAudio.Wave;
+using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Nes;
 using PixelDeck.Emulation.Snes;
 
@@ -17,6 +18,11 @@ internal sealed class EmulatorAudioOutput : IDisposable
     }
 
     public EmulatorAudioOutput(SnesMachine machine)
+        : this(new EmulatorSampleProvider(machine))
+    {
+    }
+
+    public EmulatorAudioOutput(N64Machine machine)
         : this(new EmulatorSampleProvider(machine))
     {
     }
@@ -56,6 +62,8 @@ internal sealed class EmulatorAudioOutput : IDisposable
 
     public void SetMachine(SnesMachine machine) => _provider.SetMachine(machine);
 
+    public void SetMachine(N64Machine machine) => _provider.SetMachine(machine);
+
     public bool IsPaused
     {
         set => _provider.IsPaused = value;
@@ -78,6 +86,7 @@ internal sealed class EmulatorAudioOutput : IDisposable
     {
         private NesMachine? _nesMachine;
         private SnesMachine? _snesMachine;
+        private N64Machine? _n64Machine;
         private int _isPaused;
         private int _hasStarted;
         private int _playbackRate = 1;
@@ -95,6 +104,12 @@ internal sealed class EmulatorAudioOutput : IDisposable
         {
             _snesMachine = machine;
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(SnesMachine.AudioSampleRate, 2);
+        }
+
+        public EmulatorSampleProvider(N64Machine machine)
+        {
+            _n64Machine = machine;
+            WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(N64Machine.AudioSampleRate, 2);
         }
 
         public WaveFormat WaveFormat { get; }
@@ -122,28 +137,43 @@ internal sealed class EmulatorAudioOutput : IDisposable
         {
             if (WaveFormat.Channels != 1)
             {
-                throw new InvalidOperationException("Cannot attach an NES machine to a stereo SNES audio stream.");
+                throw new InvalidOperationException("Cannot attach an NES machine to a stereo audio stream.");
             }
 
             Volatile.Write(ref _snesMachine, null);
+            Volatile.Write(ref _n64Machine, null);
             Volatile.Write(ref _nesMachine, machine);
         }
 
         public void SetMachine(SnesMachine machine)
         {
-            if (WaveFormat.Channels != 2)
+            if (WaveFormat.Channels != 2 || WaveFormat.SampleRate != SnesMachine.AudioSampleRate)
             {
-                throw new InvalidOperationException("Cannot attach an SNES machine to a mono NES audio stream.");
+                throw new InvalidOperationException("Cannot attach an SNES machine to this audio stream.");
             }
 
             Volatile.Write(ref _nesMachine, null);
+            Volatile.Write(ref _n64Machine, null);
             Volatile.Write(ref _snesMachine, machine);
+        }
+
+        public void SetMachine(N64Machine machine)
+        {
+            if (WaveFormat.Channels != 2 || WaveFormat.SampleRate != N64Machine.AudioSampleRate)
+            {
+                throw new InvalidOperationException("Cannot attach an N64 machine to this audio stream.");
+            }
+
+            Volatile.Write(ref _nesMachine, null);
+            Volatile.Write(ref _snesMachine, null);
+            Volatile.Write(ref _n64Machine, machine);
         }
 
         public void ClearMachine()
         {
             Volatile.Write(ref _nesMachine, null);
             Volatile.Write(ref _snesMachine, null);
+            Volatile.Write(ref _n64Machine, null);
         }
 
         public int Read(byte[] buffer, int offset, int count)
@@ -204,7 +234,13 @@ internal sealed class EmulatorAudioOutput : IDisposable
             }
 
             var snesMachine = Volatile.Read(ref _snesMachine);
-            return snesMachine?.ReadAudioSamples(destination) ?? 0;
+            if (snesMachine is not null)
+            {
+                return snesMachine.ReadAudioSamples(destination);
+            }
+
+            var n64Machine = Volatile.Read(ref _n64Machine);
+            return n64Machine?.ReadAudioSamples(destination) ?? 0;
         }
     }
 }

@@ -1,3 +1,6 @@
+using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+
 namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Memory
@@ -47,6 +50,7 @@ public sealed class N64Memory
     private uint _viXScale;
     private uint _viYScale;
     private long _viTicksInField;
+    private long _viNextLineChangeTick;
     private uint _viField;
     private uint _viLastInterruptLine = uint.MaxValue;
     private uint _aiDramAddress;
@@ -55,6 +59,11 @@ public sealed class N64Memory
     private uint _aiBitRate;
     private N64AiDma _aiCurrent;
     private N64AiDma _aiQueued;
+    private readonly float[] _audioRing = new float[1 << 17];
+    private readonly object _audioLock = new();
+    private int _audioReadPosition;
+    private int _audioWritePosition;
+    private int _audioBufferedValues;
 
     public N64Memory(N64Cartridge cartridge)
     {
@@ -96,6 +105,8 @@ public sealed class N64Memory
     public long VerticalInterruptsRaised { get; private set; }
 
     public long AudioDmasCompleted { get; private set; }
+
+    public long DroppedAudioSampleCount { get; private set; }
 
     public long ControllerPolls { get; private set; }
 
@@ -158,73 +169,108 @@ public sealed class N64Memory
 
     internal void SetTlbAsid(byte asid) => _tlbAsid = asid;
 
+    /// <summary>
+    /// Resolves a physical address to the backing array of a directly mapped
+    /// region when the whole <paramref name="length"/>-byte access fits inside
+    /// it. This is the single definition of the direct memory map; accesses
+    /// that straddle a region boundary return null and take the byte path.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private byte[]? TryGetDirectRegion(uint physicalAddress, uint length, bool writable, out int offset)
+    {
+        var end = (ulong)physicalAddress + length;
+        if (end <= RdramSize)
+        {
+            offset = (int)physicalAddress;
+            return Rdram;
+        }
+
+        if (physicalAddress >= 0x04000000 && end <= 0x04001000)
+        {
+            offset = (int)(physicalAddress & 0xFFF);
+            return SpDmem;
+        }
+
+        if (physicalAddress >= 0x04001000 && end <= 0x04002000)
+        {
+            offset = (int)(physicalAddress & 0xFFF);
+            return SpImem;
+        }
+
+        if (!writable && physicalAddress >= CartRomBase && end - CartRomBase <= (ulong)_cartridge.Rom.Length)
+        {
+            offset = (int)(physicalAddress - CartRomBase);
+            return _cartridge.Rom;
+        }
+
+        if (physicalAddress >= 0x1FC007C0 && end <= 0x1FC00800)
+        {
+            offset = (int)(physicalAddress - 0x1FC007C0);
+            return PifRam;
+        }
+
+        offset = 0;
+        return null;
+    }
+
     public byte ReadByte(uint virtualAddress)
     {
         var address = TranslateVirtualAddress(virtualAddress);
-        if (address < RdramSize)
+        var region = TryGetDirectRegion(address, 1, writable: false, out var offset);
+        if (region is not null)
         {
-            return Rdram[address & RdramMask];
-        }
-
-        if (address is >= 0x04000000 and < 0x04001000)
-        {
-            return SpDmem[address & 0xFFF];
-        }
-
-        if (address is >= 0x04001000 and < 0x04002000)
-        {
-            return SpImem[address & 0xFFF];
-        }
-
-        if (address is >= CartRomBase && address - CartRomBase < _cartridge.Rom.Length)
-        {
-            return _cartridge.Rom[address - CartRomBase];
-        }
-
-        if (address is >= 0x1FC007C0 and < 0x1FC00800)
-        {
-            return PifRam[address - 0x1FC007C0];
+            return region[offset];
         }
 
         return (byte)(ReadIoWord(address & ~3u) >> (int)((3 - (address & 3)) * 8));
     }
 
-    public ushort ReadUInt16(uint address) =>
-        (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
+    public ushort ReadUInt16(uint address)
+    {
+        var physical = TranslateVirtualAddress(address);
+        var region = TryGetDirectRegion(physical, 2, writable: false, out var offset);
+        if (region is not null)
+        {
+            return BinaryPrimitives.ReadUInt16BigEndian(region.AsSpan(offset, 2));
+        }
 
-    public uint ReadUInt32(uint address) =>
-        ((uint)ReadByte(address) << 24) |
-        ((uint)ReadByte(address + 1) << 16) |
-        ((uint)ReadByte(address + 2) << 8) |
-        ReadByte(address + 3);
+        return (ushort)((ReadByte(address) << 8) | ReadByte(address + 1));
+    }
 
-    public ulong ReadUInt64(uint address) =>
-        ((ulong)ReadUInt32(address) << 32) | ReadUInt32(address + 4);
+    public uint ReadUInt32(uint address)
+    {
+        var physical = TranslateVirtualAddress(address);
+        var region = TryGetDirectRegion(physical, 4, writable: false, out var offset);
+        if (region is not null)
+        {
+            return BinaryPrimitives.ReadUInt32BigEndian(region.AsSpan(offset, 4));
+        }
+
+        return ((uint)ReadByte(address) << 24) |
+               ((uint)ReadByte(address + 1) << 16) |
+               ((uint)ReadByte(address + 2) << 8) |
+               ReadByte(address + 3);
+    }
+
+    public ulong ReadUInt64(uint address)
+    {
+        var physical = TranslateVirtualAddress(address);
+        var region = TryGetDirectRegion(physical, 8, writable: false, out var offset);
+        if (region is not null)
+        {
+            return BinaryPrimitives.ReadUInt64BigEndian(region.AsSpan(offset, 8));
+        }
+
+        return ((ulong)ReadUInt32(address) << 32) | ReadUInt32(address + 4);
+    }
 
     public void WriteByte(uint virtualAddress, byte value)
     {
         var address = TranslateVirtualAddress(virtualAddress);
-        if (address < RdramSize)
+        var region = TryGetDirectRegion(address, 1, writable: true, out var offset);
+        if (region is not null)
         {
-            Rdram[address & RdramMask] = value;
-            return;
-        }
-
-        if (address is >= 0x04000000 and < 0x04001000)
-        {
-            SpDmem[address & 0xFFF] = value;
-            return;
-        }
-
-        if (address is >= 0x04001000 and < 0x04002000)
-        {
-            SpImem[address & 0xFFF] = value;
-            return;
-        }
-
-        if (address is >= 0x1FC007C0 and < 0x1FC00800)
-        {
-            PifRam[address - 0x1FC007C0] = value;
+            region[offset] = value;
             return;
         }
 
@@ -236,6 +282,14 @@ public sealed class N64Memory
 
     public void WriteUInt16(uint address, ushort value)
     {
+        var physical = TranslateVirtualAddress(address);
+        var region = TryGetDirectRegion(physical, 2, writable: true, out var offset);
+        if (region is not null)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(region.AsSpan(offset, 2), value);
+            return;
+        }
+
         WriteByte(address, (byte)(value >> 8));
         WriteByte(address + 1, (byte)value);
     }
@@ -243,8 +297,17 @@ public sealed class N64Memory
     public void WriteUInt32(uint address, uint value)
     {
         var physical = TranslateVirtualAddress(address);
+        var region = TryGetDirectRegion(physical, 4, writable: true, out var offset);
+        if (region is not null)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(region.AsSpan(offset, 4), value);
+            return;
+        }
+
         if (IsDirectMemory(physical))
         {
+            // The access straddles a direct-region boundary; write each byte
+            // through its own translation exactly as before.
             WriteByte(address, (byte)(value >> 24));
             WriteByte(address + 1, (byte)(value >> 16));
             WriteByte(address + 2, (byte)(value >> 8));
@@ -257,6 +320,14 @@ public sealed class N64Memory
 
     public void WriteUInt64(uint address, ulong value)
     {
+        var physical = TranslateVirtualAddress(address);
+        var region = TryGetDirectRegion(physical, 8, writable: true, out var offset);
+        if (region is not null)
+        {
+            BinaryPrimitives.WriteUInt64BigEndian(region.AsSpan(offset, 8), value);
+            return;
+        }
+
         WriteUInt32(address, (uint)(value >> 32));
         WriteUInt32(address + 4, (uint)value);
     }
@@ -272,6 +343,15 @@ public sealed class N64Memory
             _viTicksInField -= CpuTicksPerField;
             _viField ^= (_viControl >> 6) & 1;
             _viLastInterruptLine = uint.MaxValue;
+            _viNextLineChangeTick = 0;
+        }
+
+        // UpdateViCurrent only observes state at line granularity, so skip it
+        // until the field ticks cross the next line boundary. The cache is
+        // zeroed whenever anything that feeds the computation changes.
+        if (_viTicksInField < _viNextLineChangeTick)
+        {
+            return;
         }
 
         UpdateViCurrent();
@@ -438,6 +518,7 @@ public sealed class N64Memory
         _viTicksInField = reader.ReadInt64();
         _viField = reader.ReadUInt32();
         _viLastInterruptLine = reader.ReadUInt32();
+        _viNextLineChangeTick = 0;
         VerticalInterruptsRaised = reader.ReadInt64();
         _aiDramAddress = reader.ReadUInt32();
         _aiControl = reader.ReadUInt32();
@@ -597,6 +678,7 @@ public sealed class N64Memory
                 break;
             case 0x0440000C:
                 _viVerticalInterrupt = Combine(_viVerticalInterrupt, value, mask) & 0x3FF;
+                _viNextLineChangeTick = 0;
                 break;
             case 0x04400010:
                 MiInterrupt &= ~(1u << 3);
@@ -1082,6 +1164,75 @@ public sealed class N64Memory
         {
             _aiQueued = dma;
         }
+        else
+        {
+            return;
+        }
+
+        CaptureAudioDmaSamples(dma.Address, dma.Length);
+    }
+
+    private void CaptureAudioDmaSamples(uint address, uint length)
+    {
+        var offset = (int)(address & RdramMask);
+        var values = (int)Math.Min(length, (uint)(RdramSize - offset)) / 2;
+        lock (_audioLock)
+        {
+            for (var index = 0; index < values; index++)
+            {
+                if (_audioBufferedValues == _audioRing.Length)
+                {
+                    DroppedAudioSampleCount += values - index;
+                    return;
+                }
+
+                var sample = BinaryPrimitives.ReadInt16BigEndian(Rdram.AsSpan(offset + (index * 2), 2));
+                _audioRing[_audioWritePosition] = sample * (1f / 32768f);
+                _audioWritePosition = (_audioWritePosition + 1) & (_audioRing.Length - 1);
+                _audioBufferedValues++;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads buffered stereo audio (interleaved left/right floats) captured
+    /// from completed audio-interface DMAs. Safe to call from an audio thread.
+    /// </summary>
+    public int ReadAudioSamples(Span<float> destination)
+    {
+        lock (_audioLock)
+        {
+            var count = Math.Min(destination.Length, _audioBufferedValues);
+            for (var index = 0; index < count; index++)
+            {
+                destination[index] = _audioRing[_audioReadPosition];
+                _audioReadPosition = (_audioReadPosition + 1) & (_audioRing.Length - 1);
+            }
+
+            _audioBufferedValues -= count;
+            return count;
+        }
+    }
+
+    public void ClearAudioSamples()
+    {
+        lock (_audioLock)
+        {
+            _audioReadPosition = 0;
+            _audioWritePosition = 0;
+            _audioBufferedValues = 0;
+        }
+    }
+
+    public int BufferedAudioSampleCount
+    {
+        get
+        {
+            lock (_audioLock)
+            {
+                return _audioBufferedValues;
+            }
+        }
     }
 
     private long CalculateAudioDmaTicks(uint length)
@@ -1163,6 +1314,7 @@ public sealed class N64Memory
             line = linesPerField - 1;
         }
 
+        _viNextLineChangeTick = (((line + 1L) * CpuTicksPerField) + linesPerField - 1) / linesPerField;
         _viCurrent = (line & ~1u) | _viField;
         var interruptLine = _viVerticalInterrupt & 0x3FE;
         var currentLine = _viCurrent & 0x3FE;

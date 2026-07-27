@@ -42,6 +42,12 @@ public sealed class SnesCartridge
         _rom = rom;
         Info = info;
         _ram = info.RamSize == 0 ? [] : new byte[info.RamSize];
+        // Fresh save RAM must not read as all zeros: games validate their
+        // battery data with checksums, and Ken Griffey Jr. Presents MLB's
+        // roster check passes on a zero-filled block, leaving every player
+        // name blank. The 0xFF fill matches uninitialized SRAM on real
+        // cartridges (and snes9x/bsnes), so first boot rebuilds defaults.
+        _ram.AsSpan().Fill(0xFF);
         _batterySavePath = info.HasBatteryBackedRam ? batterySavePath : null;
         Fingerprint = SHA256.HashData(rom);
         LoadBatterySave();

@@ -106,6 +106,10 @@ public partial class EmulatorWindow : Window
             {
                 _audioOutput = new EmulatorAudioOutput(_snesMachine);
             }
+            else if (_n64Machine is not null)
+            {
+                _audioOutput = new EmulatorAudioOutput(_n64Machine);
+            }
 
             UpdateStateAvailability();
             _inputTimer.Start();
@@ -530,6 +534,7 @@ public partial class EmulatorWindow : Window
             {
                 _nesMachine?.ClearAudioSamples();
                 _snesMachine?.ClearAudioSamples();
+                _n64Machine?.ClearAudioSamples();
             }
         }
 
@@ -859,6 +864,10 @@ public partial class EmulatorWindow : Window
                     {
                         _audioOutput.SetMachine(_snesMachine);
                     }
+                    else if (_n64Machine is not null)
+                    {
+                        _audioOutput.SetMachine(_n64Machine);
+                    }
                 }
             }
 
@@ -918,11 +927,14 @@ public partial class EmulatorWindow : Window
         var bufferedSampleValues =
             _nesMachine?.BufferedAudioSampleCount ??
             _snesMachine?.BufferedAudioSampleCount ??
+            _n64Machine?.BufferedAudioSampleCount ??
             0;
         var sampleRate = _snesMachine is not null
             ? SnesMachine.AudioSampleRate
-            : NesMachine.AudioSampleRate;
-        var channels = _snesMachine is not null ? 2 : 1;
+            : _n64Machine is not null
+                ? N64Machine.AudioSampleRate
+                : NesMachine.AudioSampleRate;
+        var channels = _snesMachine is not null || _n64Machine is not null ? 2 : 1;
         return _audioBufferSynchronizer.GetFrameInterval(
             MachineFramesPerSecond,
             playbackRate,

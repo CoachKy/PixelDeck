@@ -129,6 +129,30 @@ public sealed class SnesMachineTests
     }
 
     [Fact]
+    public void FreshBatteryBackedSaveRamReadsAsUninitialized()
+    {
+        var gamePath = CreateSyntheticLoRom(
+            cartridgeType: 0x02,
+            ramSizeExponent: 0x03);
+        try
+        {
+            var machine = SnesMachine.Load(gamePath);
+
+            // Zero-filled save RAM can satisfy a game's battery checksum.
+            // Ken Griffey Jr. Presents MLB then skips its first-boot roster
+            // initialization and every player name renders blank, so a
+            // virgin cartridge must expose the 0xFF pattern of real
+            // uninitialized SRAM instead.
+            Assert.Equal(0xFF, machine.Cartridge.Read(0x700000));
+            Assert.Equal(0xFF, machine.Cartridge.Read(0x701FFF));
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
     public void CompleteTemporaryBatterySaveIsRecoveredAfterInterruptedCommit()
     {
         var gamePath = CreateSyntheticLoRom(

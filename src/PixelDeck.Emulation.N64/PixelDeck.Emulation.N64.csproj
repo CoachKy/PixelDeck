@@ -3,6 +3,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!--
+      Pixel64 interprets 781,250 VR4300 instructions per field and cannot hold
+      60 fields per second without JIT optimization. Match the PixelNES
+      approach: keep PDBs, but always optimize this hot emulation assembly so
+      Debug launches of PixelDeck still reach full speed.
+    -->
+    <Optimize>true</Optimize>
     <Version>0.4.6</Version>
     <AssemblyVersion>0.4.6.0</AssemblyVersion>
     <FileVersion>0.4.6.0</FileVersion>

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Numerics;
 
 namespace PixelDeck.Emulation.N64;
@@ -38,6 +39,7 @@ public sealed class Fast3dRenderer
     private bool _combinerUsesTexture;
     private Vector4 _primitiveColor = Vector4.One;
     private uint _otherModeLow;
+    private uint _otherModeHigh;
 
     public Fast3dRenderer(N64Memory memory)
     {
@@ -73,6 +75,11 @@ public sealed class Fast3dRenderer
     public int ColorImageSize => _colorImageSize;
 
     internal uint OtherModeLow => _otherModeLow;
+
+    internal uint OtherModeHigh => _otherModeHigh;
+
+    /// <summary>RDP cycle type from other-mode-high bits 20-21 (2 = COPY).</summary>
+    private uint CycleType => (_otherModeHigh >> 20) & 3;
 
     public long UnsupportedCommands { get; private set; }
 
@@ -231,8 +238,13 @@ public sealed class Fast3dRenderer
                 case 0xB9: // G_SETOTHERMODE_L
                     SetOtherModeLow(word0, word1);
                     break;
+                case 0xBA: // G_SETOTHERMODE_H
+                    SetOtherModeHigh(word0, word1);
+                    break;
+                case 0xF0: // G_LOADTLUT
+                    LoadTextureLookupTable(word0, word1);
+                    break;
                 case 0x00:
-                case 0xBA:
                 case 0xE7:
                 case 0xE6:
                 case 0xE8:
@@ -294,6 +306,53 @@ public sealed class Fast3dRenderer
             ? uint.MaxValue
             : ((1u << length) - 1u) << shift;
         _otherModeLow = (_otherModeLow & ~valueMask) | (word1 & valueMask);
+    }
+
+    private void SetOtherModeHigh(uint word0, uint word1)
+    {
+        var shift = (int)((word0 >> 8) & 0xFF);
+        var length = (int)(word0 & 0xFF);
+        if (shift is < 0 or > 31 || length <= 0)
+        {
+            return;
+        }
+
+        length = Math.Min(length, 32 - shift);
+        var valueMask = length == 32
+            ? uint.MaxValue
+            : ((1u << length) - 1u) << shift;
+        _otherModeHigh = (_otherModeHigh & ~valueMask) | (word1 & valueMask);
+    }
+
+    private void LoadTextureLookupTable(uint word0, uint word1)
+    {
+        // Palette entries land in upper TMEM at the tile's base. Hardware
+        // quadricates each 16-bit entry across a 64-bit word; storing the
+        // same replication keeps CI sampling arithmetic identical.
+        var tileIndex = (int)((word1 >> 24) & 7);
+        var firstEntry = (int)((word0 >> 14) & 0x3FF);
+        var lastEntry = (int)((word1 >> 14) & 0x3FF);
+        var count = Math.Clamp(lastEntry - firstEntry + 1, 0, 256);
+        var destination = _tiles[tileIndex].Tmem * 8;
+        for (var entry = 0; entry < count; entry++)
+        {
+            var source = _textureImageAddress + (uint)((firstEntry + entry) * 2);
+            if (source + 2 > N64Memory.RdramSize)
+            {
+                break;
+            }
+
+            var value = (ushort)((_memory.Rdram[source] << 8) | _memory.Rdram[source + 1]);
+            for (var replica = 0; replica < 4; replica++)
+            {
+                var offset = destination + (entry * 8) + (replica * 2);
+                if (offset + 2 <= _textureMemory.Length)
+                {
+                    _textureMemory[offset] = (byte)(value >> 8);
+                    _textureMemory[offset + 1] = (byte)value;
+                }
+            }
+        }
     }
 
     private void SetTextureImage(uint word0, uint word1)
@@ -715,14 +774,26 @@ public sealed class Fast3dRenderer
             EnsureDepthBuffer(_colorImageWidth, maximumHeight);
         }
 
+        // The edge functions are linear in x and y, so evaluate them once at
+        // the top-left sample and step them incrementally across the box.
+        var drawTextured =
+            _textureEnabled &&
+            _combinerUsesTexture &&
+            HasTextureForTile(_textureTile);
+        var stepAx = (c.Position.Y - b.Position.Y) * inverseArea;
+        var stepAy = (b.Position.X - c.Position.X) * inverseArea;
+        var stepBx = (a.Position.Y - c.Position.Y) * inverseArea;
+        var stepBy = (c.Position.X - a.Position.X) * inverseArea;
+        var rowWeightA = Edge(b.Position, c.Position, minX + 0.5f, minY + 0.5f) * inverseArea;
+        var rowWeightB = Edge(c.Position, a.Position, minX + 0.5f, minY + 0.5f) * inverseArea;
         for (var y = minY; y <= maxY; y++)
         {
-            for (var x = minX; x <= maxX; x++)
+            var weightA = rowWeightA;
+            var weightB = rowWeightB;
+            rowWeightA += stepAy;
+            rowWeightB += stepBy;
+            for (var x = minX; x <= maxX; x++, weightA += stepAx, weightB += stepBx)
             {
-                var sampleX = x + 0.5f;
-                var sampleY = y + 0.5f;
-                var weightA = Edge(b.Position, c.Position, sampleX, sampleY) * inverseArea;
-                var weightB = Edge(c.Position, a.Position, sampleX, sampleY) * inverseArea;
                 var weightC = 1f - weightA - weightB;
                 if (weightA < 0 || weightB < 0 || weightC < 0)
                 {
@@ -742,9 +813,7 @@ public sealed class Fast3dRenderer
 
                 var color =
                     (a.Color * weightA) + (b.Color * weightB) + (c.Color * weightC);
-                if (_textureEnabled &&
-                    _combinerUsesTexture &&
-                    HasTextureForTile(_textureTile))
+                if (drawTextured)
                 {
                     var reciprocalW =
                         (weightA * a.ReciprocalW) +
@@ -848,6 +917,12 @@ public sealed class Fast3dRenderer
         var startT = (short)textureOrigin / 32f;
         var stepS = (short)(textureStep >> 16) / 1024f;
         var stepT = (short)textureStep / 1024f;
+        if (CycleType == 2)
+        {
+            // COPY mode encodes dsdx as 4.0 because the RDP copies four
+            // texels per clock; the effective per-pixel step is dsdx / 4.
+            stepS /= 4f;
+        }
         if (right < left || bottom < top)
         {
             return;
@@ -905,6 +980,12 @@ public sealed class Fast3dRenderer
         {
             (0, 2) => DecodeRgba16(ReadTmemUInt16(bitOffset >> 3)),
             (0, 3) => DecodeRgba32(ReadTmemUInt32(bitOffset >> 3)),
+            (2, 0) => DecodePaletteTexel(
+                tile.Palette * 16 +
+                ((x & 1) == 0
+                    ? ReadTmemByte(bitOffset >> 3) >> 4
+                    : ReadTmemByte(bitOffset >> 3) & 0xF)),
+            (2, 1) => DecodePaletteTexel(ReadTmemByte(bitOffset >> 3)),
             (3, 1) => DecodeIntensityAlpha8(ReadTmemByte(bitOffset >> 3)),
             (3, 2) => DecodeIntensityAlpha16(ReadTmemUInt16(bitOffset >> 3)),
             (4, 0) => DecodeIntensity4(
@@ -913,6 +994,17 @@ public sealed class Fast3dRenderer
             (4, 1) => DecodeIntensity8(ReadTmemByte(bitOffset >> 3)),
             _ => Vector4.One
         };
+    }
+
+    private Vector4 DecodePaletteTexel(int paletteIndex)
+    {
+        // The lookup table lives in upper TMEM with each entry replicated
+        // across a 64-bit word. Other-mode-high bits 14-15 select the entry
+        // format: 3 = IA16, otherwise RGBA16.
+        var entry = ReadTmemUInt16(0x800 + (paletteIndex * 8));
+        return ((_otherModeHigh >> 14) & 3) == 3
+            ? DecodeIntensityAlpha16(entry)
+            : DecodeRgba16(entry);
     }
 
     private byte ReadTmemByte(int address) => _textureMemory[address & 0xFFF];
@@ -1046,6 +1138,9 @@ public sealed class Fast3dRenderer
         var green = (uint)Math.Clamp((int)MathF.Round(color.Y * 255), 0, 255);
         var blue = (uint)Math.Clamp((int)MathF.Round(color.Z * 255), 0, 255);
         var alpha = (uint)Math.Clamp((int)MathF.Round(color.W * 255), 0, 255);
+
+        // The RDP addresses RDRAM physically; write the frame-buffer pixel
+        // directly instead of routing it through virtual-address translation.
         if (_colorImageSize == 2)
         {
             var rgba5551 = (ushort)(
@@ -1053,11 +1148,15 @@ public sealed class Fast3dRenderer
                 ((green >> 3) << 6) |
                 ((blue >> 3) << 1) |
                 (alpha >= 128 ? 1u : 0u));
-            _memory.WriteUInt16(destination, rgba5551);
+            BinaryPrimitives.WriteUInt16BigEndian(
+                _memory.Rdram.AsSpan((int)destination, 2),
+                rgba5551);
         }
         else
         {
-            _memory.WriteUInt32(destination, (red << 24) | (green << 16) | (blue << 8) | alpha);
+            BinaryPrimitives.WriteUInt32BigEndian(
+                _memory.Rdram.AsSpan((int)destination, 4),
+                (red << 24) | (green << 16) | (blue << 8) | alpha);
         }
     }
 
@@ -1125,11 +1224,15 @@ public sealed class Fast3dRenderer
 
                 if (_colorImageSize == 2)
                 {
-                    _memory.WriteUInt16(destination, (ushort)_fillColor);
+                    BinaryPrimitives.WriteUInt16BigEndian(
+                        _memory.Rdram.AsSpan((int)destination, 2),
+                        (ushort)_fillColor);
                 }
                 else
                 {
-                    _memory.WriteUInt32(destination, _fillColor);
+                    BinaryPrimitives.WriteUInt32BigEndian(
+                        _memory.Rdram.AsSpan((int)destination, 4),
+                        _fillColor);
                 }
             }
         }

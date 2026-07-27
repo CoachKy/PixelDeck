@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -5,19 +6,21 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Machine
 {
-    private const int StateVersion = 5;
+    private const int StateVersion = 6;
     private static readonly byte[] StateMagic = "P64STATE"u8.ToArray();
 
     private readonly uint[] _frame = new uint[320 * 240];
     private readonly byte[] _cartridgeIdentity;
     private readonly string? _savePath;
     private readonly Fast3dRenderer _renderer;
+    private readonly N64AudioProcessor _audioProcessor;
 
     private N64Machine(N64Cartridge cartridge, string? savePath)
     {
         Cartridge = cartridge;
         Memory = new N64Memory(cartridge);
         _renderer = new Fast3dRenderer(Memory);
+        _audioProcessor = new N64AudioProcessor(Memory);
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);
         _cartridgeIdentity = SHA256.HashData(cartridge.Rom);
         _savePath = savePath;
@@ -25,6 +28,13 @@ public sealed class N64Machine
     }
 
     public const double NtscFramesPerSecond = 60.0;
+
+    /// <summary>
+    /// The nominal audio output rate. Pixel64's verified target (Super Mario
+    /// 64) programs the audio interface for 32 kHz; the audio-clock frame
+    /// pacing absorbs the fractional difference from the true DAC rate.
+    /// </summary>
+    public const int AudioSampleRate = 32_000;
 
     public N64Cartridge Cartridge { get; }
 
@@ -55,6 +65,16 @@ public sealed class N64Machine
 
     public Fast3dRenderer Renderer => _renderer;
 
+    public N64AudioProcessor AudioProcessor => _audioProcessor;
+
+    public int BufferedAudioSampleCount => Memory.BufferedAudioSampleCount;
+
+    public long DroppedAudioSampleCount => Memory.DroppedAudioSampleCount;
+
+    public int ReadAudioSamples(Span<float> destination) => Memory.ReadAudioSamples(destination);
+
+    public void ClearAudioSamples() => Memory.ClearAudioSamples();
+
     public static N64Machine Load(string path, string? savePath = null)
     {
         var cartridge = N64Cartridge.Load(path);
@@ -82,9 +102,10 @@ public sealed class N64Machine
         {
             Cpu.Step();
             ServiceRspTask();
-            if (Cpu.ProgramCounter == Cartridge.EntryPoint)
+            if (Cpu.ProgramCounter == Cartridge.EntryPoint && !ReachedCartridgeEntryPoint)
             {
                 ReachedCartridgeEntryPoint = true;
+                PatchBootMemorySize();
             }
         }
     }
@@ -120,6 +141,7 @@ public sealed class N64Machine
             writer.Write(AudioTasksSubmitted);
             Cpu.SaveState(writer);
             Memory.SaveState(writer);
+            _audioProcessor.SaveState(writer);
             foreach (var pixel in _frame) writer.Write(pixel);
         }
 
@@ -178,6 +200,8 @@ public sealed class N64Machine
         AudioTasksSubmitted = payloadReader.ReadInt64();
         Cpu.LoadState(payloadReader);
         Memory.LoadState(payloadReader);
+        _audioProcessor.LoadState(payloadReader);
+        Memory.ClearAudioSamples();
         for (var index = 0; index < _frame.Length; index++) _frame[index] = payloadReader.ReadUInt32();
         if (payloadStream.Position != payloadStream.Length)
         {
@@ -243,6 +267,15 @@ public sealed class N64Machine
             return;
         }
 
+        // The frame buffer always lives in RDRAM; convert it from one direct
+        // span instead of resolving every pixel address through the bus.
+        var sourceBytes = (long)Height * sourceWidth * (format == 2 ? 2 : 4);
+        if (origin + sourceBytes <= Memory.Rdram.Length)
+        {
+            RenderVideoInterfaceFromRdram(format, sourceWidth, origin);
+            return;
+        }
+
         for (var y = 0; y < Height; y++)
         {
             for (var x = 0; x < Width; x++)
@@ -258,6 +291,48 @@ public sealed class N64Machine
                     ? ConvertRgba5551(Memory.ReadUInt16(origin + (pixelIndex * 2)))
                     : ConvertRgba8888(Memory.ReadUInt32(origin + (pixelIndex * 4)));
             }
+        }
+    }
+
+    private void RenderVideoInterfaceFromRdram(uint format, int sourceWidth, uint origin)
+    {
+        var source = Memory.Rdram.AsSpan((int)origin);
+        for (var y = 0; y < Height; y++)
+        {
+            var row = y * Width;
+            var sourceRow = y * sourceWidth;
+            if (format == 2)
+            {
+                for (var x = 0; x < sourceWidth; x++)
+                {
+                    _frame[row + x] = ConvertRgba5551(
+                        BinaryPrimitives.ReadUInt16BigEndian(source.Slice((sourceRow + x) * 2, 2)));
+                }
+            }
+            else
+            {
+                for (var x = 0; x < sourceWidth; x++)
+                {
+                    _frame[row + x] = ConvertRgba8888(
+                        BinaryPrimitives.ReadUInt32BigEndian(source.Slice((sourceRow + x) * 4, 4)));
+                }
+            }
+
+            _frame.AsSpan(row + sourceWidth, Width - sourceWidth).Fill(0xFF000000);
+        }
+    }
+
+    /// <summary>
+    /// IPL3 sizes memory by probing RDRAM controller registers Pixel64 does
+    /// not model, leaving osMemSize (0x80000318) at zero. Games such as
+    /// GoldenEye trust that field and refuse to boot with no RAM, so publish
+    /// the real 8 MiB once control transfers to the cartridge.
+    /// </summary>
+    private void PatchBootMemorySize()
+    {
+        if (Memory.ReadUInt32(0x80000318) == 0)
+        {
+            Memory.WriteUInt32(0x80000318, N64Memory.RdramSize);
         }
     }
 
@@ -280,6 +355,7 @@ public sealed class N64Machine
                 break;
             case 2:
                 AudioTasksSubmitted++;
+                _audioProcessor.Execute(task);
                 Memory.CompleteRspTask();
                 break;
             default:
