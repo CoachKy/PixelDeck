@@ -52,7 +52,7 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
     [Fact]
     public void LocalSuperMario64ReportsFramePerformanceWhenPresent()
     {
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         if (path is null)
         {
             output.WriteLine("Local Super Mario 64 target is not installed; optional perf gate skipped.");
@@ -95,7 +95,7 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
     [Fact]
     public void LocalSuperMario64SustainsRealtimeWithRenderingAndAudioWhenPresent()
     {
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         if (path is null)
         {
             output.WriteLine("Local Super Mario 64 target is not installed; optional gameplay perf gate skipped.");
@@ -158,7 +158,7 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
         image[1] = 0x37;
         image[2] = 0x12;
         image[3] = 0x40;
-        WriteUInt32(image, 0x08, 0x80000400);
+        N64TestSupport.WriteUInt32(image, 0x08, 0x80000400);
         "PIXEL64 PERF        "u8.CopyTo(image.AsSpan(0x20, 20));
         image[0x3B] = (byte)'N';
         image[0x3C] = (byte)'P';
@@ -168,59 +168,15 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
         // Boot block runs from SP DMEM at 0xA4000040: a load/add/store loop
         // against RDRAM that exercises fetch, memory reads, writes, and the
         // branch/delay-slot machinery forever.
-        WriteUInt32(image, 0x40, 0x3C088000); // LUI   t0, 0x8000
-        WriteUInt32(image, 0x44, 0x8D090100); // LW    t1, 0x0100(t0)
-        WriteUInt32(image, 0x48, 0x25290001); // ADDIU t1, t1, 1
-        WriteUInt32(image, 0x4C, 0xAD090100); // SW    t1, 0x0100(t0)
-        WriteUInt32(image, 0x50, 0x1000FFFC); // BEQ   r0, r0, -4 (back to LW)
-        WriteUInt32(image, 0x54, 0x00000000); // NOP (delay slot)
+        N64TestSupport.WriteUInt32(image, 0x40, 0x3C088000); // LUI   t0, 0x8000
+        N64TestSupport.WriteUInt32(image, 0x44, 0x8D090100); // LW    t1, 0x0100(t0)
+        N64TestSupport.WriteUInt32(image, 0x48, 0x25290001); // ADDIU t1, t1, 1
+        N64TestSupport.WriteUInt32(image, 0x4C, 0xAD090100); // SW    t1, 0x0100(t0)
+        N64TestSupport.WriteUInt32(image, 0x50, 0x1000FFFC); // BEQ   r0, r0, -4 (back to LW)
+        N64TestSupport.WriteUInt32(image, 0x54, 0x00000000); // NOP (delay slot)
         return image;
     }
 
-    private static string? FindLocalSuperMario64()
-    {
-        return FindLocalNintendo64Cartridges()
-            .FirstOrDefault(path =>
-            {
-                try
-                {
-                    return N64Cartridge.Inspect(path).IsSuperMario64UsRevision0;
-                }
-                catch (InvalidDataException)
-                {
-                    return false;
-                }
-            });
-    }
 
-    private static IEnumerable<string> FindLocalNintendo64Cartridges()
-    {
-        var configured = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
-        var gamesFolder = string.IsNullOrWhiteSpace(configured)
-            ? Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "Games"))
-            : Path.GetFullPath(configured);
-        var nintendo64Folder = Path.Combine(gamesFolder, "Nintendo64");
-        return Directory.Exists(nintendo64Folder)
-            ? Directory.EnumerateFiles(nintendo64Folder, "*", SearchOption.AllDirectories)
-                .Where(path =>
-                    Path.GetExtension(path).Equals(".z64", StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetExtension(path).Equals(".n64", StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetExtension(path).Equals(".v64", StringComparison.OrdinalIgnoreCase))
-            : [];
-    }
 
-    private static void WriteUInt32(byte[] destination, int offset, uint value)
-    {
-        destination[offset] = (byte)(value >> 24);
-        destination[offset + 1] = (byte)(value >> 16);
-        destination[offset + 2] = (byte)(value >> 8);
-        destination[offset + 3] = (byte)value;
-    }
 }

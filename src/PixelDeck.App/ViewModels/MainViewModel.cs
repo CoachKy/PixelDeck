@@ -1007,7 +1007,11 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _ => $"{count} CONTROLLERS CONNECTED"
     };
 
-    public void Dispose() => DisposeGameScreenshots();
+    public void Dispose()
+    {
+        DisposeGameScreenshots();
+        GC.SuppressFinalize(this);
+    }
 
     private void RefreshLibraryGames(string? preferredSelection = null)
     {

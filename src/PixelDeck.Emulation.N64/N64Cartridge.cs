@@ -15,6 +15,19 @@ public enum N64VideoRegion
     Pal
 }
 
+/// <summary>
+/// The battery-backed store a cartridge carries. The header does not encode
+/// this, so it is resolved from the game code; anything unrecognised falls
+/// back to EEPROM, which is the most common fitment.
+/// </summary>
+public enum N64SaveType
+{
+    Eeprom4Kbit,
+    Eeprom16Kbit,
+    Sram256Kbit,
+    FlashRam1Mbit
+}
+
 public enum N64Cic
 {
     Unknown,
@@ -48,6 +61,7 @@ public sealed class N64Cartridge
         GameCode = $"{MediaFormat}{CartridgeId}{CountryCode}";
         VideoRegion = GetVideoRegion(CountryCode);
         BootCodeCrc32 = ComputeCrc32(rom.AsSpan(0x40, 0xFC0));
+        SaveType = ResolveSaveType(GameCode);
         Cic = BootCodeCrc32 switch
         {
             0x6170A4A1 => N64Cic.Cic6101,
@@ -91,6 +105,50 @@ public sealed class N64Cartridge
 
     public N64Cic Cic { get; }
 
+    public N64SaveType SaveType { get; }
+
+    /// <summary>
+    /// The cartridge header carries no save-type field, so real hardware
+    /// relies on the game knowing its own fitment. Emulators keep a lookup
+    /// keyed by game code; this covers the locally verified titles and
+    /// defaults the rest to 4 Kbit EEPROM.
+    /// </summary>
+    private static N64SaveType ResolveSaveType(string gameCode) => gameCode switch
+    {
+        // The three-character identifier ignores the region byte, so a title
+        // resolves the same way across its regional releases.
+        _ when gameCode.StartsWith("NZL", StringComparison.Ordinal) => N64SaveType.Sram256Kbit, // Ocarina of Time
+        _ when gameCode.StartsWith("NZS", StringComparison.Ordinal) => N64SaveType.Sram256Kbit, // Majora's Mask
+        _ when gameCode.StartsWith("NGE", StringComparison.Ordinal) => N64SaveType.Eeprom16Kbit, // GoldenEye 007
+        _ when gameCode.StartsWith("NDO", StringComparison.Ordinal) => N64SaveType.Eeprom16Kbit, // Donkey Kong 64
+        _ when gameCode.StartsWith("NQ8", StringComparison.Ordinal) => N64SaveType.Sram256Kbit, // Quest 64
+        _ when gameCode.StartsWith("NWX", StringComparison.Ordinal) => N64SaveType.Eeprom16Kbit, // WWF WrestleMania 2000
+        _ => N64SaveType.Eeprom4Kbit
+    };
+
+    /// <summary>
+    /// The size in bytes of <see cref="SaveType"/>'s backing store.
+    /// </summary>
+    public int SaveSize => SaveType switch
+    {
+        N64SaveType.Eeprom4Kbit => 512,
+        N64SaveType.Eeprom16Kbit => 2 * 1024,
+        N64SaveType.Sram256Kbit => 32 * 1024,
+        N64SaveType.FlashRam1Mbit => 128 * 1024,
+        _ => 512
+    };
+
+    /// <summary>
+    /// The conventional file extension for this save type, so a library never
+    /// has to guess a store's format from its length.
+    /// </summary>
+    public string SaveExtension => SaveType switch
+    {
+        N64SaveType.Sram256Kbit => ".sra",
+        N64SaveType.FlashRam1Mbit => ".fla",
+        _ => ".eep"
+    };
+
     public bool IsSuperMario64UsRevision0 =>
         GameCode == "NSME" &&
         Revision == 0 &&
@@ -100,8 +158,6 @@ public sealed class N64Cartridge
 
     public bool IsPixel64VerifiedTarget =>
         IsSuperMario64UsRevision0 && Cic is N64Cic.Cic6101 or N64Cic.Cic6102;
-
-    public bool CanAttemptPixel64 => true;
 
     public string CompatibilityMessage => IsPixel64VerifiedTarget
         ? "Pixel64 verified route: Super Mario 64 (USA) revision 0 reaches controllable castle gameplay; " +

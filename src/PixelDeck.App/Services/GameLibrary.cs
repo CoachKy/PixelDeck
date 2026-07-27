@@ -16,7 +16,7 @@ public sealed class GameLibrary
 
     private static readonly string[] ScreenshotExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
 
-    private static readonly IReadOnlyDictionary<string, PlatformDefinition> Platforms =
+    private static readonly Dictionary<string, PlatformDefinition> Platforms =
         new Dictionary<string, PlatformDefinition>(StringComparer.OrdinalIgnoreCase)
         {
             [".nes"] = new("Nintendo Entertainment System", "NES", Color.Parse("#F04464")),
@@ -63,7 +63,7 @@ public sealed class GameLibrary
     public Task<IReadOnlyList<GameEntry>> ScanAsync(CancellationToken cancellationToken = default) =>
         Task.Run<IReadOnlyList<GameEntry>>(() => Scan(cancellationToken), cancellationToken);
 
-    private IReadOnlyList<GameEntry> Scan(CancellationToken cancellationToken)
+    private GameEntry[] Scan(CancellationToken cancellationToken)
     {
         var results = new List<GameEntry>();
         _titleResolver.RefreshCatalogs();
@@ -187,7 +187,9 @@ public sealed class GameLibrary
                 return new Compatibility(
                     null,
                     0,
-                    cartridge.CanAttemptPixel64,
+                    // Any structurally valid cartridge is offered for launch;
+                    // compatibility is reported per title rather than gating.
+                    true,
                     cartridge.CompatibilityMessage,
                     cartridge.Cic == N64Cic.Unknown
                         ? "UNKNOWN CIC"

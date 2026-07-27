@@ -12,8 +12,8 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [InlineData(N64ImageByteOrder.LittleEndian)]
     public void CartridgeNormalizesEveryStandardDumpByteOrder(N64ImageByteOrder byteOrder)
     {
-        var canonical = CreateCartridgeImage();
-        var source = ConvertByteOrder(canonical, byteOrder);
+        var canonical = N64TestSupport.CreateCartridgeImage();
+        var source = N64TestSupport.ConvertByteOrder(canonical, byteOrder);
 
         var cartridge = N64Cartridge.FromBytes(source);
 
@@ -30,7 +30,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         var path = Path.Combine(Path.GetTempPath(), $"Pixel64-{Guid.NewGuid():N}.z64");
         try
         {
-            File.WriteAllBytes(path, CreateCartridgeImage());
+            File.WriteAllBytes(path, N64TestSupport.CreateCartridgeImage());
 
             var machine = N64Machine.Load(path);
 
@@ -49,11 +49,14 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void EveryLocalNintendo64CartridgeIsRecognizedAndCanAttemptBoot()
     {
-        foreach (var path in FindLocalNintendo64Cartridges())
+        foreach (var path in N64TestSupport.FindCartridges())
         {
+            // Inspect throws on an unrecognized header, so reaching here is
+            // the recognition assertion; the header must also be readable.
             var cartridge = N64Cartridge.Inspect(path);
 
-            Assert.True(cartridge.CanAttemptPixel64);
+            Assert.Equal(4, cartridge.GameCode.Length);
+            Assert.True(cartridge.SaveSize > 0);
             output.WriteLine(
                 $"{Path.GetFileName(path)}: {cartridge.Title}, {cartridge.GameCode}, " +
                 $"{cartridge.Cic}, {cartridge.SourceByteOrder}");
@@ -72,7 +75,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         int expectedWidth,
         int expectedHeight)
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0xA4400008, viWidth);
         machine.Memory.WriteUInt32(0xA4400028, (37u << 16) | 511u);
         machine.Memory.WriteUInt32(0xA4400034, verticalScale);
@@ -85,12 +88,78 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void VideoResolutionKeepsTheLastValidSizeWhileTheInterfaceIsUnprogrammed()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
 
         machine.Memory.WriteUInt32(0xA4400008, 0);
 
         Assert.Equal(320, machine.Width);
         Assert.Equal(240, machine.Height);
+    }
+
+    [Theory]
+    [InlineData("NZLE", N64SaveType.Sram256Kbit, 32 * 1024, ".sra")]
+    [InlineData("NGEE", N64SaveType.Eeprom16Kbit, 2 * 1024, ".eep")]
+    [InlineData("NPXE", N64SaveType.Eeprom4Kbit, 512, ".eep")]
+    public void CartridgeDeclaresItsBatteryStoreRatherThanInferringItFromFileLength(
+        string gameCode,
+        N64SaveType expectedType,
+        int expectedSize,
+        string expectedExtension)
+    {
+        var image = N64TestSupport.CreateCartridgeImage();
+        image[0x3B] = (byte)gameCode[0];
+        image[0x3C] = (byte)gameCode[1];
+        image[0x3D] = (byte)gameCode[2];
+        image[0x3E] = (byte)gameCode[3];
+
+        var cartridge = N64Cartridge.FromBytes(image);
+
+        Assert.Equal(gameCode, cartridge.GameCode);
+        Assert.Equal(expectedType, cartridge.SaveType);
+        Assert.Equal(expectedSize, cartridge.SaveSize);
+        Assert.Equal(expectedExtension, cartridge.SaveExtension);
+    }
+
+    [Fact]
+    public void CartridgeSramDmaTransfersBothWaysAndAlwaysSignalsCompletion()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.Rdram[0x200] = 0xAB;
+        memory.Rdram[0x201] = 0xCD;
+
+        // RDRAM -> SRAM at cartridge address 0x08000000.
+        memory.WriteUInt32(0xA4600000, 0x00000200);
+        memory.WriteUInt32(0xA4600004, 0x08000000);
+        memory.WriteUInt32(0xA4600008, 1);
+
+        Assert.Equal(0xAB, memory.Sram[0]);
+        Assert.Equal(0xCD, memory.Sram[1]);
+        Assert.True(memory.SramDirty);
+        Assert.NotEqual(0u, memory.MiInterrupt & (1u << 4));
+
+        // SRAM -> RDRAM must also raise the completion interrupt, because
+        // libultra blocks on the DMA message queue.
+        memory.WriteUInt32(0xA4600010, 2);
+        memory.WriteUInt32(0xA4600000, 0x00000300);
+        memory.WriteUInt32(0xA4600004, 0x08000000);
+        memory.WriteUInt32(0xA460000C, 1);
+
+        Assert.Equal(0xAB, memory.Rdram[0x300]);
+        Assert.Equal(0xCD, memory.Rdram[0x301]);
+        Assert.NotEqual(0u, memory.MiInterrupt & (1u << 4));
+    }
+
+    [Fact]
+    public void UnbackedCartridgeDmaStillSignalsCompletion()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+
+        // A domain the cartridge does not provide at all must not deadlock.
+        memory.WriteUInt32(0xA4600000, 0x00000400);
+        memory.WriteUInt32(0xA4600004, 0x05000000);
+        memory.WriteUInt32(0xA460000C, 16);
+
+        Assert.NotEqual(0u, memory.MiInterrupt & (1u << 4));
     }
 
     [Fact]
@@ -107,7 +176,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void DelaySlotExceptionRecordsTheBranchEpcAndCauseBdBit()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0xA4000040, 0x10000002);
         machine.Memory.WriteUInt32(0xA4000044, 0x0000000C);
 
@@ -121,7 +190,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void SinglePrecisionArithmeticAndTruncateWordKeepTheCorrectFprFormat()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0xA4000040, 0x3C083FC0);
         machine.Memory.WriteUInt32(0xA4000044, 0x44880000);
         machine.Memory.WriteUInt32(0xA4000048, 0x46000080);
@@ -136,7 +205,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void DoublePrecisionUsesEvenOddRegisterPairsWhenStatusFrIsClear()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0xA4000040, 0x40806000);
         machine.Memory.WriteUInt32(0xA4000044, 0x3C083FF8);
         machine.Memory.WriteUInt32(0xA4000048, 0x44800000);
@@ -152,7 +221,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void ViCurrentAdvancesWithinAFieldAndInterruptsOnlyOncePerCompareLine()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.WriteUInt32(0xA4400018, 9);
         memory.WriteUInt32(0xA440000C, 4);
         var ticksPerLine = memory.CpuTicksPerField / 10;
@@ -177,7 +246,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void AudioInterfaceQueuesTwoDmasAndInterruptsAsEachCompletes()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.WriteUInt32(0xA4500010, 1519);
         memory.WriteUInt32(0xA4500008, 1);
         memory.WriteUInt32(0xA4500000, 0x1000);
@@ -202,7 +271,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void PiDmaCopiesBigEndianCartridgeBytesIntoRdram()
     {
-        var image = CreateCartridgeImage();
+        var image = N64TestSupport.CreateCartridgeImage();
         image[0x1000] = 0x12;
         image[0x1001] = 0x34;
         image[0x1002] = 0x56;
@@ -220,7 +289,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void TlbMapsPairedSixtyFourKilobytePagesIntoUserVirtualMemory()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.WriteUInt32(0x803B0668, 0x0000D1D4);
         memory.WriteUInt32(0x803C0668, 0x12345678);
         memory.WriteTlbEntry(
@@ -237,7 +306,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void SiPifReturnsPortOneButtonsAndAnalogStick()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.SetControllerState(
             1,
             new N64ControllerState(N64Button.A | N64Button.Z, -60, 42));
@@ -267,7 +336,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void SaveStateRestoresCpuMemoryVideoAndBothControllerPortsExactly()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0x80000100, 0x12345678);
         machine.Memory.WriteUInt32(0xA4400000, 2);
         machine.Memory.WriteUInt32(0xA4400004, 0x100);
@@ -289,7 +358,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void SpTaskSchedulerRecognizesAndCompletesGraphicsTasks()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0xA4000FC0, 1);
         machine.Memory.WriteUInt32(0xA4000FF0, 0x00123456);
         machine.Memory.WriteUInt32(0xA4000FF4, 0x00000400);
@@ -312,7 +381,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void Fast3dFillRectangleWritesTheSelectedRgba16ColorImage()
     {
-        var machine = N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         machine.Memory.WriteUInt32(0xA4000FC0, 1);
         machine.Memory.WriteUInt32(0xA4000FF0, 0x00001000);
         machine.Memory.WriteUInt32(0xA4000FF4, 32);
@@ -336,7 +405,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void Fast3dTextureRectangleSamplesAnRgba16Texture()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.WriteUInt16(0x100, 0xF801);
         memory.WriteUInt16(0x102, 0x07C1);
         memory.WriteUInt16(0x104, 0x003F);
@@ -374,7 +443,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void Fast3dTextureLoadCopiesRdramIntoPersistentTmem()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.WriteUInt16(0x100, 0xF801);
         memory.WriteUInt16(0x102, 0x07C1);
         memory.WriteUInt16(0x104, 0x003F);
@@ -473,7 +542,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void Fast3dSetOtherModeLowPreservesUnchangedBitsAndTracksDepthModes()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.WriteUInt32(0x200, 0xB900031D);
         memory.WriteUInt32(0x204, 0x00000030);
         memory.WriteUInt32(0x208, 0xB9000002);
@@ -491,7 +560,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void MiModeClearDpCommandAcknowledgesTheDisplayProcessorInterrupt()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         memory.CompleteDisplayProcessor();
 
         Assert.NotEqual(0u, memory.MiInterrupt & (1u << 5));
@@ -502,9 +571,70 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void LocalSuperMario64ReachesRenderedCastleGameplayWhenPresent()
+    {
+        var path = N64TestSupport.FindSuperMario64();
+        if (path is null)
+        {
+            output.WriteLine("Local Super Mario 64 target is not installed; optional gameplay gate skipped.");
+            return;
+        }
+
+        var machine = N64Machine.Load(path);
+        var reachedGameplay = -1;
+        for (var field = 0; field < 4_200 && reachedGameplay < 0; field++)
+        {
+            // Alternate Start and A to walk the title screen, the file select,
+            // and the opening cutscene without depending on exact timings.
+            var phase = field % 200;
+            machine.SetControllerState(
+                1,
+                phase switch
+                {
+                    >= 20 and < 40 => new N64ControllerState(N64Button.Start, 0, 0),
+                    >= 120 and < 140 => new N64ControllerState(N64Button.A, 0, 0),
+                    _ => N64ControllerState.Neutral
+                });
+            machine.RunFrame();
+
+            // Course 16 area 1 is the castle grounds.
+            if (machine.Memory.ReadUInt16(0x8033BACA) == 1 &&
+                machine.Memory.ReadUInt32(0x8033B17C) is not (0 or 0x04001301))
+            {
+                reachedGameplay = field;
+            }
+        }
+
+        Assert.True(reachedGameplay > 0, "Super Mario 64 never reached castle-grounds gameplay.");
+
+        // Let the scene settle, then require a genuinely rendered frame.
+        for (var field = 0; field < 60; field++)
+        {
+            machine.SetControllerState(1, N64ControllerState.Neutral);
+            machine.RunFrame();
+        }
+
+        var frame = machine.CurrentFrame.ToArray();
+        var distinctColors = frame.Distinct().Count();
+        output.WriteLine(
+            $"gameplay at field {reachedGameplay}, colors={distinctColors}, " +
+            $"triangles={machine.Renderer.TrianglesDrawn:N0}, " +
+            $"unsupported={machine.Renderer.UnsupportedCommands}");
+
+        Assert.Equal(0, machine.Cpu.UnsupportedInstructionCount);
+        Assert.Equal(0, machine.Renderer.UnsupportedCommands);
+        Assert.True(
+            machine.Renderer.TrianglesDrawn > 100_000,
+            $"Only {machine.Renderer.TrianglesDrawn:N0} triangles were rasterized.");
+        Assert.True(
+            distinctColors > 500,
+            $"The castle-grounds frame only contained {distinctColors} distinct colors.");
+    }
+
+    [Fact]
     public void LocalSuperMario64CompletesIpl3WhenPresent()
     {
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         if (path is null)
         {
             output.WriteLine("Local Super Mario 64 target is not installed; optional boot gate skipped.");
@@ -531,7 +661,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [Fact]
     public void LocalSuperMario64ServicesVideoInterruptsWhenPresent()
     {
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         if (path is null)
         {
             output.WriteLine("Local Super Mario 64 target is not installed; optional VI gate skipped.");
@@ -570,7 +700,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
             return;
         }
 
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         Assert.NotNull(path);
         var machine = N64Machine.Load(path);
         var samples = new Dictionary<uint, int>();
@@ -709,7 +839,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
             return;
         }
 
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         Assert.NotNull(path);
         var machine = N64Machine.Load(path);
         uint[]? bestFrame = null;
@@ -1091,45 +1221,6 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         }
     }
 
-    private static string? FindLocalSuperMario64()
-    {
-        return FindLocalNintendo64Cartridges()
-            .FirstOrDefault(path =>
-            {
-                try
-                {
-                    return N64Cartridge.Inspect(path).IsSuperMario64UsRevision0;
-                }
-                catch (InvalidDataException)
-                {
-                    return false;
-                }
-            });
-    }
-
-    private static IEnumerable<string> FindLocalNintendo64Cartridges()
-    {
-        var configured = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
-        var gamesFolder = string.IsNullOrWhiteSpace(configured)
-            ? Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "Games"))
-            : Path.GetFullPath(configured);
-        var nintendo64Folder = Path.Combine(gamesFolder, "Nintendo64");
-        return Directory.Exists(nintendo64Folder)
-            ? Directory.EnumerateFiles(nintendo64Folder, "*", SearchOption.AllDirectories)
-                .Where(path =>
-                    Path.GetExtension(path).Equals(".z64", StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetExtension(path).Equals(".n64", StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetExtension(path).Equals(".v64", StringComparison.OrdinalIgnoreCase))
-            : [];
-    }
-
     private static Vector3 ReadSm64MarioPosition(N64Memory memory) =>
         new(
             BitConverter.Int32BitsToSingle(unchecked((int)memory.ReadUInt32(0x8033B1AC))),
@@ -1142,51 +1233,5 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         var fraction = memory.ReadUInt16(address + 32 + (uint)(index * 2));
         var fixedPoint = ((uint)integer << 16) | fraction;
         return unchecked((int)fixedPoint) / 65536f;
-    }
-
-    private static byte[] CreateCartridgeImage()
-    {
-        var image = new byte[0x2000];
-        image[0] = 0x80;
-        image[1] = 0x37;
-        image[2] = 0x12;
-        image[3] = 0x40;
-        WriteUInt32(image, 0x08, 0x80000400);
-        "PIXEL64 TEST        "u8.CopyTo(image.AsSpan(0x20, 20));
-        image[0x3B] = (byte)'N';
-        image[0x3C] = (byte)'P';
-        image[0x3D] = (byte)'X';
-        image[0x3E] = (byte)'E';
-        return image;
-    }
-
-    private static byte[] ConvertByteOrder(byte[] canonical, N64ImageByteOrder byteOrder)
-    {
-        var converted = canonical.ToArray();
-        if (byteOrder == N64ImageByteOrder.ByteSwapped)
-        {
-            for (var offset = 0; offset < converted.Length; offset += 2)
-            {
-                (converted[offset], converted[offset + 1]) = (converted[offset + 1], converted[offset]);
-            }
-        }
-        else if (byteOrder == N64ImageByteOrder.LittleEndian)
-        {
-            for (var offset = 0; offset < converted.Length; offset += 4)
-            {
-                (converted[offset], converted[offset + 3]) = (converted[offset + 3], converted[offset]);
-                (converted[offset + 1], converted[offset + 2]) = (converted[offset + 2], converted[offset + 1]);
-            }
-        }
-
-        return converted;
-    }
-
-    private static void WriteUInt32(byte[] destination, int offset, uint value)
-    {
-        destination[offset] = (byte)(value >> 24);
-        destination[offset + 1] = (byte)(value >> 16);
-        destination[offset + 2] = (byte)(value >> 8);
-        destination[offset + 3] = (byte)value;
     }
 }

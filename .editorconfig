@@ -1,0 +1,101 @@
+# PixelDeck coding conventions.
+# Codifies the style the codebase already follows so it survives new
+# contributors and does not have to be re-litigated in review.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml}]
+indent_size = 2
+
+[*.{csproj,props,targets}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+max_line_length = 120
+
+# --- Language conventions -------------------------------------------------
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_var_for_built_in_types = true:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = true:suggestion
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = true:suggestion
+csharp_prefer_braces = true:warning
+csharp_style_prefer_switch_expression = true:suggestion
+csharp_style_prefer_pattern_matching = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+csharp_style_throw_expression = true:suggestion
+csharp_prefer_simple_using_statement = true:suggestion
+
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+dotnet_style_qualification_for_field = false:suggestion
+dotnet_style_qualification_for_property = false:suggestion
+dotnet_style_qualification_for_method = false:suggestion
+dotnet_style_object_initializer = true:suggestion
+dotnet_style_collection_initializer = true:suggestion
+dotnet_style_prefer_conditional_expression_over_assignment = true:suggestion
+dotnet_style_readonly_field = true:suggestion
+
+# --- Naming ---------------------------------------------------------------
+dotnet_naming_rule.private_fields_with_underscore.severity = warning
+dotnet_naming_rule.private_fields_with_underscore.symbols = private_fields
+dotnet_naming_rule.private_fields_with_underscore.style = underscore_camel_case
+
+dotnet_naming_symbols.private_fields.applicable_kinds = field
+dotnet_naming_symbols.private_fields.applicable_accessibilities = private
+dotnet_naming_symbols.private_fields.required_modifiers =
+
+dotnet_naming_style.underscore_camel_case.capitalization = camel_case
+dotnet_naming_style.underscore_camel_case.required_prefix = _
+
+dotnet_naming_rule.constants_are_pascal_case.severity = warning
+dotnet_naming_rule.constants_are_pascal_case.symbols = constants
+dotnet_naming_rule.constants_are_pascal_case.style = pascal_case
+
+dotnet_naming_symbols.constants.applicable_kinds = field
+dotnet_naming_symbols.constants.required_modifiers = const
+
+dotnet_naming_style.pascal_case.capitalization = pascal_case
+
+# --- Analyzer severities --------------------------------------------------
+# The emulation cores legitimately use non-obvious bit arithmetic and large
+# switch statements modelling real hardware opcode tables. Rules that fight
+# that shape are relaxed rather than suppressed ad hoc at each call site.
+dotnet_diagnostic.CA1707.severity = none      # underscores in test method names
+dotnet_diagnostic.CA1814.severity = none      # multidimensional arrays
+dotnet_diagnostic.CA5394.severity = none      # non-crypto randomness
+dotnet_diagnostic.IDE0058.severity = none     # unused expression values
+
+# Width/Height/ReadStatus and friends are deliberately instance members: the
+# three emulation cores expose the same shape so the app can treat them
+# interchangeably (`_nesMachine?.Width ?? _snesMachine?.Width`). Making them
+# static would break that call site for no benefit.
+dotnet_diagnostic.CA1822.severity = none
+
+# SHA-1 and CRC are used to identify ROMs against ClrMamePro and Logiqx
+# catalogues, which are defined in terms of those digests. This is content
+# addressing, not a security boundary.
+dotnet_diagnostic.CA5350.severity = none
+
+# Avalonia windows release their resources from the Closed event, which is the
+# framework's lifecycle hook. Verified: EmulatorWindow and MainWindow both
+# dispose every owned field in OnClosed. Making a Window IDisposable would be
+# the wrong shape, so this rule cannot be satisfied here.
+dotnet_diagnostic.CA1001.severity = none
+
+[tests/**/*.cs]
+# Test names are prose describing behaviour; they are intentionally long.
+max_line_length = off

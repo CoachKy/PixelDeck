@@ -6,7 +6,7 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Machine
 {
-    private const int StateVersion = 7;
+    private const int StateVersion = 8;
     private static readonly byte[] StateMagic = "P64STATE"u8.ToArray();
 
     /// <summary>
@@ -218,9 +218,20 @@ public sealed class N64Machine
         }
     }
 
+    /// <summary>
+    /// Writes the battery-backed store the cartridge declares. Only that
+    /// store is written and only it is marked clean, so a dirty buffer for
+    /// the other type can never be silently discarded.
+    /// </summary>
     public void FlushBatterySave()
     {
-        if (_savePath is null || !Memory.EepromDirty)
+        if (_savePath is null)
+        {
+            return;
+        }
+
+        var usesSram = Cartridge.SaveType is N64SaveType.Sram256Kbit or N64SaveType.FlashRam1Mbit;
+        if (usesSram ? !Memory.SramDirty : !Memory.EepromDirty)
         {
             return;
         }
@@ -232,9 +243,16 @@ public sealed class N64Machine
         }
 
         var temporaryPath = _savePath + ".tmp";
-        File.WriteAllBytes(temporaryPath, Memory.Eeprom);
+        File.WriteAllBytes(temporaryPath, usesSram ? Memory.Sram : Memory.Eeprom);
         File.Move(temporaryPath, _savePath, overwrite: true);
-        Memory.MarkEepromFlushed();
+        if (usesSram)
+        {
+            Memory.MarkSramFlushed();
+        }
+        else
+        {
+            Memory.MarkEepromFlushed();
+        }
     }
 
     private void LoadBatterySave()
@@ -252,13 +270,18 @@ public sealed class N64Machine
             return;
         }
 
+        // The cartridge declares its store, so the file is never identified by
+        // length — two save types can legitimately share a size.
         var data = File.ReadAllBytes(candidate);
-        if (data.Length != Memory.Eeprom.Length)
+        if (Cartridge.SaveType is N64SaveType.Sram256Kbit or N64SaveType.FlashRam1Mbit)
         {
-            throw new InvalidDataException("Pixel64 EEPROM saves must contain exactly 512 bytes.");
+            Memory.LoadSram(data);
+        }
+        else
+        {
+            Memory.LoadEeprom(data);
         }
 
-        Memory.LoadEeprom(data);
         if (!string.Equals(candidate, _savePath, StringComparison.OrdinalIgnoreCase))
         {
             File.Move(candidate, _savePath, overwrite: true);

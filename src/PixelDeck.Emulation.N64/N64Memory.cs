@@ -9,12 +9,21 @@ public sealed class N64Memory
     public const int MaximumVideoHeight = 480;
     public const int RdramSize = 8 * 1024 * 1024;
     public const int SpMemorySize = 4 * 1024;
+
+    /// <summary>
+    /// Cartridge save RAM, mapped into PI domain 2 at 0x08000000. Titles such
+    /// as Ocarina of Time probe it during boot and block on the DMA-complete
+    /// interrupt, so the transfer must always signal completion even when the
+    /// address falls outside anything the cartridge actually provides.
+    /// </summary>
+    public const int SramSize = 32 * 1024;
     public const int NtscCpuTicksPerField = 781_250;
     public const int PalCpuTicksPerField = 937_500;
     public const int CpuTicksPerSecond = 46_875_000;
 
     private const uint RdramMask = RdramSize - 1;
     private const uint CartRomBase = 0x10000000;
+    private const uint SramBase = 0x08000000;
     private const uint AiStatusBusy = 0x40000000;
     private const uint AiStatusFull = 0x80000000;
 
@@ -87,6 +96,19 @@ public sealed class N64Memory
     public byte[] Eeprom { get; } = new byte[512];
 
     public bool EepromDirty { get; private set; }
+
+    public byte[] Sram { get; } = new byte[SramSize];
+
+    public bool SramDirty { get; private set; }
+
+    public void MarkSramFlushed() => SramDirty = false;
+
+    public void LoadSram(ReadOnlySpan<byte> data)
+    {
+        Sram.AsSpan().Clear();
+        data[..Math.Min(data.Length, Sram.Length)].CopyTo(Sram);
+        SramDirty = false;
+    }
 
     public uint MiInterrupt { get; private set; }
 
@@ -579,6 +601,8 @@ public sealed class N64Memory
         writer.Write(PifRam);
         writer.Write(Eeprom);
         writer.Write(EepromDirty);
+        writer.Write(Sram);
+        writer.Write(SramDirty);
         foreach (var controller in _controllers)
         {
             writer.Write((ushort)controller.Buttons);
@@ -649,6 +673,8 @@ public sealed class N64Memory
         reader.ReadExactly(PifRam);
         reader.ReadExactly(Eeprom);
         EepromDirty = reader.ReadBoolean();
+        reader.ReadExactly(Sram);
+        SramDirty = reader.ReadBoolean();
         for (var index = 0; index < _controllers.Length; index++)
         {
             _controllers[index] = new N64ControllerState(
@@ -861,21 +887,32 @@ public sealed class N64Memory
 
     private void CopyCartridgeToRdram(uint length)
     {
-        if (_piCartAddress < CartRomBase)
+        if (_piCartAddress >= SramBase && _piCartAddress < CartRomBase)
         {
-            return;
+            var saveOffset = _piCartAddress - SramBase;
+            for (var index = 0u; index < length; index++)
+            {
+                var source = saveOffset + index;
+                Rdram[(_piDramAddress + index) & RdramMask] =
+                    source < SramSize ? Sram[source] : (byte)0;
+            }
+        }
+        else if (_piCartAddress >= CartRomBase)
+        {
+            var sourceOffset = _piCartAddress - CartRomBase;
+            for (var index = 0u; index < length; index++)
+            {
+                var source = sourceOffset + index;
+                var destination = (_piDramAddress + index) & RdramMask;
+                Rdram[destination] = source < _cartridge.Rom.Length
+                    ? _cartridge.Rom[source]
+                    : (byte)0xFF;
+            }
         }
 
-        var sourceOffset = _piCartAddress - CartRomBase;
-        for (var index = 0u; index < length; index++)
-        {
-            var source = sourceOffset + index;
-            var destination = (_piDramAddress + index) & RdramMask;
-            Rdram[destination] = source < _cartridge.Rom.Length
-                ? _cartridge.Rom[source]
-                : (byte)0xFF;
-        }
-
+        // The completion interrupt is raised for every transfer, including
+        // addresses this cartridge does not back. libultra blocks on the
+        // DMA-complete message, so skipping it deadlocks the game.
         _piDramAddress = (_piDramAddress + length + 7) & ~7u;
         _piCartAddress += length + 1;
         MiInterrupt |= 1 << 4;
@@ -971,6 +1008,21 @@ public sealed class N64Memory
 
     private void CopyRdramToCartridge(uint length)
     {
+        if (_piCartAddress >= SramBase && _piCartAddress < CartRomBase)
+        {
+            var saveOffset = _piCartAddress - SramBase;
+            for (var index = 0u; index < length; index++)
+            {
+                var destination = saveOffset + index;
+                if (destination < SramSize)
+                {
+                    Sram[destination] = Rdram[(_piDramAddress + index) & RdramMask];
+                }
+            }
+
+            SramDirty = true;
+        }
+
         _piDramAddress = (_piDramAddress + length + 7) & ~7u;
         _piCartAddress += length + 1;
         MiInterrupt |= 1 << 4;

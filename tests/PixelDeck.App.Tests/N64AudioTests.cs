@@ -8,7 +8,7 @@ public sealed class N64AudioTests(ITestOutputHelper output)
     [Fact]
     public void AudioListLoadsInterleavesAndSavesStereoPcm()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         var processor = new N64AudioProcessor(memory);
         memory.WriteUInt16(0x80002000, 0x1111);
         memory.WriteUInt16(0x80002002, 0x2222);
@@ -42,7 +42,7 @@ public sealed class N64AudioTests(ITestOutputHelper output)
     [Fact]
     public void AdpcmWithZeroCodebookDecodesResidualsVerbatim()
     {
-        var memory = new N64Memory(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
         var processor = new N64AudioProcessor(memory);
 
         // One 9-byte frame: scale 0, predictor 0, nibbles 1,2,3,...,7,-8,...
@@ -86,7 +86,7 @@ public sealed class N64AudioTests(ITestOutputHelper output)
     [Fact]
     public void LocalSuperMario64ProducesAudibleAudioWhenPresent()
     {
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         if (path is null)
         {
             output.WriteLine("Local Super Mario 64 target is not installed; optional audio gate skipped.");
@@ -151,7 +151,7 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             return;
         }
 
-        var path = FindLocalNintendo64Cartridges()
+        var path = N64TestSupport.FindCartridges()
             .FirstOrDefault(candidate =>
                 Path.GetFileName(candidate).Contains(requested, StringComparison.OrdinalIgnoreCase));
         Assert.NotNull(path);
@@ -160,7 +160,6 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             $"{cartridge.Title} ({cartridge.GameCode}) {cartridge.Cic} entry=0x{cartridge.EntryPoint:X8}");
 
         var machine = N64Machine.Create(cartridge);
-        machine.Renderer.TraceEnabled = true;
         var failure = default(Exception);
         var fields = 0;
         var bestFrame = default(uint[]);
@@ -173,8 +172,24 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             : 600;
         try
         {
+            var driveInput = Environment.GetEnvironmentVariable("PIXEL64_TRACE_INPUT") == "1";
             for (; fields < maximumFields; fields++)
             {
+                if (driveInput)
+                {
+                    // Alternating Start/A walks title screens, file selects and
+                    // cutscenes without depending on exact per-game timings.
+                    var phase = fields % 200;
+                    machine.SetControllerState(
+                        1,
+                        phase switch
+                        {
+                            >= 20 and < 40 => new N64ControllerState(N64Button.Start, 0, 0),
+                            >= 120 and < 140 => new N64ControllerState(N64Button.A, 0, 0),
+                            _ => N64ControllerState.Neutral
+                        });
+                }
+
                 machine.RunFrame();
                 if (fields % 10 != 9)
                 {
@@ -205,6 +220,8 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             $"VI IRQs={machine.Memory.VerticalInterruptsRaised}, AI DMAs={machine.Memory.AudioDmasCompleted}, " +
             $"SI polls={machine.Memory.ControllerPolls}, " +
             $"VI origin=0x{machine.Memory.ViOrigin:X8} width={machine.Memory.ViWidth} control=0x{machine.Memory.ViControl:X4}");
+        output.WriteLine(
+            $"microcode={machine.Renderer.DetectedMicrocode} banner=\"{machine.Renderer.MicrocodeBanner}\"");
         if (machine.LastRspTask is { } task)
         {
             var checksum = 0u;
@@ -222,6 +239,25 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             output.WriteLine("no RSP task was ever submitted.");
         }
 
+        output.WriteLine(
+            $"geometry: verts={machine.Renderer.VerticesTransformed:N0}, " +
+            $"tris={machine.Renderer.TrianglesDrawn:N0}, " +
+            $"clipRejected={machine.Renderer.TriviallyClippedTriangles:N0}, " +
+            $"depthRejected={machine.Renderer.DepthPixelsRejected:N0}, " +
+            $"maxTri={machine.Renderer.MaximumTriangleWidth}x{machine.Renderer.MaximumTriangleHeight}, " +
+            $"colorImage=0x{machine.Renderer.ColorImageAddress:X6}/{machine.Renderer.ColorImageWidth}");
+        output.WriteLine(
+            "opcodes: " +
+            string.Join(
+                " ",
+                machine.Renderer.OpcodeHistogram.Take(18)
+                    .Select(entry => $"0x{entry.Opcode:X2}:{entry.Count}")));
+        output.WriteLine(
+            "unsupported texture formats: " +
+            string.Join(
+                " ",
+                machine.Renderer.UnsupportedTextureFormats
+                    .Select(entry => $"fmt{entry.Format}/size{entry.Size}:{entry.Count:N0}")));
         output.WriteLine(
             $"renderer: lists={machine.Renderer.DisplayListsProcessed}, " +
             $"commands={machine.Renderer.CommandsProcessed}, triangles={machine.Renderer.TrianglesDrawn}, " +
@@ -253,23 +289,6 @@ public sealed class N64AudioTests(ITestOutputHelper output)
                 $"instr=0x{machine.Cpu.LastInstruction:X8}");
         }
 
-        foreach (var triangle in machine.Renderer.RecentTexturedTriangles)
-        {
-            output.WriteLine(
-                $"  tri ({triangle.MinX},{triangle.MinY})-({triangle.MaxX},{triangle.MaxY}) " +
-                $"uv=[{triangle.TextureA.X:0.0},{triangle.TextureA.Y:0.0} " +
-                $"{triangle.TextureB.X:0.0},{triangle.TextureB.Y:0.0} " +
-                $"{triangle.TextureC.X:0.0},{triangle.TextureC.Y:0.0}] " +
-                $"tile={triangle.TileWidth}x{triangle.TileHeight} " +
-                $"mask={triangle.MaskS},{triangle.MaskT} " +
-                $"clamp={triangle.ClampS},{triangle.ClampT} " +
-                $"shift={triangle.ShiftS},{triangle.ShiftT} " +
-                $"scale={triangle.ScaleS:0.000},{triangle.ScaleT:0.000} " +
-                $"LINE={triangle.Line} size={triangle.Size} " +
-                $"ul={triangle.UpperLeftS},{triangle.UpperLeftT} " +
-                $"widthBits={triangle.TileWidth * BitsFor(triangle.Size)} lineBits={triangle.Line * 64}");
-        }
-
         output.WriteLine(
             $"color image=0x{machine.Renderer.ColorImageAddress:X8} " +
             $"width={machine.Renderer.ColorImageWidth} " +
@@ -284,18 +303,6 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             $"yScale=0x{machine.Memory.ViYScale & 0xFFF:X3} " +
             $"control=0x{machine.Memory.ViControl:X5}");
         output.WriteLine($"texture rectangles drawn={machine.Renderer.TextureRectanglesDrawn:N0}");
-        foreach (var rectangle in machine.Renderer.RecentTextureRectangles)
-        {
-            output.WriteLine(
-                $"  rect ({rectangle.Left},{rectangle.Top})-({rectangle.Right},{rectangle.Bottom}) " +
-                $"size={rectangle.Right - rectangle.Left}x{rectangle.Bottom - rectangle.Top} " +
-                $"s={rectangle.StartS:0.0}/{rectangle.StepS:0.000} " +
-                $"t={rectangle.StartT:0.0}/{rectangle.StepT:0.000} " +
-                $"tile={rectangle.TileWidth}x{rectangle.TileHeight} " +
-                $"mask={rectangle.MaskS},{rectangle.MaskT} " +
-                $"clamp={rectangle.ClampS},{rectangle.ClampT} cycle={rectangle.CycleType}");
-        }
-
         WritePpm(
             Path.Combine(Path.GetTempPath(), "pixel64-cart-frame.ppm"),
             machine.CurrentFrame.ToArray(),
@@ -314,14 +321,6 @@ public sealed class N64AudioTests(ITestOutputHelper output)
         }
     }
 
-    private static int BitsFor(int size) => size switch
-    {
-        0 => 4,
-        1 => 8,
-        2 => 16,
-        3 => 32,
-        _ => 8
-    };
 
     private static void WritePpm(
         string path,
@@ -351,22 +350,6 @@ public sealed class N64AudioTests(ITestOutputHelper output)
         }
     }
 
-    private static byte[] CreateCartridgeImage()
-    {
-        var image = new byte[0x2000];
-        image[0] = 0x80;
-        image[1] = 0x37;
-        image[2] = 0x12;
-        image[3] = 0x40;
-        image[8] = 0x80;
-        image[10] = 0x04;
-        "PIXEL64 AUDIO       "u8.CopyTo(image.AsSpan(0x20, 20));
-        image[0x3B] = (byte)'N';
-        image[0x3C] = (byte)'P';
-        image[0x3D] = (byte)'X';
-        image[0x3E] = (byte)'E';
-        return image;
-    }
 
     [Fact]
     public void TraceLocalSuperMario64AudioCommandListsWhenRequested()
@@ -379,7 +362,7 @@ public sealed class N64AudioTests(ITestOutputHelper output)
             return;
         }
 
-        var path = FindLocalSuperMario64();
+        var path = N64TestSupport.FindSuperMario64();
         Assert.NotNull(path);
         var machine = N64Machine.Load(path);
         var opcodeHistogram = new Dictionary<uint, long>();
@@ -454,42 +437,5 @@ public sealed class N64AudioTests(ITestOutputHelper output)
         }
     }
 
-    private static string? FindLocalSuperMario64()
-    {
-        return FindLocalNintendo64Cartridges()
-            .FirstOrDefault(path =>
-            {
-                try
-                {
-                    return N64Cartridge.Inspect(path).IsSuperMario64UsRevision0;
-                }
-                catch (InvalidDataException)
-                {
-                    return false;
-                }
-            });
-    }
 
-    private static IEnumerable<string> FindLocalNintendo64Cartridges()
-    {
-        var configured = Environment.GetEnvironmentVariable("PIXELDECK_GAMES_FOLDER");
-        var gamesFolder = string.IsNullOrWhiteSpace(configured)
-            ? Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "..",
-                "..",
-                "..",
-                "..",
-                "Games"))
-            : Path.GetFullPath(configured);
-        var nintendo64Folder = Path.Combine(gamesFolder, "Nintendo64");
-        return Directory.Exists(nintendo64Folder)
-            ? Directory.EnumerateFiles(nintendo64Folder, "*", SearchOption.AllDirectories)
-                .Where(path =>
-                    Path.GetExtension(path).Equals(".z64", StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetExtension(path).Equals(".n64", StringComparison.OrdinalIgnoreCase) ||
-                    Path.GetExtension(path).Equals(".v64", StringComparison.OrdinalIgnoreCase))
-            : [];
-    }
 }

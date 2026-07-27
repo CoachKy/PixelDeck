@@ -5,13 +5,16 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class Fast3dRenderer
 {
+    private const uint ForceBlend = 0x4000;
     private const int MaximumCommandsPerTask = 250_000;
     private const int MaximumDisplayListDepth = 32;
 
     private readonly N64Memory _memory;
     private readonly uint[] _segments = new uint[16];
     private readonly Dictionary<byte, long> _unsupportedCommandCounts = new();
-    private readonly Fast3dVertex[] _vertices = new Fast3dVertex[16];
+    // Fast3D addresses 16 vertices; F3DEX2 raises the buffer to 32.
+    private readonly Fast3dVertex[] _vertices = new Fast3dVertex[32];
+    private N64Microcode _microcode = N64Microcode.Fast3d;
     private readonly Fast3dTile[] _tiles = new Fast3dTile[8];
     private readonly LoadedTexture[] _loadedTextures = new LoadedTexture[512];
     private readonly byte[] _textureMemory = new byte[4 * 1024];
@@ -28,10 +31,6 @@ public sealed class Fast3dRenderer
     private readonly Vector3[] _lightDirections = new Vector3[8];
     private int _lightCount;
     private bool _lightsLoaded;
-    private readonly Fast3dRectangleTrace[] _rectangleTrace = new Fast3dRectangleTrace[64];
-    private int _rectangleTraceCount;
-    private readonly Fast3dTriangleTrace[] _triangleTrace = new Fast3dTriangleTrace[64];
-    private int _triangleTraceCount;
     private int _scissorLeft;
     private int _scissorTop;
     private int _scissorRight = 320;
@@ -50,6 +49,9 @@ public sealed class Fast3dRenderer
     private int _textureImageWidth = 1;
     private bool _combinerUsesTexture;
     private Vector4 _primitiveColor = Vector4.One;
+    private Vector4 _environmentColor = Vector4.One;
+    private CombinerCycle _combinerCycle0;
+    private CombinerCycle _combinerCycle1;
     private uint _otherModeLow;
     private uint _otherModeHigh;
 
@@ -116,8 +118,9 @@ public sealed class Fast3dRenderer
         _textureImageSize = 0;
         _textureImageWidth = 1;
         _primitiveColor = Vector4.One;
-        _rectangleTraceCount = 0;
-        _triangleTraceCount = 0;
+        MicrocodeBanner = ReadMicrocodeBanner(task);
+        _microcode = ClassifyMicrocode(MicrocodeBanner);
+        DetectedMicrocode = _microcode;
         var remainingBudget = MaximumCommandsPerTask;
         ExecuteDisplayList(
             ResolveAddress(task.DataPointer),
@@ -150,16 +153,85 @@ public sealed class Fast3dRenderer
             CommandsProcessed++;
 
             var opcode = (byte)(word0 >> 24);
+            _opcodeHistogram[opcode]++;
             switch (opcode)
             {
-                case 0x01: // F3D G_MTX
-                    LoadMatrix(word0, word1);
+                case 0x01: // F3D G_MTX / F3DEX2 G_VTX
+                    if (_microcode == N64Microcode.F3dex2)
+                    {
+                        LoadVerticesF3dex2(word0, word1);
+                    }
+                    else
+                    {
+                        LoadMatrix((int)((word0 >> 16) & 0xFF), word1);
+                    }
+
                     break;
-                case 0x03: // F3D G_MOVEMEM
-                    MoveMemory(word0, word1);
+                case 0x02 when _microcode == N64Microcode.F3dex2: // G_MODIFYVTX
+                    ModifyVertex(word0, word1);
                     break;
-                case 0x04: // F3D G_VTX
-                    LoadVertices(word0, word1);
+                case 0x03: // F3D G_MOVEMEM / F3DEX2 G_CULLDL
+                    if (_microcode != N64Microcode.F3dex2)
+                    {
+                        MoveMemory(word0, word1);
+                    }
+
+                    // G_CULLDL rejects a display list whose bounding volume is
+                    // off screen. Drawing it anyway is always visually correct.
+                    break;
+                case 0x04: // F3D G_VTX / F3DEX2 G_BRANCH_Z
+                    if (_microcode == N64Microcode.F3dex)
+                    {
+                        LoadVerticesF3dex(word0, word1);
+                    }
+                    else if (_microcode != N64Microcode.F3dex2)
+                    {
+                        LoadVertices(word0, word1);
+                    }
+
+                    // G_BRANCH_Z selects a level of detail by depth. Falling
+                    // through keeps the already-loaded list.
+                    break;
+                case 0x05: // F3DEX2 G_TRI1
+                    if (_microcode == N64Microcode.F3dex2)
+                    {
+                        DrawTriangleF3dex2(word0);
+                    }
+
+                    break;
+                case 0x07: // F3DEX2 G_QUAD
+                    if (_microcode == N64Microcode.F3dex2)
+                    {
+                        DrawTriangleF3dex2(word0);
+                        DrawTriangleF3dex2(word1);
+                    }
+
+                    break;
+                case 0xD7: // F3DEX2 G_TEXTURE
+                    SetTexture(word0, word1);
+                    break;
+                case 0xD8: // F3DEX2 G_POPMTX
+                    if (_modelViewStack.Count > 1)
+                    {
+                        _modelViewStack.Pop();
+                    }
+
+                    break;
+                case 0xD9: // F3DEX2 G_GEOMETRYMODE
+                    _geometryMode = (_geometryMode & (word0 & 0x00FFFFFF)) | word1;
+                    break;
+                case 0xDA: // F3DEX2 G_MTX
+                    LoadMatrix(ConvertF3dex2MatrixParameters(word0), word1);
+                    break;
+                case 0xDB: // F3DEX2 G_MOVEWORD
+                    MoveWordF3dex2(word0, word1);
+                    break;
+                case 0xDC: // F3DEX2 G_MOVEMEM
+                    MoveMemoryF3dex2(word0, word1);
+                    break;
+                case 0x06 when _microcode == N64Microcode.F3dex2: // F3DEX2 G_TRI2
+                    DrawTriangleF3dex2(word0);
+                    DrawTriangleF3dex2(word1);
                     break;
                 case 0x06: // F3D G_DL
                 {
@@ -192,7 +264,20 @@ public sealed class Fast3dRenderer
 
                     break;
                 case 0xBF: // F3D G_TRI1
-                    DrawTriangle(word1);
+                    // Fast3D stores indices multiplied by 10; F3DEX by 2.
+                    if (_microcode == N64Microcode.F3dex)
+                    {
+                        DrawTriangleF3dex2(word1);
+                    }
+                    else
+                    {
+                        DrawTriangle(word1);
+                    }
+
+                    break;
+                case 0xB1 when _microcode == N64Microcode.F3dex: // F3DEX G_TRI2
+                    DrawTriangleF3dex2(word0);
+                    DrawTriangleF3dex2(word1);
                     break;
                 case 0xB1: // F3D G_TRI4: four triangles as packed nibble indices
                     for (var triangle = 0; triangle < 4; triangle++)
@@ -254,7 +339,7 @@ public sealed class Fast3dRenderer
                     SetTextureImage(word0, word1);
                     break;
                 case 0xFC: // G_SETCOMBINE
-                    _combinerUsesTexture = CombineUsesTexture(word0, word1);
+                    DecodeCombiner(word0, word1);
                     break;
                 case 0xFE: // G_SETZIMG
                     _depthImageAddress = ResolveAddress(word1);
@@ -273,20 +358,35 @@ public sealed class Fast3dRenderer
                 case 0xF0: // G_LOADTLUT
                     LoadTextureLookupTable(word0, word1);
                     break;
-                case 0xF8: // G_SETSCISSOR
+                case 0xF4: // G_LOADTILE
+                    LoadTextureTile(word0, word1);
+                    break;
+                case 0xE2: // F3DEX2 G_SETOTHERMODE_L
+                    SetOtherModeLow(ConvertF3dex2ModeSelector(word0), word1);
+                    break;
+                case 0xE3: // F3DEX2 G_SETOTHERMODE_H
+                    SetOtherModeHigh(ConvertF3dex2ModeSelector(word0), word1);
+                    break;
+                case 0xEF: // G_RDPSETOTHERMODE: both halves at once
+                    _otherModeHigh = word0 & 0x00FFFFFF;
+                    _otherModeLow = word1;
+                    break;
+                case 0xED: // G_SETSCISSOR — upper left in word0, lower right in word1
                     _scissorLeft = (int)((word0 >> 12) & 0xFFF) / 4;
                     _scissorTop = (int)(word0 & 0xFFF) / 4;
                     _scissorRight = (int)((word1 >> 12) & 0xFFF) / 4;
                     _scissorBottom = (int)(word1 & 0xFFF) / 4;
                     break;
+                case 0xFB: // G_SETENVCOLOR
+                    _environmentColor = DecodeRgba32(word1);
+                    break;
                 case 0x00:
-                case 0xE7:
-                case 0xE6:
-                case 0xE8:
-                case 0xE9:
-                case 0xED:
-                case 0xFB:
-                case 0xB4:
+                case 0xE7: // G_RDPPIPESYNC
+                case 0xE6: // G_RDPLOADSYNC
+                case 0xE8: // G_RDPTILESYNC
+                case 0xE9: // G_RDPFULLSYNC
+                case 0xF8: // G_SETFOGCOLOR
+                case 0xB4: // G_RDPHALF_1
                     break;
                 case 0xE4: // G_TEXRECT
                 case 0xE5: // G_TEXRECTFLIP
@@ -317,6 +417,63 @@ public sealed class Fast3dRenderer
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Identifies the graphics microcode from the version banner every
+    /// libultra ucode carries in its data segment, for example
+    /// "RSP Gfx ucode F3DEX.NoN fifo 2.08". The trailing version number is
+    /// what separates F3DEX2 from the original F3DEX — both spell "F3DEX" —
+    /// and F3DZEX (Ocarina of Time) is an F3DEX2 derivative.
+    /// </summary>
+    internal N64Microcode DetectedMicrocode { get; private set; } = N64Microcode.Fast3d;
+
+    internal string? MicrocodeBanner { get; private set; }
+
+    private static N64Microcode ClassifyMicrocode(string? banner)
+    {
+        if (banner is null)
+        {
+            return N64Microcode.Fast3d;
+        }
+
+        if (banner.Contains("F3DZEX", StringComparison.Ordinal) ||
+            (banner.Contains("F3DEX", StringComparison.Ordinal) &&
+             banner.Contains(" 2.", StringComparison.Ordinal)))
+        {
+            return N64Microcode.F3dex2;
+        }
+
+        return banner.Contains("F3DEX", StringComparison.Ordinal)
+            ? N64Microcode.F3dex
+            : N64Microcode.Fast3d;
+    }
+
+    private string? ReadMicrocodeBanner(N64RspTask task)
+    {
+        var address = task.MicrocodeDataPointer & 0x7FFFFF;
+        var length = (int)Math.Min(task.MicrocodeDataSize, 2048);
+        if (length <= 0 || address + length > N64Memory.RdramSize)
+        {
+            return null;
+        }
+
+        var data = _memory.Rdram.AsSpan((int)address, length);
+        ReadOnlySpan<byte> marker = "RSP Gfx ucode"u8;
+        var start = data.IndexOf(marker);
+        if (start < 0)
+        {
+            return null;
+        }
+
+        var text = data[start..];
+        var end = 0;
+        while (end < text.Length && end < 96 && text[end] is >= 0x20 and <= 0x7E)
+        {
+            end++;
+        }
+
+        return System.Text.Encoding.ASCII.GetString(text[..end]);
     }
 
     private void SetTexture(uint word0, uint word1)
@@ -417,6 +574,7 @@ public sealed class Fast3dRenderer
             MaskS = (int)((word1 >> 4) & 0xF),
             ShiftS = (int)(word1 & 0xF)
         };
+        RecordTileFormatSupport((int)((word0 >> 21) & 7), (int)((word0 >> 19) & 3));
     }
 
     private void SetTileSize(uint word0, uint word1)
@@ -429,6 +587,59 @@ public sealed class Fast3dRenderer
             LowerRightS = (int)((word1 >> 12) & 0xFFF),
             LowerRightT = (int)(word1 & 0xFFF)
         };
+    }
+
+    /// <summary>
+    /// F3DEX2 stores the other-mode shift and length differently: the word
+    /// holds (32 - shift - length) and (length - 1). Repack them into the
+    /// Fast3D shift/length pair the shared setters expect.
+    /// </summary>
+    private static uint ConvertF3dex2ModeSelector(uint word0)
+    {
+        var length = (int)(word0 & 0xFF) + 1;
+        var shift = 32 - (int)((word0 >> 8) & 0xFF) - length;
+        return (uint)((Math.Clamp(shift, 0, 31) << 8) | Math.Clamp(length, 0, 32));
+    }
+
+    /// <summary>
+    /// Copies a rectangular region of the current texture image into TMEM.
+    /// Rows are packed tightly at the tile's width so that sampling indexes
+    /// them the same way <see cref="LoadTextureBlock"/> leaves them.
+    /// </summary>
+    private void LoadTextureTile(uint word0, uint word1)
+    {
+        var tileIndex = (int)((word1 >> 24) & 7);
+        var tile = _tiles[tileIndex];
+        var upperLeftS = (int)((word0 >> 12) & 0xFFF) >> 2;
+        var upperLeftT = (int)(word0 & 0xFFF) >> 2;
+        var lowerRightS = (int)((word1 >> 12) & 0xFFF) >> 2;
+        var lowerRightT = (int)(word1 & 0xFFF) >> 2;
+        var width = lowerRightS - upperLeftS + 1;
+        var height = lowerRightT - upperLeftT + 1;
+        if (width <= 0 || height <= 0 || _textureImageWidth <= 0)
+        {
+            return;
+        }
+
+        var bitsPerTexel = BitsPerTexel(_textureImageSize);
+        var rowBits = width * bitsPerTexel;
+        for (var row = 0; row < height; row++)
+        {
+            var sourceTexel = ((upperLeftT + row) * _textureImageWidth) + upperLeftS;
+            CopyRdramBitsToTmem(
+                _textureImageAddress,
+                sourceTexel * bitsPerTexel,
+                (tile.Tmem * 64) + (row * rowBits),
+                rowBits);
+        }
+
+        _loadedTextures[tile.Tmem] = new LoadedTexture(
+            _textureImageAddress,
+            _textureImageFormat,
+            _textureImageSize,
+            width * height,
+            tile.Tmem,
+            rowBits * height);
     }
 
     private void LoadTextureBlock(uint word0, uint word1)
@@ -533,17 +744,7 @@ public sealed class Fast3dRenderer
             // Light_t: color bytes 0-2 (repeated at 4-6), signed direction
             // bytes 8-10. The ambient light is loaded one slot past the
             // directional lights and carries no direction.
-            var lightAddress = ResolveAddress(word1);
-            var slot = (index - firstLightIndex) / 2;
-            _lightColors[slot] = new Vector3(
-                _memory.ReadByte(lightAddress) / 255f,
-                _memory.ReadByte(lightAddress + 1) / 255f,
-                _memory.ReadByte(lightAddress + 2) / 255f);
-            _lightDirections[slot] = new Vector3(
-                (sbyte)_memory.ReadByte(lightAddress + 8) / 128f,
-                (sbyte)_memory.ReadByte(lightAddress + 9) / 128f,
-                (sbyte)_memory.ReadByte(lightAddress + 10) / 128f);
-            _lightsLoaded = true;
+            ReadLight((index - firstLightIndex) / 2, ResolveAddress(word1));
             return;
         }
 
@@ -552,7 +753,24 @@ public sealed class Fast3dRenderer
             return;
         }
 
-        var address = ResolveAddress(word1);
+        ReadViewport(ResolveAddress(word1));
+    }
+
+    private void ReadLight(int slot, uint address)
+    {
+        _lightColors[slot] = new Vector3(
+            _memory.ReadByte(address) / 255f,
+            _memory.ReadByte(address + 1) / 255f,
+            _memory.ReadByte(address + 2) / 255f);
+        _lightDirections[slot] = new Vector3(
+            (sbyte)_memory.ReadByte(address + 8) / 128f,
+            (sbyte)_memory.ReadByte(address + 9) / 128f,
+            (sbyte)_memory.ReadByte(address + 10) / 128f);
+        _lightsLoaded = true;
+    }
+
+    private void ReadViewport(uint address)
+    {
         _viewportScale = new Vector4(
             (short)_memory.ReadUInt16(address) / 4f,
             (short)_memory.ReadUInt16(address + 2) / 4f,
@@ -602,25 +820,54 @@ public sealed class Fast3dRenderer
             alpha);
     }
 
-    private void LoadMatrix(uint word0, uint word1)
+    /// <summary>
+    /// F3DEX2 reassigns the matrix flag bits (projection moves from 1 to 4,
+    /// push from 4 to 1) and stores push inverted, so translate them into the
+    /// Fast3D layout the shared loader expects.
+    /// </summary>
+    private static int ConvertF3dex2MatrixParameters(uint word0)
+    {
+        var encoded = word0 & 0xFF;
+        var parameters = 0;
+        if ((encoded & 4) != 0)
+        {
+            parameters |= 1; // projection
+        }
+
+        if ((encoded & 2) != 0)
+        {
+            parameters |= 2; // load rather than multiply
+        }
+
+        if ((encoded & 1) == 0)
+        {
+            parameters |= 4; // push (F3DEX2 encodes no-push as the set bit)
+        }
+
+        return parameters;
+    }
+
+    private void LoadMatrix(int parameters, uint word1)
     {
         const int projectionFlag = 1;
         const int loadFlag = 2;
         const int pushFlag = 4;
-        var parameters = (int)((word0 >> 16) & 0xFF);
         var incoming = ReadMatrix(ResolveAddress(word1));
+        // The RSP multiplies the incoming matrix into the current one as
+        // incoming * current, which for this row-vector convention means the
+        // new matrix is applied before whatever is already on the stack.
         if ((parameters & projectionFlag) != 0)
         {
             _projection = (parameters & loadFlag) != 0
                 ? incoming
-                : Matrix4x4.Multiply(_projection, incoming);
+                : Matrix4x4.Multiply(incoming, _projection);
             return;
         }
 
         var current = _modelViewStack.Peek();
         var result = (parameters & loadFlag) != 0
             ? incoming
-            : Matrix4x4.Multiply(current, incoming);
+            : Matrix4x4.Multiply(incoming, current);
         if ((parameters & pushFlag) != 0)
         {
             _modelViewStack.Push(result);
@@ -655,9 +902,11 @@ public sealed class Fast3dRenderer
     private void LoadVertices(uint word0, uint word1)
     {
         var parameters = (int)((word0 >> 16) & 0xFF);
-        var count = (parameters >> 4) + 1;
-        var destination = parameters & 0xF;
-        var address = ResolveAddress(word1);
+        LoadVerticesInto((parameters & 0xF), (parameters >> 4) + 1, ResolveAddress(word1));
+    }
+
+    private void LoadVerticesInto(int destination, int count, uint address)
+    {
         var combined = Matrix4x4.Multiply(_modelViewStack.Peek(), _projection);
         for (var index = 0; index < count && destination + index < _vertices.Length; index++)
         {
@@ -683,6 +932,160 @@ public sealed class Fast3dRenderer
                     (short)_memory.ReadUInt16(vertexAddress + 10) / 32f * _textureScaleT));
             VerticesTransformed++;
         }
+    }
+
+    /// <summary>
+    /// F3DEX2 packs three vertex indices as byte pairs in a single word; the
+    /// stored value is the index doubled.
+    /// </summary>
+    private void DrawTriangleF3dex2(uint word) =>
+        DrawTriangleIndices(
+            (int)((word >> 16) & 0xFF) / 2,
+            (int)((word >> 8) & 0xFF) / 2,
+            (int)(word & 0xFF) / 2);
+
+    /// <summary>
+    /// F3DEX2 G_VTX names the vertex slot one past the last one written, so
+    /// the destination is that index minus the count.
+    /// </summary>
+    private void LoadVerticesF3dex2(uint word0, uint word1) =>
+        LoadVerticesEndIndexed((int)((word0 >> 12) & 0xFF), word0, word1);
+
+    /// <summary>
+    /// Both F3DEX revisions name the slot one past the last vertex written;
+    /// only the width and position of the count field differ.
+    /// </summary>
+    private void LoadVerticesEndIndexed(int count, uint word0, uint word1)
+    {
+        var destination = (int)((word0 >> 1) & 0x7F) - count;
+        if (count <= 0 || destination < 0)
+        {
+            return;
+        }
+
+        LoadVerticesInto(destination, count, ResolveAddress(word1));
+    }
+
+    /// <summary>
+    /// F3DEX version 1 keeps Fast3D's G_VTX opcode but repacks its operands:
+    /// the count sits at bits 10-15 and the field at bit 1 is the slot one
+    /// past the last vertex written.
+    /// </summary>
+    private void LoadVerticesF3dex(uint word0, uint word1) =>
+        LoadVerticesEndIndexed((int)((word0 >> 10) & 0x3F), word0, word1);
+
+    /// <summary>
+    /// F3DEX2 G_MODIFYVTX patches one attribute of an already-loaded vertex
+    /// in place rather than re-running the transform. WWF WrestleMania 2000
+    /// builds most of its geometry this way.
+    /// </summary>
+    private void ModifyVertex(uint word0, uint word1)
+    {
+        const int pointRgba = 0x10;
+        const int pointSt = 0x14;
+        const int pointXyScreen = 0x18;
+        const int pointZScreen = 0x1C;
+        var field = (int)((word0 >> 16) & 0xFF);
+        var index = (int)((word0 >> 1) & 0x7F) / 2;
+        if (index < 0 || index >= _vertices.Length)
+        {
+            return;
+        }
+
+        var vertex = _vertices[index];
+        switch (field)
+        {
+            case pointRgba:
+                _vertices[index] = vertex with
+                {
+                    Color = new Vector4(
+                        ((word1 >> 24) & 0xFF) / 255f,
+                        ((word1 >> 16) & 0xFF) / 255f,
+                        ((word1 >> 8) & 0xFF) / 255f,
+                        (word1 & 0xFF) / 255f)
+                };
+                break;
+            case pointSt:
+                _vertices[index] = vertex with
+                {
+                    TextureCoordinate = new Vector2(
+                        (short)(word1 >> 16) / 32f * _textureScaleS,
+                        (short)word1 / 32f * _textureScaleT)
+                };
+                break;
+            case pointXyScreen:
+                _vertices[index] = vertex with
+                {
+                    Position = new Vector3(
+                        (short)(word1 >> 16) / 4f,
+                        (short)word1 / 4f,
+                        vertex.Position.Z),
+                    Valid = true
+                };
+                break;
+            case pointZScreen:
+                _vertices[index] = vertex with
+                {
+                    Position = new Vector3(
+                        vertex.Position.X,
+                        vertex.Position.Y,
+                        unchecked((int)word1) / 65536f)
+                };
+                break;
+        }
+    }
+
+    private void MoveWordF3dex2(uint word0, uint word1)
+    {
+        const int numberOfLightsIndex = 0x02;
+        const int segmentIndex = 0x06;
+        var index = (int)((word0 >> 16) & 0xFF);
+        var offset = (int)(word0 & 0xFFFF);
+        if (index == numberOfLightsIndex)
+        {
+            // F3DEX2 encodes the count as lights * 24.
+            _lightCount = Math.Clamp((int)(word1 / 24), 0, 7);
+            return;
+        }
+
+        if (index != segmentIndex)
+        {
+            return;
+        }
+
+        var segment = offset / 4;
+        if (segment >= 0 && segment < _segments.Length)
+        {
+            _segments[segment] = word1 & 0x00FFFFFF;
+        }
+    }
+
+    private void MoveMemoryF3dex2(uint word0, uint word1)
+    {
+        const int viewportIndex = 0x08;
+        const int lightIndex = 0x0A;
+        var index = (int)(word0 & 0xFF);
+        var offset = (int)((word0 >> 8) & 0xFF) * 8;
+        var address = ResolveAddress(word1);
+        if (index == viewportIndex)
+        {
+            ReadViewport(address);
+            return;
+        }
+
+        if (index != lightIndex)
+        {
+            return;
+        }
+
+        // Light n lives at offset (n + 1) * 24.
+        var slot = (offset / 24) - 1;
+        if (slot is < 0 or > 7)
+        {
+            return;
+        }
+
+        ReadLight(slot, address);
     }
 
     private void DrawTriangle(uint word1) =>
@@ -861,58 +1264,6 @@ public sealed class Fast3dRenderer
             return;
         }
 
-        if (TraceEnabled &&
-            _triangleTraceCount < _triangleTrace.Length &&
-            _textureEnabled &&
-            _combinerUsesTexture)
-        {
-            var tile = _tiles[Math.Clamp(_textureTile, 0, _tiles.Length - 1)];
-            var tileWidth = Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1);
-            var duplicate = false;
-            for (var existing = 0; existing < _triangleTraceCount; existing++)
-            {
-                var seen = _triangleTrace[existing];
-                if (seen.TileWidth == tileWidth &&
-                    seen.Line == tile.Line &&
-                    seen.MaskS == tile.MaskS &&
-                    seen.ClampS == tile.ClampS &&
-                    seen.UpperLeftS == tile.UpperLeftS)
-                {
-                    duplicate = true;
-                    break;
-                }
-            }
-
-            if (duplicate)
-            {
-                goto skipTrace;
-            }
-
-            _triangleTrace[_triangleTraceCount++] = new Fast3dTriangleTrace(
-                rawMinX,
-                rawMinY,
-                rawMaxX,
-                rawMaxY,
-                a.TextureCoordinate,
-                b.TextureCoordinate,
-                c.TextureCoordinate,
-                Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1),
-                Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1),
-                tile.MaskS,
-                tile.MaskT,
-                tile.ClampS,
-                tile.ClampT,
-                tile.ShiftS,
-                tile.ShiftT,
-                _textureScaleS,
-                _textureScaleT,
-                tile.Line,
-                tile.Size,
-                tile.UpperLeftS,
-                tile.UpperLeftT);
-        }
-
-        skipTrace:
         var minX = Math.Clamp(Math.Max(rawMinX, _scissorLeft), 0, _colorImageWidth - 1);
         var maxX = Math.Clamp(Math.Min(rawMaxX, _scissorRight - 1), 0, _colorImageWidth - 1);
         var minY = Math.Clamp(Math.Max(rawMinY, _scissorTop), 0, maximumHeight - 1);
@@ -967,8 +1318,11 @@ public sealed class Fast3dRenderer
                     continue;
                 }
 
-                var color =
+                var shade =
                     (a.Color * weightA) + (b.Color * weightB) + (c.Color * weightC);
+                var color = shade;
+                var texel = Vector4.Zero;
+                var sampledTexture = false;
                 if (drawTextured)
                 {
                     var reciprocalW =
@@ -988,9 +1342,18 @@ public sealed class Fast3dRenderer
                             continue;
                         }
 
-                        color *= textureColor;
+                        texel = textureColor;
+                        sampledTexture = true;
                         TexturedPixelsDrawn++;
                     }
+                }
+
+                // Run the programmable combiner once a texel is available;
+                // untextured spans keep interpolated shade so that geometry
+                // drawn before any texture load still looks correct.
+                if (sampledTexture)
+                {
+                    color = EvaluateCombiner(shade, texel);
                 }
 
                 if (updateDepth)
@@ -1084,27 +1447,6 @@ public sealed class Fast3dRenderer
             return;
         }
 
-        if (TraceEnabled && _rectangleTraceCount < _rectangleTrace.Length)
-        {
-            var tile = _tiles[Math.Clamp(tileIndex, 0, _tiles.Length - 1)];
-            _rectangleTrace[_rectangleTraceCount++] = new Fast3dRectangleTrace(
-                left,
-                top,
-                right,
-                bottom,
-                startS,
-                startT,
-                stepS,
-                stepT,
-                Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1),
-                Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1),
-                tile.MaskS,
-                tile.MaskT,
-                tile.ClampS,
-                tile.ClampT,
-                CycleType);
-        }
-
         var maximumHeight = Math.Min(
             480,
             Math.Max(
@@ -1175,6 +1517,138 @@ public sealed class Fast3dRenderer
             _ => Vector4.One
         };
     }
+
+    /// <summary>
+    /// Counts tile configurations whose texel format the sampler cannot
+    /// decode. Recorded when a tile is configured rather than per texel, so
+    /// an unsupported format costs nothing in the pixel loop.
+    /// </summary>
+    private readonly long[] _unsupportedTextureFormats = new long[32];
+
+    internal IEnumerable<(int Format, int Size, long Count)> UnsupportedTextureFormats =>
+        _unsupportedTextureFormats
+            .Select((count, key) => (Format: key >> 2, Size: key & 3, Count: count))
+            .Where(entry => entry.Count > 0)
+            .OrderByDescending(entry => entry.Count);
+
+    private void RecordTileFormatSupport(int format, int size)
+    {
+        var supported = (format, size) switch
+        {
+            (0, 2) or (0, 3) or (2, 0) or (2, 1) => true,
+            (3, 0) or (3, 1) or (3, 2) or (4, 0) or (4, 1) => true,
+            _ => false
+        };
+        if (!supported)
+        {
+            _unsupportedTextureFormats[((format & 7) << 2) | (size & 3)]++;
+        }
+    }
+
+    /// <summary>
+    /// The mux selectors for one combiner cycle. Decoded once when
+    /// G_SETCOMBINE is handled rather than re-extracted per pixel.
+    /// </summary>
+    private readonly record struct CombinerCycle(
+        int ColourA,
+        int ColourB,
+        int ColourC,
+        int ColourD,
+        int AlphaA,
+        int AlphaB,
+        int AlphaC,
+        int AlphaD);
+
+    private void DecodeCombiner(uint word0, uint word1)
+    {
+        _combinerCycle0 = new CombinerCycle(
+            (int)((word0 >> 20) & 0xF),
+            (int)((word1 >> 28) & 0xF),
+            (int)((word0 >> 15) & 0x1F),
+            (int)((word1 >> 15) & 0x7),
+            (int)((word0 >> 12) & 0x7),
+            (int)((word1 >> 12) & 0x7),
+            (int)((word0 >> 9) & 0x7),
+            (int)((word1 >> 9) & 0x7));
+        _combinerCycle1 = new CombinerCycle(
+            (int)((word0 >> 5) & 0xF),
+            (int)((word1 >> 24) & 0xF),
+            (int)(word0 & 0x1F),
+            (int)((word1 >> 6) & 0x7),
+            (int)((word1 >> 21) & 0x7),
+            (int)((word1 >> 3) & 0x7),
+            (int)((word1 >> 18) & 0x7),
+            (int)(word1 & 0x7));
+        _combinerUsesTexture = CombineUsesTexture(word0, word1);
+    }
+
+    /// <summary>
+    /// Evaluates the RDP colour combiner: each cycle computes
+    /// (A - B) * C + D independently for colour and alpha. In two-cycle mode
+    /// the first cycle's result feeds the second as the COMBINED source.
+    /// </summary>
+    private Vector4 EvaluateCombiner(Vector4 shade, Vector4 texel)
+    {
+        var combined = EvaluateCombinerCycle(_combinerCycle0, shade, texel, Vector4.Zero);
+        if (CycleType == 1)
+        {
+            combined = EvaluateCombinerCycle(_combinerCycle1, shade, texel, combined);
+        }
+
+        return Vector4.Clamp(combined, Vector4.Zero, Vector4.One);
+    }
+
+    private Vector4 EvaluateCombinerCycle(
+        CombinerCycle cycle,
+        Vector4 shade,
+        Vector4 texel,
+        Vector4 combined)
+    {
+        // Fold the alpha selectors into the W lane so the cycle evaluates as
+        // one vector expression rather than three scalar lanes plus a scalar
+        // alpha; this runs for every textured pixel.
+        var a = WithAlpha(CombinerColour(cycle.ColourA, shade, texel, combined), cycle.AlphaA, shade, texel, combined);
+        var b = WithAlpha(CombinerColour(cycle.ColourB, shade, texel, combined), cycle.AlphaB, shade, texel, combined);
+        var c = WithAlpha(CombinerScale(cycle.ColourC, shade, texel, combined), cycle.AlphaC, shade, texel, combined);
+        var d = WithAlpha(CombinerColour(cycle.ColourD, shade, texel, combined), cycle.AlphaD, shade, texel, combined);
+        return ((a - b) * c) + d;
+    }
+
+    private Vector4 WithAlpha(
+        Vector4 colour,
+        int alphaSource,
+        Vector4 shade,
+        Vector4 texel,
+        Vector4 combined) =>
+        colour with { W = CombinerColour(alphaSource, shade, texel, combined).W };
+
+    private Vector4 CombinerColour(int source, Vector4 shade, Vector4 texel, Vector4 combined) =>
+        source switch
+        {
+            0 => combined,
+            1 or 2 => texel,
+            3 => _primitiveColor,
+            4 => shade,
+            5 => _environmentColor,
+            6 => Vector4.One,
+            _ => Vector4.Zero
+        };
+
+    /// <summary>
+    /// The C multiplier shares the colour sources but can also select an
+    /// alpha channel, broadcast across all lanes.
+    /// </summary>
+    private Vector4 CombinerScale(int source, Vector4 shade, Vector4 texel, Vector4 combined) =>
+        source switch
+        {
+            < 6 => CombinerColour(source, shade, texel, combined),
+            7 => new Vector4(combined.W),
+            8 or 9 => new Vector4(texel.W),
+            10 => new Vector4(_primitiveColor.W),
+            11 => new Vector4(shade.W),
+            12 => new Vector4(_environmentColor.W),
+            _ => Vector4.Zero
+        };
 
     private Vector4 DecodePaletteTexel(int paletteIndex)
     {
@@ -1319,6 +1793,24 @@ public sealed class Fast3dRenderer
         if (destination + bytesPerPixel > N64Memory.RdramSize)
         {
             return;
+        }
+
+        // The RDP blender composites translucent coverage against the frame
+        // buffer. Only the translucent render modes read it back; gating on
+        // FORCE_BLEND keeps opaque geometry off the read path entirely.
+        if (color.W < 0.99f && (_otherModeLow & ForceBlend) != 0)
+        {
+            var existing = _colorImageSize == 2
+                ? DecodeRgba16(BinaryPrimitives.ReadUInt16BigEndian(
+                    _memory.Rdram.AsSpan((int)destination, 2)))
+                : DecodeRgba32(BinaryPrimitives.ReadUInt32BigEndian(
+                    _memory.Rdram.AsSpan((int)destination, 4)));
+            var coverage = Math.Clamp(color.W, 0f, 1f);
+            color = new Vector4(
+                (color.X * coverage) + (existing.X * (1 - coverage)),
+                (color.Y * coverage) + (existing.Y * (1 - coverage)),
+                (color.Z * coverage) + (existing.Z * (1 - coverage)),
+                Math.Max(color.W, existing.W));
         }
 
         var red = (uint)Math.Clamp((int)MathF.Round(color.X * 255), 0, 255);
@@ -1470,64 +1962,24 @@ public sealed class Fast3dRenderer
         int LowerRightS,
         int LowerRightT);
 
-    /// <summary>Diagnostic capture of texture rectangles for the trace tools.</summary>
-    internal readonly record struct Fast3dRectangleTrace(
-        int Left,
-        int Top,
-        int Right,
-        int Bottom,
-        float StartS,
-        float StartT,
-        float StepS,
-        float StepT,
-        int TileWidth,
-        int TileHeight,
-        int MaskS,
-        int MaskT,
-        bool ClampS,
-        bool ClampT,
-        uint CycleType);
-
     /// <summary>
-    /// Enables the diagnostic capture below. Off by default: the capture
-    /// de-duplicates against everything recorded so far, which is far too
-    /// costly to run per triangle during normal play.
+    /// Records which display-list opcodes a cartridge issues. Cheap enough to
+    /// leave on: one array increment per command, never per pixel.
     /// </summary>
-    internal bool TraceEnabled { get; set; }
+    private readonly long[] _opcodeHistogram = new long[256];
 
-    internal ReadOnlySpan<Fast3dRectangleTrace> RecentTextureRectangles =>
-        _rectangleTrace.AsSpan(0, _rectangleTraceCount);
+    internal IEnumerable<(byte Opcode, long Count)> OpcodeHistogram =>
+        _opcodeHistogram
+            .Select((count, opcode) => (Opcode: (byte)opcode, Count: count))
+            .Where(entry => entry.Count > 0)
+            .OrderByDescending(entry => entry.Count);
 
-    internal void ClearTextureRectangleTrace() => _rectangleTraceCount = 0;
-
-    /// <summary>Diagnostic capture of textured triangles for the trace tools.</summary>
-    internal readonly record struct Fast3dTriangleTrace(
-        int MinX,
-        int MinY,
-        int MaxX,
-        int MaxY,
-        Vector2 TextureA,
-        Vector2 TextureB,
-        Vector2 TextureC,
-        int TileWidth,
-        int TileHeight,
-        int MaskS,
-        int MaskT,
-        bool ClampS,
-        bool ClampT,
-        int ShiftS,
-        int ShiftT,
-        float ScaleS,
-        float ScaleT,
-        int Line,
-        int Size,
-        int UpperLeftS,
-        int UpperLeftT);
-
-    internal ReadOnlySpan<Fast3dTriangleTrace> RecentTexturedTriangles =>
-        _triangleTrace.AsSpan(0, _triangleTraceCount);
-
-    internal void ClearTexturedTriangleTrace() => _triangleTraceCount = 0;
+    internal enum N64Microcode
+    {
+        Fast3d,
+        F3dex,
+        F3dex2
+    }
 
     private readonly record struct LoadedTexture(
         uint SourceAddress,

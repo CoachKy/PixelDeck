@@ -7,6 +7,15 @@ namespace PixelDeck.NesCompatibility;
 
 internal static class CompatibilityReportWriter
 {
+    // Building the options is far more expensive than the serialization
+    // itself, and they never vary, so cache one instance.
+    private static readonly JsonSerializerOptions JsonOptions =
+        new(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+            Converters = { new JsonStringEnumConverter() }
+        };
+
     public static CompatibilityReportPaths Write(
         NesCompatibilityReport report,
         string outputFolder)
@@ -16,12 +25,7 @@ internal static class CompatibilityReportWriter
         var csvPath = Path.Combine(outputFolder, "games.csv");
         var markdownPath = Path.Combine(outputFolder, "REPORT.md");
 
-        var jsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web)
-        {
-            WriteIndented = true,
-            Converters = { new JsonStringEnumConverter() }
-        };
-        File.WriteAllText(jsonPath, JsonSerializer.Serialize(report, jsonOptions), new UTF8Encoding(false));
+        File.WriteAllText(jsonPath, JsonSerializer.Serialize(report, JsonOptions), new UTF8Encoding(false));
         File.WriteAllText(csvPath, BuildCsv(report.Games), new UTF8Encoding(false));
         File.WriteAllText(markdownPath, BuildMarkdown(report), new UTF8Encoding(false));
         return new(jsonPath, csvPath, markdownPath);

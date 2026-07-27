@@ -77,22 +77,6 @@ public sealed class N64TlbTests
     }
 
     private static N64Machine CreateMachine() =>
-        N64Machine.Create(N64Cartridge.FromBytes(CreateCartridgeImage()));
+        N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
 
-    private static byte[] CreateCartridgeImage()
-    {
-        var image = new byte[0x2000];
-        image[0] = 0x80;
-        image[1] = 0x37;
-        image[2] = 0x12;
-        image[3] = 0x40;
-        image[8] = 0x80;
-        image[10] = 0x04;
-        "PIXEL64 TLB         "u8.CopyTo(image.AsSpan(0x20, 20));
-        image[0x3B] = (byte)'N';
-        image[0x3C] = (byte)'P';
-        image[0x3D] = (byte)'X';
-        image[0x3E] = (byte)'E';
-        return image;
-    }
 }

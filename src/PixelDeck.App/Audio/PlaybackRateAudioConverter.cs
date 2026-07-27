@@ -8,10 +8,7 @@ internal static class PlaybackRateAudioConverter
         int playbackRate)
     {
         Validate(channels, playbackRate);
-        if (destinationValueCount < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(destinationValueCount));
-        }
+        ArgumentOutOfRangeException.ThrowIfNegative(destinationValueCount);
 
         var destinationFrames = destinationValueCount / channels;
         return checked(destinationFrames * channels * playbackRate);
@@ -54,14 +51,7 @@ internal static class PlaybackRateAudioConverter
 
     private static void Validate(int channels, int playbackRate)
     {
-        if (channels <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(channels));
-        }
-
-        if (playbackRate <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(playbackRate));
-        }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(channels);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(playbackRate);
     }
 }

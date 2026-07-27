@@ -527,7 +527,7 @@ public partial class MainWindow : Window
         PlayNavigationTone();
     }
 
-    private IReadOnlyList<Control> GetSettingsControls(MainViewModel viewModel)
+    private List<Control> GetSettingsControls(MainViewModel viewModel)
     {
         var controls = new List<Control>
         {

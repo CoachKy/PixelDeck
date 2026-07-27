@@ -664,8 +664,8 @@ internal sealed class RomTitleCatalog
     }
 
     private static void AddHash(
-        IDictionary<string, string> titles,
-        ISet<string> ambiguous,
+        Dictionary<string, string> titles,
+        HashSet<string> ambiguous,
         string? hash,
         string title)
     {

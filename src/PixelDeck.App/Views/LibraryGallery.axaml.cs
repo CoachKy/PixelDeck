@@ -101,10 +101,12 @@ public partial class LibraryGallery : UserControl
 
     public bool ActivateSelectedSection()
     {
-        if (SelectedSection?.Games.FirstOrDefault() is not { } game)
+        if (SelectedSection is not { Games.Count: > 0 } section)
         {
             return false;
         }
+
+        var game = section.Games[0];
 
         SetCurrentValue(SelectedGameProperty, game);
         IsIndexNavigationActive = false;

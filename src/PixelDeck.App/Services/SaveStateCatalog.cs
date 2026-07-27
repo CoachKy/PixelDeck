@@ -50,11 +50,7 @@ internal sealed class SaveStateCatalog
 
     internal string GetSlotPath(int number)
     {
-        if (number <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(number));
-        }
-
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(number);
         return _slotPathPrefix + number.ToString("D3", CultureInfo.InvariantCulture) + StateExtension;
     }
 

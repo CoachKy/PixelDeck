@@ -6,6 +6,11 @@ namespace PixelDeck.App.Tests;
 
 public sealed class NesReleaseCertificationTests
 {
+    /// <summary>
+    /// The mapper families the local release matrix must cover.
+    /// </summary>
+    private static readonly int[] RequiredReleaseMappers = [1, 2, 4, 5, 66];
+
     private static readonly (int Mapper, int Submapper)[] SupportedVariants =
     [
         (0, 0),
@@ -135,7 +140,7 @@ public sealed class NesReleaseCertificationTests
             .Order()
             .ToArray();
         Assert.True(
-            new[] { 1, 2, 4, 5, 66 }.All(representedMappers.Contains),
+            RequiredReleaseMappers.All(representedMappers.Contains),
             $"The local release matrix must cover mappers 1, 2, 4, 5, and 66; found {string.Join(", ", representedMappers)}.");
 
         var frames = ResolveSoakFrames();
