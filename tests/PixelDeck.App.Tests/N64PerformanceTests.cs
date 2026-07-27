@@ -35,11 +35,18 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
 #else
         var minimumInstructionsPerSecond = 4_000_000;
 #endif
+        // See NesPerformanceTests: allocation is deterministic and always
+        // gated, wall-clock throughput is not meaningful on shared CI runners.
+        Assert.True(allocatedBytes <= 256, $"The instruction loop allocated {allocatedBytes} bytes.");
+        if (NesPerformanceTests.IsContinuousIntegration)
+        {
+            return;
+        }
+
         Assert.True(
             instructionsPerSecond > minimumInstructionsPerSecond,
             $"Interpreter ran at {instructionsPerSecond / 1_000_000:0.00} MIPS; " +
             $"the floor is {minimumInstructionsPerSecond / 1_000_000.0:0.00} MIPS.");
-        Assert.True(allocatedBytes <= 256, $"The instruction loop allocated {allocatedBytes} bytes.");
     }
 
     [Fact]
@@ -134,6 +141,11 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
         // Clean-machine baseline is ~45 fps (2026-07-26); the target is 60.
         // The floor is a catastrophe guard only — thermal throttling swings
         // wall-clock results by ±20%, so a tight floor would flake on heat.
+        if (NesPerformanceTests.IsContinuousIntegration)
+        {
+            return;
+        }
+
         Assert.True(
             framesPerSecond > 25,
             $"Rendered gameplay ran at {framesPerSecond:0.00} fps; the regression floor is 25 fps.");

@@ -5,6 +5,10 @@ namespace PixelDeck.App.Tests;
 
 public sealed class NesPerformanceTests
 {
+    internal static bool IsContinuousIntegration =>
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI")) ||
+        !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"));
+
     [Fact]
     public void RenderingRunsAllocationFreeWithRealtimeHeadroom()
     {
@@ -47,6 +51,19 @@ public sealed class NesPerformanceTests
 #else
         var totalBudget = TimeSpan.FromSeconds(2.5);
 #endif
+        // Allocation and dropped-sample counts are deterministic, so they are
+        // asserted everywhere. Wall-clock budgets are not: shared CI runners
+        // are heavily contended and routinely stall a single frame far past a
+        // real-time deadline, which says nothing about the core. Those two
+        // assertions therefore only gate developer hardware.
+        Assert.True(allocatedBytes <= 256, $"The frame loop allocated {allocatedBytes} bytes.");
+        Assert.Equal(0, machine.DroppedAudioSampleCount);
+
+        if (IsContinuousIntegration)
+        {
+            return;
+        }
+
         Assert.True(
             timer.Elapsed < totalBudget,
             $"{measuredFrames} stress frames took {timer.Elapsed.TotalSeconds:0.000}s; " +
@@ -54,8 +71,6 @@ public sealed class NesPerformanceTests
         Assert.True(
             p99 < TimeSpan.FromSeconds(1.0 / 60.0),
             $"99th-percentile core frame time was {p99.TotalMilliseconds:0.000}ms.");
-        Assert.True(allocatedBytes <= 256, $"The frame loop allocated {allocatedBytes} bytes.");
-        Assert.Equal(0, machine.DroppedAudioSampleCount);
     }
 
     private sealed class RenderingStressNesImage : IDisposable
