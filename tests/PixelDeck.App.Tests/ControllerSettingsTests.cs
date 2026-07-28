@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using PixelDeck.App.Input;
 using PixelDeck.App.Settings;
 using PixelDeck.App.ViewModels;
@@ -89,11 +91,99 @@ public sealed class ControllerSettingsTests
             RightX: 13_000,
             RightY: 0);
 
-        var controller = GamepadInputMapper.ToN64Controller(state, settings);
+        var controller = GamepadInputMapper.ToN64Controller(
+            state,
+            GamepadInputMapper.N64MapForPort(settings, 1));
 
         Assert.Equal(N64Button.A | N64Button.Z | N64Button.CRight, controller.Buttons);
         Assert.InRange(controller.StickX, (sbyte)39, (sbyte)41);
         Assert.Equal(-80, controller.StickY);
+    }
+
+    [Fact]
+    public void Nintendo64MappingsSurviveAJsonRoundTripWithoutDuplicatingPorts()
+    {
+        var settings = new PixelDeckSettings();
+        settings.N64Ports[2].CLeft = GamepadButton.Back;
+        settings.PlayerFourControllerIndex = 1;
+
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            Converters = { new JsonStringEnumConverter() }
+        };
+        var restored = JsonSerializer.Deserialize<PixelDeckSettings>(
+            JsonSerializer.Serialize(settings, options),
+            options);
+
+        Assert.NotNull(restored);
+        Assert.Equal(N64ButtonMap.PortCount, restored.N64Ports.Count);
+        Assert.Equal(GamepadButton.Back, restored.N64Ports[2].CLeft);
+        Assert.Equal(GamepadButton.LeftThumb, restored.N64Ports[0].CLeft);
+        Assert.Equal(1, restored.PlayerFourControllerIndex);
+    }
+
+    [Fact]
+    public void EveryNintendo64PortStartsWithItsOwnEditableMapping()
+    {
+        var settings = new PixelDeckSettings();
+
+        Assert.Equal(N64ButtonMap.PortCount, settings.N64Ports.Count);
+        Assert.Equal(0, settings.ControllerIndex);
+        Assert.Equal(1, settings.PlayerTwoControllerIndex);
+        Assert.Equal(2, settings.PlayerThreeControllerIndex);
+        Assert.Equal(3, settings.PlayerFourControllerIndex);
+
+        // Re-mapping one port must not disturb the others.
+        GamepadInputMapper.N64MapForPort(settings, 3).A = GamepadButton.B;
+
+        Assert.Equal(GamepadButton.B, GamepadInputMapper.N64MapForPort(settings, 3).A);
+        Assert.Equal(GamepadButton.A, GamepadInputMapper.N64MapForPort(settings, 1).A);
+        Assert.Equal(GamepadButton.A, GamepadInputMapper.N64MapForPort(settings, 4).A);
+    }
+
+    [Fact]
+    public void Nintendo64PortsTranslateTheirOwnButtonMappings()
+    {
+        var settings = new PixelDeckSettings();
+        var portFour = GamepadInputMapper.N64MapForPort(settings, 4);
+        portFour.A = GamepadButton.B;
+        portFour.Z = GamepadButton.RightShoulder;
+
+        // Clear the defaults those two physical buttons used to drive, so the assertion below is
+        // about the remap rather than about two actions sharing a button.
+        portFour.CDown = GamepadButton.None;
+        portFour.R = GamepadButton.None;
+        var gamepad = GamepadButton.B | GamepadButton.RightShoulder;
+
+        Assert.Equal(
+            N64Button.A | N64Button.Z,
+            GamepadInputMapper.ToN64Controller(
+                gamepad,
+                GamepadInputMapper.N64MapForPort(settings, 4)).Buttons);
+
+        // Port one keeps the defaults, where those same physical buttons mean C-down and R.
+        Assert.Equal(
+            N64Button.CDown | N64Button.R,
+            GamepadInputMapper.ToN64Controller(
+                gamepad,
+                GamepadInputMapper.N64MapForPort(settings, 1)).Buttons);
+    }
+
+    [Fact]
+    public void ClearingACButtonLeavesTheRightStickAsItsOnlyInput()
+    {
+        var settings = new PixelDeckSettings();
+        var map = GamepadInputMapper.N64MapForPort(settings, 1);
+        map.CDown = GamepadButton.None;
+
+        Assert.Equal(
+            N64Button.None,
+            GamepadInputMapper.ToN64Controller(GamepadButton.B, map).Buttons);
+        Assert.Equal(
+            N64Button.CDown,
+            GamepadInputMapper.ToN64Controller(
+                new GamepadState(GamepadButton.None, 0, 0, 0, RightY: -20_000),
+                map).Buttons);
     }
 
     [Fact]
@@ -161,9 +251,7 @@ public sealed class ControllerSettingsTests
         using var viewModel = new MainViewModel();
 
         viewModel.UpdateControllerStatus(
-            playerOneConnected: true,
-            playerTwoConnected: true,
-            connectedControllerCount: 2,
+            [true, true, false, false],
             ["DualSense Wireless Controller", "Xbox One Controller", null, null],
             "SDL3");
 
@@ -174,5 +262,58 @@ public sealed class ControllerSettingsTests
             viewModel.ControllerSlots[0].Label);
         Assert.Equal("Controller 2 — Xbox One Controller", viewModel.ControllerSlots[1].Label);
         Assert.Equal("Controller 3 — Not connected", viewModel.ControllerSlots[2].Label);
+    }
+
+    [Fact]
+    public void OnlyTheNintendo64ProfileOffersPlayersThreeAndFour()
+    {
+        using var viewModel = new MainViewModel();
+
+        foreach (var console in viewModel.ControllerSetupConsoles)
+        {
+            viewModel.SelectedControllerSetupConsole = console;
+            var expected = console.Console == ControllerSetupConsole.Nintendo64 ? 4 : 2;
+            Assert.Equal(expected, viewModel.ControllerSetupPlayers.Count);
+        }
+    }
+
+    [Fact]
+    public void LeavingTheNintendo64ProfileMovesTheSelectionOffAHiddenPlayer()
+    {
+        using var viewModel = new MainViewModel();
+        viewModel.SelectedControllerSetupConsole =
+            viewModel.ControllerSetupConsoles.First(
+                option => option.Console == ControllerSetupConsole.Nintendo64);
+        viewModel.SelectedControllerSetupPlayer = viewModel.ControllerSetupPlayers[3];
+
+        viewModel.SelectedControllerSetupConsole =
+            viewModel.ControllerSetupConsoles.First(
+                option => option.Console == ControllerSetupConsole.Nintendo);
+
+        Assert.Equal(2, viewModel.ControllerSetupPlayers.Count);
+        Assert.Equal(
+            ControllerSetupPlayer.PlayerOne,
+            viewModel.SelectedControllerSetupPlayer.Player);
+        Assert.Contains(viewModel.SelectedControllerSetupPlayer, viewModel.ControllerSetupPlayers);
+    }
+
+    [Fact]
+    public void EachPlayerKeepsADistinctPhysicalControllerSlot()
+    {
+        using var viewModel = new MainViewModel();
+
+        // Player three grabbing player one's device must push player one somewhere free.
+        viewModel.SelectedPlayerThreeControllerSlot = viewModel.ControllerSlots[0];
+
+        var assigned = new[]
+        {
+            viewModel.SelectedControllerSlot.Index,
+            viewModel.SelectedPlayerTwoControllerSlot.Index,
+            viewModel.SelectedPlayerThreeControllerSlot.Index,
+            viewModel.SelectedPlayerFourControllerSlot.Index
+        };
+
+        Assert.Equal(0, viewModel.SelectedPlayerThreeControllerSlot.Index);
+        Assert.Equal(assigned.Length, assigned.Distinct().Count());
     }
 }

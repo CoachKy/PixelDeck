@@ -25,6 +25,9 @@ public partial class ControllerPaperDoll : UserControl
     public static readonly StyledProperty<string> NorthActionTextProperty =
         AvaloniaProperty.Register<ControllerPaperDoll, string>(nameof(NorthActionText), "—");
 
+    public static readonly StyledProperty<string> LeftTriggerActionTextProperty =
+        AvaloniaProperty.Register<ControllerPaperDoll, string>(nameof(LeftTriggerActionText), "—");
+
     public static readonly StyledProperty<string> LeftShoulderActionTextProperty =
         AvaloniaProperty.Register<ControllerPaperDoll, string>(nameof(LeftShoulderActionText), "—");
 
@@ -76,6 +79,12 @@ public partial class ControllerPaperDoll : UserControl
     {
         get => GetValue(NorthActionTextProperty);
         set => SetValue(NorthActionTextProperty, value);
+    }
+
+    public string LeftTriggerActionText
+    {
+        get => GetValue(LeftTriggerActionTextProperty);
+        set => SetValue(LeftTriggerActionTextProperty, value);
     }
 
     public string LeftShoulderActionText

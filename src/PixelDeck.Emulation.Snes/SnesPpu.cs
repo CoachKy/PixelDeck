@@ -77,6 +77,14 @@ internal sealed class SnesPpu
 
     public bool ForcedBlank => _forcedBlank;
 
+    /// <summary>Diagnostics for INIDISP ($2100): how often the game touches
+    /// the display control, and whether it ever asks for a visible screen.</summary>
+    public long DisplayControlWrites { get; private set; }
+
+    public long NonZeroBrightnessWrites { get; private set; }
+
+    public byte LastDisplayControlValue { get; private set; }
+
     public byte Brightness => _brightness;
 
     public byte BackgroundMode => (byte)(_backgroundMode & 0x07);
@@ -91,6 +99,15 @@ internal sealed class SnesPpu
 
     public int NonZeroOamBytes => _oam.Count(value => value != 0);
 
+    /// <summary>
+    /// How often the per-scanline object limits bite. Hardware drops sprites
+    /// past 32 per line or 34 8-pixel slivers per line, so non-zero counts are
+    /// expected in busy scenes; they are only a defect if they fire constantly.
+    /// </summary>
+    public long SpriteRangeOverLines { get; private set; }
+
+    public long SpriteTimeOverTiles { get; private set; }
+
     internal bool CounterLatchEnabled { get; set; } = true;
 
     internal bool IsPal { get; set; }
@@ -103,6 +120,13 @@ internal sealed class SnesPpu
             case 0x2100:
                 _brightness = (byte)(value & 0x0F);
                 _forcedBlank = (value & 0x80) != 0;
+                DisplayControlWrites++;
+                LastDisplayControlValue = value;
+                if (_brightness != 0)
+                {
+                    NonZeroBrightnessWrites++;
+                }
+
                 break;
             case 0x2101:
                 _objectSizeAndBase = value;
@@ -969,6 +993,7 @@ internal sealed class SnesPpu
             if (selectedCount == selectedSprites.Length)
             {
                 _spriteRangeOver = true;
+                SpriteRangeOverLines++;
                 break;
             }
 
@@ -1000,6 +1025,7 @@ internal sealed class SnesPpu
                 if (sliverCount >= 34)
                 {
                     _spriteTimeOver = true;
+                    SpriteTimeOverTiles++;
                     continue;
                 }
 

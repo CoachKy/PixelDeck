@@ -63,6 +63,27 @@ public sealed class SnesCartridge
         Info.MapMode == SnesMapMode.LoRom &&
         Info.CartridgeType == 0xF3;
 
+    /// <summary>
+    /// SA-1 boards report map mode $23 with cartridge types $32-$35. Kirby
+    /// Super Star, Kirby's Dream Land 3 and Super Mario RPG are all $23/$35.
+    /// </summary>
+    internal bool HasSa1 =>
+        Info.MapModeByte == 0x23 &&
+        Info.CartridgeType is >= 0x32 and <= 0x35;
+
+    /// <summary>
+    /// The S-DD1 graphics decompression board: Star Ocean ($45, with battery
+    /// RAM) and Street Fighter Alpha 2 ($43).
+    /// </summary>
+    internal bool HasSdd1 =>
+        Info.MapModeByte == 0x32 &&
+        Info.CartridgeType is 0x43 or 0x45;
+
+    /// <summary>The Super FX / GSU boards.</summary>
+    internal bool HasSuperFx =>
+        Info.MapMode == SnesMapMode.LoRom &&
+        Info.CartridgeType is 0x13 or 0x14 or 0x15 or 0x1A;
+
     public static SnesCartridgeInfo Inspect(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -107,6 +128,12 @@ public sealed class SnesCartridge
             }
         }
     }
+
+    /// <summary>
+    /// Raw ROM image, for coprocessors that apply their own bank mapping
+    /// rather than going through the console's memory map.
+    /// </summary>
+    internal ReadOnlySpan<byte> RomSpan => _rom;
 
     internal byte ReadCx4RomByte(uint address, int displacement = 0)
     {
@@ -262,7 +289,11 @@ public sealed class SnesCartridge
             (header.ChecksumValid ||
                 header.MapMode switch
                 {
-                    SnesMapMode.LoRom => header.MapModeByte is 0x20 or 0x30,
+                    // $23 is the SA-1 board and $32 the S-DD1 board; both sit on
+                    // a LoROM layout. Translation patches often leave the
+                    // checksum stale, so the map byte has to be accepted on its
+                    // own for those carts to load at all.
+                    SnesMapMode.LoRom => header.MapModeByte is 0x20 or 0x30 or 0x23 or 0x32,
                     SnesMapMode.HiRom => header.MapModeByte is 0x21 or 0x31,
                     SnesMapMode.ExHiRom => header.MapModeByte is 0x25 or 0x35,
                     _ => false
@@ -275,10 +306,24 @@ public sealed class SnesCartridge
         var hasCx4 =
             header.MapMode == SnesMapMode.LoRom &&
             header.CartridgeType == 0xF3;
+        var hasSa1 =
+            header.MapModeByte == 0x23 &&
+            header.CartridgeType is >= 0x32 and <= 0x35;
+        var hasSdd1 =
+            header.MapModeByte == 0x32 &&
+            header.CartridgeType is 0x43 or 0x45;
+        // Super FX boards: $13 is Star Fox's GSU-1, $15 and $1A the GSU-2 used
+        // by Yoshi's Island, Stunt Race FX and Star Fox 2.
+        var hasSuperFx =
+            header.MapMode == SnesMapMode.LoRom &&
+            header.CartridgeType is 0x13 or 0x14 or 0x15 or 0x1A;
         var hasUnsupportedEnhancementChip =
             header.CartridgeType > 0x02 &&
             !hasDsp1 &&
-            !hasCx4;
+            !hasCx4 &&
+            !hasSa1 &&
+            !hasSdd1 &&
+            !hasSuperFx;
         var hasBatteryBackedRam = header.CartridgeType is 0x02 or 0x05 or 0x06;
         var isPal = IsPalRegion(header.DestinationCode);
         var isSupported = hasSupportedMapByte && !hasUnsupportedEnhancementChip;
@@ -293,6 +338,12 @@ public sealed class SnesCartridge
             ? $"SNES map mode ${header.MapModeByte:X2} is not implemented yet."
             : hasUnsupportedEnhancementChip
                 ? $"SNES enhancement-chip cartridge type ${header.CartridgeType:X2} is not implemented yet."
+                : hasSuperFx
+                    ? $"PixelSNES Super FX support ({FormatMapMode(header.MapMode)}, {region}) is in progress. The GSU core, memory map, instruction cache and pixel plotter are active, but timing and the plot hardware are approximate, so this cartridge may not play correctly yet."
+                : hasSdd1
+                    ? $"PixelSNES S-DD1 support ({FormatMapMode(header.MapMode)}, {region}) is in progress. The bank mapper and DMA-driven graphics decompressor are active, but the decompressor has not been verified against real output yet, so tiles may be wrong."
+                : hasSa1
+                    ? $"PixelSNES SA-1 support ({FormatMapMode(header.MapMode)}, {region}) is in progress. The coprocessor's CPU, memory map, register file, timers, arithmetic unit, variable-length bit processing and DMA are active. Dual-processor timing is approximate, so this cartridge may not play correctly yet."
                 : hasDsp1
                     ? $"Compatible with PixelSNES ({FormatMapMode(header.MapMode)}, {region}, DSP-1). CPU, PPU video, and S-DSP stereo audio are active."
                     : hasCx4

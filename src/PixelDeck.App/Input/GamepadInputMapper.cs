@@ -57,31 +57,23 @@ internal static class GamepadInputMapper
         return buttons;
     }
 
-    public static N64ControllerState ToN64Controller(
-        GamepadButton gamepad,
-        PixelDeckSettings settings,
-        bool playerTwo = false)
-        => ToN64Controller(
-            new GamepadState(gamepad, 0, 0, 0, 0),
-            settings,
-            playerTwo);
+    /// <summary>Resolves the mapping for a one-based Nintendo 64 controller port.</summary>
+    public static N64ButtonMap N64MapForPort(PixelDeckSettings settings, int port) =>
+        settings.N64Ports[Math.Clamp(port, 1, N64ButtonMap.PortCount) - 1];
 
-    public static N64ControllerState ToN64Controller(
-        GamepadState gamepad,
-        PixelDeckSettings settings,
-        bool playerTwo = false)
+    public static N64ControllerState ToN64Controller(GamepadButton gamepad, N64ButtonMap map)
+        => ToN64Controller(new GamepadState(gamepad, 0, 0, 0, 0), map);
+
+    public static N64ControllerState ToN64Controller(GamepadState gamepad, N64ButtonMap map)
     {
         var gamepadButtons = gamepad.Buttons;
-        var aButton = playerTwo ? settings.PlayerTwoAButton : settings.AButton;
-        var bButton = playerTwo ? settings.PlayerTwoBButton : settings.BButton;
-        var startButton = playerTwo ? settings.PlayerTwoStartButton : settings.StartButton;
         var buttons = N64Button.None;
-        if (IsPressed(gamepadButtons, aButton)) buttons |= N64Button.A;
-        if (IsPressed(gamepadButtons, bButton)) buttons |= N64Button.B;
-        if (IsPressed(gamepadButtons, startButton)) buttons |= N64Button.Start;
-        if (gamepadButtons.HasFlag(GamepadButton.LeftTrigger)) buttons |= N64Button.Z;
-        if (gamepadButtons.HasFlag(GamepadButton.LeftShoulder)) buttons |= N64Button.L;
-        if (gamepadButtons.HasFlag(GamepadButton.RightShoulder)) buttons |= N64Button.R;
+        if (IsPressed(gamepadButtons, map.A)) buttons |= N64Button.A;
+        if (IsPressed(gamepadButtons, map.B)) buttons |= N64Button.B;
+        if (IsPressed(gamepadButtons, map.Start)) buttons |= N64Button.Start;
+        if (IsPressed(gamepadButtons, map.Z)) buttons |= N64Button.Z;
+        if (IsPressed(gamepadButtons, map.L)) buttons |= N64Button.L;
+        if (IsPressed(gamepadButtons, map.R)) buttons |= N64Button.R;
         if (gamepadButtons.HasFlag(GamepadButton.DPadUp)) buttons |= N64Button.DPadUp;
         if (gamepadButtons.HasFlag(GamepadButton.DPadDown)) buttons |= N64Button.DPadDown;
         if (gamepadButtons.HasFlag(GamepadButton.DPadLeft)) buttons |= N64Button.DPadLeft;
@@ -103,14 +95,16 @@ internal static class GamepadInputMapper
                 : gamepadButtons.HasFlag(GamepadButton.DPadUp) ? (sbyte)80 : (sbyte)0;
         }
 
+        // The right stick always doubles as the C cluster; the mapped buttons are the digital
+        // alternative, so either input can trigger a C direction.
         const short cameraThreshold = 12_000;
-        if (gamepad.RightY > cameraThreshold || gamepadButtons.HasFlag(GamepadButton.Y))
+        if (gamepad.RightY > cameraThreshold || IsPressed(gamepadButtons, map.CUp))
             buttons |= N64Button.CUp;
-        if (gamepad.RightY < -cameraThreshold || gamepadButtons.HasFlag(GamepadButton.B))
+        if (gamepad.RightY < -cameraThreshold || IsPressed(gamepadButtons, map.CDown))
             buttons |= N64Button.CDown;
-        if (gamepad.RightX < -cameraThreshold || gamepadButtons.HasFlag(GamepadButton.LeftThumb))
+        if (gamepad.RightX < -cameraThreshold || IsPressed(gamepadButtons, map.CLeft))
             buttons |= N64Button.CLeft;
-        if (gamepad.RightX > cameraThreshold || gamepadButtons.HasFlag(GamepadButton.RightThumb))
+        if (gamepad.RightX > cameraThreshold || IsPressed(gamepadButtons, map.CRight))
             buttons |= N64Button.CRight;
         return new N64ControllerState(buttons, stickX, stickY);
     }

@@ -29,6 +29,12 @@ public sealed class N64Memory
 
     private readonly N64Cartridge _cartridge;
     private readonly N64ControllerState[] _controllers = new N64ControllerState[4];
+    // Every port reports occupied by default. Reporting empty ports as absent is what hardware
+    // does, and the machinery below implements it, but Super Mario 64 stalls shortly after
+    // osContInit when ports 2-4 answer with the "no device" bit: its controller polling drops
+    // roughly sevenfold and it never reaches gameplay. Until that interaction is understood the
+    // default stays permissive, and SetControllerConnected is opt-in.
+    private readonly bool[] _controllerConnected = [true, true, true, true];
     private readonly N64TlbEntry[] _tlb = new N64TlbEntry[32];
     private byte _tlbAsid;
     private uint _spMemoryAddress;
@@ -489,6 +495,34 @@ public sealed class N64Memory
         }
 
         return _controllers[port - 1];
+    }
+
+    /// <summary>
+    /// Marks a controller port as occupied. Ports reported as empty answer PIF probes with the
+    /// "no device" error bit, which is how games decide whether a player can join.
+    /// </summary>
+    public void SetControllerConnected(int port, bool connected)
+    {
+        if (port is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+
+        _controllerConnected[port - 1] = connected;
+        if (!connected)
+        {
+            _controllers[port - 1] = N64ControllerState.Neutral;
+        }
+    }
+
+    public bool IsControllerConnected(int port)
+    {
+        if (port is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+
+        return _controllerConnected[port - 1];
     }
 
     public void LoadEeprom(ReadOnlySpan<byte> data)
@@ -1193,6 +1227,13 @@ public sealed class N64Memory
         int receiveDescriptorOffset)
     {
         if (transmitLength == 0)
+        {
+            PifRam[receiveDescriptorOffset] |= 0x80;
+            return;
+        }
+
+        // An empty port answers every probe with the "no device" bit rather than a phantom pad.
+        if (!_controllerConnected[channel])
         {
             PifRam[receiveDescriptorOffset] |= 0x80;
             return;

@@ -11,6 +11,12 @@ public sealed class PixelDeckSettings
 
     public int PlayerTwoControllerIndex { get; set; } = 1;
 
+    /// <summary>Nintendo 64 port 3. Only the N64 core reads ports beyond two.</summary>
+    public int PlayerThreeControllerIndex { get; set; } = 2;
+
+    /// <summary>Nintendo 64 port 4.</summary>
+    public int PlayerFourControllerIndex { get; set; } = 3;
+
     public GamepadButton AButton { get; set; } = GamepadButton.A;
 
     public GamepadButton BButton { get; set; } = GamepadButton.X;
@@ -71,6 +77,51 @@ public sealed class PixelDeckSettings
     public GamepadButton PlayerTwoSnesStartButton { get; set; } = GamepadButton.Start;
 
     public GamepadButton PlayerTwoSnesSelectButton { get; set; } = GamepadButton.Back;
+
+    /// <summary>
+    /// Nintendo 64 mappings, one entry per controller port. Unlike the two-player NES and SNES
+    /// blocks above this is indexed rather than flattened, because four ports times ten buttons
+    /// would be forty properties.
+    /// </summary>
+    /// <remarks>
+    /// Settable rather than get-only: System.Text.Json replaces a settable collection but appends
+    /// to a get-only one, which would double up these seeded defaults. Seeding here keeps a
+    /// directly constructed instance immediately usable; <see cref="PixelDeckSettingsStore"/>
+    /// still repairs a stored list of the wrong length.
+    /// </remarks>
+    public List<N64ButtonMap> N64Ports { get; set; } = CreateDefaultN64Ports();
+
+    internal static List<N64ButtonMap> CreateDefaultN64Ports() =>
+        [.. Enumerable.Range(0, N64ButtonMap.PortCount).Select(static _ => new N64ButtonMap())];
+}
+
+/// <summary>
+/// Per-port Nintendo 64 button mapping. The analog stick and D-pad are fixed, as is the right
+/// stick's role as an analog stand-in for the C buttons.
+/// </summary>
+public sealed class N64ButtonMap
+{
+    public const int PortCount = 4;
+
+    public GamepadButton A { get; set; } = GamepadButton.A;
+
+    public GamepadButton B { get; set; } = GamepadButton.X;
+
+    public GamepadButton Start { get; set; } = GamepadButton.Start;
+
+    public GamepadButton Z { get; set; } = GamepadButton.LeftTrigger;
+
+    public GamepadButton L { get; set; } = GamepadButton.LeftShoulder;
+
+    public GamepadButton R { get; set; } = GamepadButton.RightShoulder;
+
+    public GamepadButton CUp { get; set; } = GamepadButton.Y;
+
+    public GamepadButton CDown { get; set; } = GamepadButton.B;
+
+    public GamepadButton CLeft { get; set; } = GamepadButton.LeftThumb;
+
+    public GamepadButton CRight { get; set; } = GamepadButton.RightThumb;
 }
 
 public static class PixelDeckSettingsStore
@@ -109,17 +160,12 @@ public static class PixelDeckSettingsStore
         {
             if (!File.Exists(SettingsPath))
             {
-                return new PixelDeckSettings();
+                return Normalize(new PixelDeckSettings());
             }
 
             var settings = JsonSerializer.Deserialize<PixelDeckSettings>(File.ReadAllText(SettingsPath), JsonOptions)
                 ?? new PixelDeckSettings();
-            settings.ControllerIndex = Math.Clamp(settings.ControllerIndex, 0, 3);
-            settings.PlayerTwoControllerIndex = Math.Clamp(settings.PlayerTwoControllerIndex, 0, 3);
-            if (settings.PlayerTwoControllerIndex == settings.ControllerIndex)
-            {
-                settings.PlayerTwoControllerIndex = (settings.ControllerIndex + 1) % 4;
-            }
+            AssignDistinctControllerIndices(settings);
 
             if (!Enum.IsDefined(settings.Mmc3IrqRevision))
             {
@@ -136,12 +182,60 @@ public static class PixelDeckSettingsStore
                 settings.NesOamCorruptionMode = NesOamCorruptionMode.StableCpuPpuAlignment;
             }
 
-            return settings;
+            return Normalize(settings);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {
             System.Diagnostics.Debug.WriteLine(exception);
-            return new PixelDeckSettings();
+            return Normalize(new PixelDeckSettings());
         }
+    }
+
+    private static PixelDeckSettings Normalize(PixelDeckSettings settings)
+    {
+        settings.N64Ports ??= PixelDeckSettings.CreateDefaultN64Ports();
+        while (settings.N64Ports.Count < N64ButtonMap.PortCount)
+        {
+            settings.N64Ports.Add(new N64ButtonMap());
+        }
+
+        settings.N64Ports.RemoveRange(
+            N64ButtonMap.PortCount,
+            settings.N64Ports.Count - N64ButtonMap.PortCount);
+        return settings;
+    }
+
+    /// <summary>
+    /// Keeps every player on a different physical device, preferring earlier players' choices and
+    /// filling the rest from whatever slots are still free.
+    /// </summary>
+    private static void AssignDistinctControllerIndices(PixelDeckSettings settings)
+    {
+        var requested = new[]
+        {
+            settings.ControllerIndex,
+            settings.PlayerTwoControllerIndex,
+            settings.PlayerThreeControllerIndex,
+            settings.PlayerFourControllerIndex
+        };
+
+        var taken = new bool[N64ButtonMap.PortCount];
+        var resolved = new int[requested.Length];
+        for (var player = 0; player < requested.Length; player++)
+        {
+            var index = Math.Clamp(requested[player], 0, N64ButtonMap.PortCount - 1);
+            if (taken[index])
+            {
+                index = Array.IndexOf(taken, false);
+            }
+
+            taken[index] = true;
+            resolved[player] = index;
+        }
+
+        settings.ControllerIndex = resolved[0];
+        settings.PlayerTwoControllerIndex = resolved[1];
+        settings.PlayerThreeControllerIndex = resolved[2];
+        settings.PlayerFourControllerIndex = resolved[3];
     }
 }

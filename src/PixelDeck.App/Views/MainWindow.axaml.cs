@@ -533,10 +533,26 @@ public partial class MainWindow : Window
         {
             ControllerSetupPlayerPicker,
             ControllerSetupSlotPicker,
-            ControllerSetupConsolePicker,
-            SetupAButtonPicker,
-            SetupBButtonPicker
+            ControllerSetupConsolePicker
         };
+
+        if (viewModel.IsNintendo64ControllerSetup)
+        {
+            controls.Add(SetupN64AButtonPicker);
+            controls.Add(SetupN64BButtonPicker);
+            controls.Add(SetupN64ZButtonPicker);
+            controls.Add(SetupN64LButtonPicker);
+            controls.Add(SetupN64RButtonPicker);
+            controls.Add(SetupN64StartButtonPicker);
+            controls.Add(SetupN64CUpButtonPicker);
+            controls.Add(SetupN64CDownButtonPicker);
+            controls.Add(SetupN64CLeftButtonPicker);
+            controls.Add(SetupN64CRightButtonPicker);
+            return controls;
+        }
+
+        controls.Add(SetupAButtonPicker);
+        controls.Add(SetupBButtonPicker);
 
         if (viewModel.IsSuperNintendoControllerSetup)
         {
@@ -570,10 +586,12 @@ public partial class MainWindow : Window
             .Range(0, GamepadManager.MaximumControllers)
             .Select(manager.GetControllerName)
             .ToArray();
+        var deviceConnected = Enumerable
+            .Range(0, GamepadManager.MaximumControllers)
+            .Select(connections.IsConnected)
+            .ToArray();
         viewModel.UpdateControllerStatus(
-            connections.IsConnected(viewModel.SelectedControllerSlot.Index),
-            connections.IsConnected(viewModel.SelectedPlayerTwoControllerSlot.Index),
-            connections.Count,
+            deviceConnected,
             controllerNames,
             manager.BackendName);
     }

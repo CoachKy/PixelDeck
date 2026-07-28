@@ -334,6 +334,71 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void SiPifReportsEmptyControllerPortsAsAbsentUntilAPadIsPluggedIn()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.SetControllerConnected(2, false);
+
+        // A leading zero byte advances the PIF to channel 1, i.e. controller port two, which then
+        // gets a status probe: one transmit byte (command 0x00) and three receive bytes.
+        memory.Rdram[0x100] = 0;
+        memory.Rdram[0x101] = 1;
+        memory.Rdram[0x102] = 3;
+        memory.Rdram[0x103] = 0;
+        memory.Rdram[0x107] = 0xFE;
+        memory.Rdram[0x13F] = 1;
+
+        memory.WriteUInt32(0xA4800000, 0x100);
+        memory.WriteUInt32(0xA4800010, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+        memory.WriteUInt32(0xA4800004, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+
+        // Bit 7 of the receive descriptor is the PIF's "no device on this channel" answer.
+        Assert.False(memory.IsControllerConnected(2));
+        Assert.Equal(0x80, memory.Rdram[0x102] & 0x80);
+        Assert.Equal(0, memory.Rdram[0x104]);
+
+        memory.SetControllerConnected(2, true);
+        memory.Rdram[0x102] = 3;
+        memory.Rdram[0x104] = 0;
+        memory.WriteUInt32(0xA4800010, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+        memory.WriteUInt32(0xA4800004, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+
+        Assert.Equal(0, memory.Rdram[0x102] & 0x80);
+        Assert.Equal(0x05, memory.Rdram[0x104]);
+    }
+
+    [Fact]
+    public void DisconnectingAControllerPortAlsoClearsItsHeldButtons()
+    {
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        machine.SetControllerConnected(3, true);
+        machine.SetControllerState(3, new N64ControllerState(N64Button.A | N64Button.Start, 40, -40));
+
+        machine.SetControllerConnected(3, false);
+
+        Assert.False(machine.IsControllerConnected(3));
+        Assert.Equal(N64ControllerState.Neutral, machine.GetControllerState(3));
+    }
+
+    [Fact]
+    public void EveryPortReportsOccupiedByDefault()
+    {
+        // Reporting empty ports as absent is correct hardware behaviour and SetControllerConnected
+        // implements it, but Super Mario 64 stalls when ports answer "no device", so the default
+        // stays permissive. Locking that in here so the default is not changed by accident.
+        var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+
+        for (var port = 1; port <= 4; port++)
+        {
+            Assert.True(machine.IsControllerConnected(port));
+        }
+    }
+
+    [Fact]
     public void SaveStateRestoresCpuMemoryVideoAndBothControllerPortsExactly()
     {
         var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));

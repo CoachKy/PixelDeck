@@ -34,11 +34,84 @@ public sealed class SnesMachine
 
     public byte DisplayBrightness => _bus.Ppu.Brightness;
 
+    public long DisplayControlWrites => _bus.Ppu.DisplayControlWrites;
+
+    /// <summary>Diagnostics for a stalled scene transition: what the game is
+    /// polling while it holds the screen dark.</summary>
+    public long HvbJoyReads => _bus.HvbJoyReads;
+
+    public long HvbJoyAutoReadBusyReads => _bus.HvbJoyAutoReadBusyReads;
+
+    public long CounterLatchCount => _bus.CounterLatchCount;
+
+    public long DmaTransferCount => _bus.DmaTransferCount;
+
+    public long HdmaEnableWrites => _bus.HdmaEnableWrites;
+
+    public byte LastDmaChannelMask => _bus.LastDmaChannelMask;
+
+    /// <summary>SA-1 coprocessor diagnostics; zero when the cartridge has none.</summary>
+    public bool HasSa1 => _bus.HasSa1;
+
+    public long Sa1ExecutedInstructions => _bus.Sa1ExecutedInstructions;
+
+    public uint Sa1ProgramAddress => _bus.Sa1ProgramAddress;
+
+    public byte Sa1ControlRegister => _bus.Sa1ControlRegister;
+
+    public long Sa1DmaCount => _bus.Sa1DmaCount;
+
+    internal Sa1Snapshot Sa1State => _bus.Sa1State;
+
+    /// <summary>S-DD1 diagnostics; zero when the cartridge has no such chip.</summary>
+    public bool HasSdd1 => _bus.HasSdd1;
+
+    public long Sdd1DecompressionCount => _bus.Sdd1DecompressionCount;
+
+    internal long Sdd1CandidateTransfers => _bus.Sdd1CandidateTransfers;
+
+    internal long[] HdmaWritesByRegister => _bus.HdmaWritesByRegister;
+
+    internal string Sdd1HeaderSummary => _bus.Sdd1HeaderSummary;
+
+    internal IReadOnlyList<(uint Source, byte Header)> Sdd1Runs => _bus.Sdd1Runs;
+
+    /// <summary>Super FX diagnostics; inert when the cartridge has no GSU.</summary>
+    public bool HasSuperFx => _bus.HasSuperFx;
+
+    public long SuperFxExecutedInstructions => _bus.SuperFxExecutedInstructions;
+
+    public bool SuperFxRunning => _bus.SuperFxRunning;
+
+    public ushort SuperFxProgramCounter => _bus.SuperFxProgramCounter;
+
+    public long NonZeroBrightnessWrites => _bus.Ppu.NonZeroBrightnessWrites;
+
+    public byte LastDisplayControlValue => _bus.Ppu.LastDisplayControlValue;
+
     public byte BackgroundMode => _bus.Ppu.BackgroundMode;
 
     public byte MainScreenLayers => _bus.Ppu.MainScreen;
 
     public long PpuRegisterWriteCount => _bus.Ppu.RegisterWriteCount;
+
+    internal long VerticalIrqScanlinesArmed => _bus.VerticalIrqScanlinesArmed;
+
+    internal long VerticalIrqMatches => _bus.VerticalIrqMatches;
+
+    internal long VblankCount => _bus.VblankCount;
+
+    internal long VblankNmiArmed => _bus.VblankNmiArmed;
+
+    internal long RdnmiReads => _bus.RdnmiReads;
+
+    internal long RdnmiReadsWithFlagSet => _bus.RdnmiReadsWithFlagSet;
+
+    internal long RdnmiReadsWhileNmiEnabled => _bus.RdnmiReadsWhileNmiEnabled;
+
+    public long SpriteRangeOverLines => _bus.Ppu.SpriteRangeOverLines;
+
+    public long SpriteTimeOverTiles => _bus.Ppu.SpriteTimeOverTiles;
 
     public ushort CpuAccumulator => _cpu.Accumulator;
 
@@ -93,6 +166,14 @@ public sealed class SnesMachine
     public long NmiCount => _cpu.NmiCount;
 
     public long IrqCount => _cpu.IrqCount;
+
+    /// <summary>$4209/$420A V-count IRQ target scanline.</summary>
+    public ushort VerticalIrqTarget => _bus.VerticalIrqTarget;
+
+    /// <summary>$4207/$4208 H-count IRQ target dot.</summary>
+    public ushort HorizontalIrqTarget => _bus.HorizontalIrqTarget;
+
+    public int CurrentScanline => _bus.CurrentScanline;
 
     public long BrkCount => _cpu.BrkCount;
 

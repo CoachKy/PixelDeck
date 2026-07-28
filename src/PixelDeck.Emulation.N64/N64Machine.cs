@@ -129,6 +129,26 @@ public sealed class N64Machine
         Memory.SetControllerState(port, state);
     }
 
+    public void SetControllerConnected(int port, bool connected)
+    {
+        if (port is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+
+        Memory.SetControllerConnected(port, connected);
+    }
+
+    public bool IsControllerConnected(int port)
+    {
+        if (port is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+
+        return Memory.IsControllerConnected(port);
+    }
+
     public N64ControllerState GetControllerState(int port)
     {
         if (port is < 1 or > 4)

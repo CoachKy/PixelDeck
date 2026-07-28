@@ -27,6 +27,15 @@ internal sealed class SnesDsp
     private readonly short[] _gaussianTable = new short[512];
     private readonly object _sampleLock = new();
     private readonly float[] _samples = new float[65_536];
+
+    // The voice renderer reaches back into the DSP through these three
+    // callbacks. They are cached because the compiler cannot cache an instance
+    // method-group conversion: passing them inline built three fresh delegates
+    // per voice per sample, which came to roughly 800 KB of garbage a frame and
+    // showed up as periodic collection stutter.
+    private readonly Func<int, bool> _pollCounter;
+    private readonly Func<Voice, int> _interpolate;
+    private readonly Func<Voice, bool> _decodeBlock;
     private int _sampleReadIndex;
     private int _sampleWriteIndex;
     private int _sampleCount;
@@ -42,6 +51,9 @@ internal sealed class SnesDsp
     {
         _ram = ram;
         _registers[0x6C] = 0xE0;
+        _pollCounter = PollCounter;
+        _interpolate = Interpolate;
+        _decodeBlock = DecodeBlock;
         ConstructGaussianTable();
     }
 
@@ -213,9 +225,9 @@ internal sealed class SnesDsp
                 _registers[registerBase + 6],
                 _registers[registerBase + 7],
                 (noiseEnable & bit) != 0 ? unchecked((short)(_noiseLfsr << 1)) : null,
-                PollCounter,
-                Interpolate,
-                DecodeBlock);
+                _pollCounter,
+                _interpolate,
+                _decodeBlock);
             previousVoiceOutput = output;
             _registers[registerBase + 8] = (byte)(voice.Envelope >> 4);
             _registers[registerBase + 9] = (byte)(output >> 8);
@@ -259,7 +271,7 @@ internal sealed class SnesDsp
         var directoryAddress = (ushort)((_registers[0x5D] << 8) + (_registers[registerBase + 4] << 2));
         var startAddress = ReadWord(directoryAddress);
         var loopAddress = ReadWord((ushort)(directoryAddress + 2));
-        voice.KeyOn(startAddress, loopAddress, DecodeBlock);
+        voice.KeyOn(startAddress, loopAddress, _decodeBlock);
         _registers[0x7C] &= (byte)~(1 << index);
     }
 

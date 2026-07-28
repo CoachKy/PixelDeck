@@ -946,6 +946,7 @@
                             EastActionText="{Binding PaperDollEastActionText}"
                             WestActionText="{Binding PaperDollWestActionText}"
                             NorthActionText="{Binding PaperDollNorthActionText}"
+                            LeftTriggerActionText="{Binding PaperDollLeftTriggerActionText}"
                             LeftShoulderActionText="{Binding PaperDollLeftShoulderActionText}"
                             RightShoulderActionText="{Binding PaperDollRightShoulderActionText}"
                             StartActionText="{Binding PaperDollStartActionText}"
@@ -965,14 +966,14 @@
                                     <TextBlock Text="The paper doll updates as each action changes." Foreground="#8193A8" FontSize="11" />
                                 </StackPanel>
 
-                                <Grid ColumnDefinitions="92,*">
+                                <Grid IsVisible="{Binding !IsNintendo64ControllerSetup}" ColumnDefinitions="92,*">
                                     <TextBlock Text="A BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
                                     <ComboBox Name="SetupAButtonPicker" Grid.Column="1" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSetupAButton, Mode=TwoWay}">
                                         <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
                                     </ComboBox>
                                 </Grid>
 
-                                <Grid ColumnDefinitions="92,*">
+                                <Grid IsVisible="{Binding !IsNintendo64ControllerSetup}" ColumnDefinitions="92,*">
                                     <TextBlock Text="B BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
                                     <ComboBox Name="SetupBButtonPicker" Grid.Column="1" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSetupBButton, Mode=TwoWay}">
                                         <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
@@ -1007,24 +1008,89 @@
                                     </ComboBox>
                                 </Grid>
 
-                                <Grid ColumnDefinitions="92,*">
+                                <Grid IsVisible="{Binding !IsNintendo64ControllerSetup}" ColumnDefinitions="92,*">
                                     <TextBlock Text="START" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
                                     <ComboBox Name="SetupStartButtonPicker" Grid.Column="1" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSetupStartButton, Mode=TwoWay}">
                                         <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
                                     </ComboBox>
                                 </Grid>
 
-                                <Grid ColumnDefinitions="92,*">
+                                <Grid IsVisible="{Binding !IsNintendo64ControllerSetup}" ColumnDefinitions="92,*">
                                     <TextBlock Text="SELECT" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
                                     <ComboBox Name="SetupSelectButtonPicker" Grid.Column="1" ItemsSource="{Binding ControllerButtons}" SelectedItem="{Binding SelectedSetupSelectButton, Mode=TwoWay}">
                                         <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
                                     </ComboBox>
                                 </Grid>
 
+                                <!-- Nintendo 64: no Select button, and a C cluster instead of X/Y. -->
+                                <StackPanel IsVisible="{Binding IsNintendo64ControllerSetup}" Spacing="12">
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="A BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64AButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64AButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="B BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64BButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64BButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="Z TRIGGER" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64ZButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64ZButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="L BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64LButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64LButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="R BUTTON" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64RButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64RButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="START" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64StartButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64StartButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <TextBlock Text="C BUTTONS" Foreground="#6BB9FF" FontSize="9" FontWeight="Bold" LetterSpacing="1.5" />
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="C-UP" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64CUpButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64CUpButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="C-DOWN" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64CDownButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64CDownButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="C-LEFT" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64CLeftButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64CLeftButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                    <Grid ColumnDefinitions="92,*">
+                                        <TextBlock Text="C-RIGHT" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
+                                        <ComboBox Name="SetupN64CRightButtonPicker" Grid.Column="1" ItemsSource="{Binding N64ControllerButtons}" SelectedItem="{Binding SelectedN64CRightButton, Mode=TwoWay}">
+                                            <ComboBox.ItemTemplate><DataTemplate x:DataType="vm:ControllerButtonOption"><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                                        </ComboBox>
+                                    </Grid>
+                                </StackPanel>
+
                                 <Border Height="1" Margin="0,5" Background="#18FFFFFF" />
                                 <Grid ColumnDefinitions="92,*">
                                     <TextBlock Text="FIXED" VerticalAlignment="Center" Foreground="#91A2B6" FontSize="9" FontWeight="Bold" LetterSpacing="0.8" />
-                                    <TextBlock Grid.Column="1" Text="D-PAD / STICK: MOVE  ·  R2: 2× SPEED" VerticalAlignment="Center" Foreground="#65B7FF" FontSize="10" FontWeight="Bold" />
+                                    <TextBlock Grid.Column="1" Text="{Binding SetupFixedControlsText}" VerticalAlignment="Center" Foreground="#65B7FF" FontSize="10" FontWeight="Bold" TextWrapping="Wrap" />
                                 </Grid>
 
                                 <StackPanel IsVisible="{Binding IsNintendoControllerSetup}" Spacing="10">

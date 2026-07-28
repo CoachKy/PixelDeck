@@ -24,6 +24,10 @@ public partial class EmulatorWindow : Window
     private readonly DispatcherTimer _inputTimer;
     private readonly GamepadReader _gamepad = new();
     private readonly GamepadReader _playerTwoGamepad = new();
+
+    /// <summary>Nintendo 64 ports three and four. No other core reads past two players.</summary>
+    private readonly GamepadReader _playerThreeGamepad = new();
+    private readonly GamepadReader _playerFourGamepad = new();
     private readonly HashSet<Key> _pressedKeys = [];
     private readonly List<Action> _stateMenuActions = [];
     private readonly object _machineLock = new();
@@ -89,6 +93,8 @@ public partial class EmulatorWindow : Window
             var settings = PixelDeckSettingsStore.Current;
             _gamepad.UserIndex = settings.ControllerIndex;
             _playerTwoGamepad.UserIndex = settings.PlayerTwoControllerIndex;
+            _playerThreeGamepad.UserIndex = settings.PlayerThreeControllerIndex;
+            _playerFourGamepad.UserIndex = settings.PlayerFourControllerIndex;
             LoadMachine();
             _frameBitmap = new WriteableBitmap(
                 new PixelSize(MachineWidth, MachineHeight),
@@ -422,19 +428,54 @@ public partial class EmulatorWindow : Window
             }
             else if (_n64Machine is not null)
             {
-                var playerOneController = GamepadInputMapper.ToN64Controller(
-                    playerOneState,
-                    settings);
-                var keyboardController = ReadN64KeyboardController();
-                playerOneController = new N64ControllerState(
-                    playerOneController.Buttons | keyboardController.Buttons,
-                    keyboardController.StickX != 0 ? keyboardController.StickX : playerOneController.StickX,
-                    keyboardController.StickY != 0 ? keyboardController.StickY : playerOneController.StickY);
-                _n64Machine.SetControllerState(1, playerOneController);
-                _n64Machine.SetControllerState(
-                    2,
-                    GamepadInputMapper.ToN64Controller(playerTwoState, settings, playerTwo: true));
+                UpdateN64Controllers(settings, playerOneState, playerTwoState);
             }
+        }
+    }
+
+    /// <summary>
+    /// Drives all four Nintendo 64 ports from their assigned pads. Ports without a pad are held
+    /// neutral rather than reported empty: the PIF can report an empty port, but doing so stalls
+    /// Super Mario 64, so presence reporting stays off until that is resolved.
+    /// </summary>
+    private void UpdateN64Controllers(
+        PixelDeckSettings settings,
+        GamepadState playerOneState,
+        GamepadState playerTwoState)
+    {
+        if (_n64Machine is null)
+        {
+            return;
+        }
+
+        var playerOneController = GamepadInputMapper.ToN64Controller(
+            playerOneState,
+            GamepadInputMapper.N64MapForPort(settings, 1));
+        var keyboardController = ReadN64KeyboardController();
+        _n64Machine.SetControllerState(
+            1,
+            new N64ControllerState(
+                playerOneController.Buttons | keyboardController.Buttons,
+                keyboardController.StickX != 0 ? keyboardController.StickX : playerOneController.StickX,
+                keyboardController.StickY != 0 ? keyboardController.StickY : playerOneController.StickY));
+
+        var readers = new[] { _playerTwoGamepad, _playerThreeGamepad, _playerFourGamepad };
+        var states = new[]
+        {
+            playerTwoState,
+            _playerThreeGamepad.ReadState(),
+            _playerFourGamepad.ReadState()
+        };
+
+        for (var offset = 0; offset < readers.Length; offset++)
+        {
+            _n64Machine.SetControllerState(
+                offset + 2,
+                readers[offset].IsConnected
+                    ? GamepadInputMapper.ToN64Controller(
+                        states[offset],
+                        GamepadInputMapper.N64MapForPort(settings, offset + 2))
+                    : N64ControllerState.Neutral);
         }
     }
 

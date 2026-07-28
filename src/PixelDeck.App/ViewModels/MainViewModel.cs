@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PixelDeck.App.Input;
@@ -14,6 +15,9 @@ namespace PixelDeck.App.ViewModels;
 
 public partial class MainViewModel : ViewModelBase, IDisposable
 {
+    /// <summary>Controller ports offered by every core except the Nintendo 64.</summary>
+    private const int TwoPlayerCount = 2;
+
     private readonly GameLibrary _library;
     private readonly PlayHistoryStore _playHistory;
 
@@ -62,15 +66,19 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ControllerSlots = Enumerable.Range(0, 4)
             .Select(index => new ControllerSlotOption(index, $"Controller {index + 1}"))
             .ToArray();
-        ControllerSetupPlayers =
+        AllControllerSetupPlayers =
         [
             new(ControllerSetupPlayer.PlayerOne, "Player One"),
-            new(ControllerSetupPlayer.PlayerTwo, "Player Two")
+            new(ControllerSetupPlayer.PlayerTwo, "Player Two"),
+            new(ControllerSetupPlayer.PlayerThree, "Player Three"),
+            new(ControllerSetupPlayer.PlayerFour, "Player Four")
         ];
+        ControllerSetupPlayers = [.. AllControllerSetupPlayers.Take(TwoPlayerCount)];
         ControllerSetupConsoles =
         [
             new(ControllerSetupConsole.Nintendo, "Nintendo"),
-            new(ControllerSetupConsole.SuperNintendo, "Super Nintendo")
+            new(ControllerSetupConsole.SuperNintendo, "Super Nintendo"),
+            new(ControllerSetupConsole.Nintendo64, "Nintendo 64")
         ];
         selectedControllerSetupPlayer = ControllerSetupPlayers[0];
         selectedControllerSetupConsole = ControllerSetupConsoles[0];
@@ -87,6 +95,14 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             new(GamepadButton.RightThumb, "Right stick click"),
             new(GamepadButton.Start, "Start / Menu / Options"),
             new(GamepadButton.Back, "Select / View / Create")
+        ];
+
+        // The N64 list adds "unassigned" because the C cluster is already reachable through the
+        // right stick, so a player may reasonably want its digital fallbacks cleared.
+        N64ControllerButtons =
+        [
+            new(GamepadButton.None, "Unassigned"),
+            .. ControllerButtons
         ];
         Mmc3IrqRevisions =
         [
@@ -108,6 +124,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         var settings = PixelDeckSettingsStore.Current;
         selectedControllerSlot = ControllerSlots[settings.ControllerIndex];
         selectedPlayerTwoControllerSlot = ControllerSlots[settings.PlayerTwoControllerIndex];
+        selectedPlayerThreeControllerSlot = ControllerSlots[settings.PlayerThreeControllerIndex];
+        selectedPlayerFourControllerSlot = ControllerSlots[settings.PlayerFourControllerIndex];
         selectedNintendoAButton = FindButton(settings.AButton, GamepadButton.A);
         selectedNintendoBButton = FindButton(settings.BButton, GamepadButton.X);
         selectedNintendoStartButton = FindButton(settings.StartButton, GamepadButton.Start);
@@ -169,7 +187,15 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public IReadOnlyList<ControllerButtonOption> ControllerButtons { get; }
 
-    public IReadOnlyList<ControllerSetupPlayerOption> ControllerSetupPlayers { get; }
+    public IReadOnlyList<ControllerButtonOption> N64ControllerButtons { get; }
+
+    private IReadOnlyList<ControllerSetupPlayerOption> AllControllerSetupPlayers { get; }
+
+    /// <summary>
+    /// Players offered by the setup page. Only the Nintendo 64 profile exposes three and four,
+    /// because the NES and SNES cores have two controller ports.
+    /// </summary>
+    public ObservableCollection<ControllerSetupPlayerOption> ControllerSetupPlayers { get; }
 
     public IReadOnlyList<ControllerSetupConsoleOption> ControllerSetupConsoles { get; }
 
@@ -295,6 +321,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     private ControllerSlotOption selectedPlayerTwoControllerSlot;
 
     [ObservableProperty]
+    private ControllerSlotOption selectedPlayerThreeControllerSlot;
+
+    [ObservableProperty]
+    private ControllerSlotOption selectedPlayerFourControllerSlot;
+
+    [ObservableProperty]
     private ControllerSetupPlayerOption selectedControllerSetupPlayer;
 
     [ObservableProperty]
@@ -393,13 +425,24 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     public bool IsNintendoControllerSetup =>
         SelectedControllerSetupConsole.Console == ControllerSetupConsole.Nintendo;
 
-    public bool IsSuperNintendoControllerSetup => !IsNintendoControllerSetup;
+    public bool IsSuperNintendoControllerSetup =>
+        SelectedControllerSetupConsole.Console == ControllerSetupConsole.SuperNintendo;
+
+    public bool IsNintendo64ControllerSetup =>
+        SelectedControllerSetupConsole.Console == ControllerSetupConsole.Nintendo64;
+
+    /// <summary>Zero-based index of the player whose mappings the setup page is editing.</summary>
+    private int SetupPlayerIndex => (int)SelectedControllerSetupPlayer.Player;
 
     public ControllerSlotOption SelectedControllerSetupSlot
     {
-        get => SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne
-            ? SelectedControllerSlot
-            : SelectedPlayerTwoControllerSlot;
+        get => SetupPlayerIndex switch
+        {
+            0 => SelectedControllerSlot,
+            1 => SelectedPlayerTwoControllerSlot,
+            2 => SelectedPlayerThreeControllerSlot,
+            _ => SelectedPlayerFourControllerSlot
+        };
         set
         {
             if (ReferenceEquals(value, SelectedControllerSetupSlot))
@@ -407,13 +450,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 return;
             }
 
-            if (SelectedControllerSetupPlayer.Player == ControllerSetupPlayer.PlayerOne)
+            switch (SetupPlayerIndex)
             {
-                SelectedControllerSlot = value;
-            }
-            else
-            {
-                SelectedPlayerTwoControllerSlot = value;
+                case 0: SelectedControllerSlot = value; break;
+                case 1: SelectedPlayerTwoControllerSlot = value; break;
+                case 2: SelectedPlayerThreeControllerSlot = value; break;
+                default: SelectedPlayerFourControllerSlot = value; break;
             }
 
             OnPropertyChanged();
@@ -553,6 +595,73 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             option => SelectedPlayerTwoSnesSelectButton = option);
     }
 
+    /// <summary>
+    /// The Nintendo 64 map for the port being edited. Unlike the NES and SNES blocks these
+    /// mappings are not mirrored into observable fields — four ports times ten buttons would be
+    /// forty properties — so they read and write settings directly.
+    /// </summary>
+    private N64ButtonMap SetupN64Map => PixelDeckSettingsStore.Current.N64Ports[SetupPlayerIndex];
+
+    public ControllerButtonOption SelectedN64AButton
+    {
+        get => FindN64Button(SetupN64Map.A);
+        set => SetN64Button(value, static (map, button) => map.A = button);
+    }
+
+    public ControllerButtonOption SelectedN64BButton
+    {
+        get => FindN64Button(SetupN64Map.B);
+        set => SetN64Button(value, static (map, button) => map.B = button);
+    }
+
+    public ControllerButtonOption SelectedN64ZButton
+    {
+        get => FindN64Button(SetupN64Map.Z);
+        set => SetN64Button(value, static (map, button) => map.Z = button);
+    }
+
+    public ControllerButtonOption SelectedN64LButton
+    {
+        get => FindN64Button(SetupN64Map.L);
+        set => SetN64Button(value, static (map, button) => map.L = button);
+    }
+
+    public ControllerButtonOption SelectedN64RButton
+    {
+        get => FindN64Button(SetupN64Map.R);
+        set => SetN64Button(value, static (map, button) => map.R = button);
+    }
+
+    public ControllerButtonOption SelectedN64StartButton
+    {
+        get => FindN64Button(SetupN64Map.Start);
+        set => SetN64Button(value, static (map, button) => map.Start = button);
+    }
+
+    public ControllerButtonOption SelectedN64CUpButton
+    {
+        get => FindN64Button(SetupN64Map.CUp);
+        set => SetN64Button(value, static (map, button) => map.CUp = button);
+    }
+
+    public ControllerButtonOption SelectedN64CDownButton
+    {
+        get => FindN64Button(SetupN64Map.CDown);
+        set => SetN64Button(value, static (map, button) => map.CDown = button);
+    }
+
+    public ControllerButtonOption SelectedN64CLeftButton
+    {
+        get => FindN64Button(SetupN64Map.CLeft);
+        set => SetN64Button(value, static (map, button) => map.CLeft = button);
+    }
+
+    public ControllerButtonOption SelectedN64CRightButton
+    {
+        get => FindN64Button(SetupN64Map.CRight);
+        set => SetN64Button(value, static (map, button) => map.CRight = button);
+    }
+
     public string PaperDollSouthActionText => FormatPaperDollAction(GamepadButton.A);
 
     public string PaperDollEastActionText => FormatPaperDollAction(GamepadButton.B);
@@ -571,23 +680,45 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public string PaperDollBackActionText => FormatPaperDollAction(GamepadButton.Back);
 
+    public string PaperDollLeftTriggerActionText =>
+        FormatPaperDollAction(GamepadButton.LeftTrigger);
+
+    public string SetupFixedControlsText => IsNintendo64ControllerSetup
+        ? "D-PAD / STICK: MOVE  ·  RIGHT STICK: C BUTTONS  ·  R2: 2× SPEED"
+        : "D-PAD / STICK: MOVE  ·  R2: 2× SPEED";
+
     partial void OnSelectedControllerSlotChanged(ControllerSlotOption value)
     {
-        SaveControllerSlots(playerOneChanged: true);
+        SaveControllerSlots(0);
         NotifyControllerSetupChanged();
     }
 
     partial void OnSelectedPlayerTwoControllerSlotChanged(ControllerSlotOption value)
     {
-        SaveControllerSlots(playerOneChanged: false);
+        SaveControllerSlots(1);
+        NotifyControllerSetupChanged();
+    }
+
+    partial void OnSelectedPlayerThreeControllerSlotChanged(ControllerSlotOption value)
+    {
+        SaveControllerSlots(2);
+        NotifyControllerSetupChanged();
+    }
+
+    partial void OnSelectedPlayerFourControllerSlotChanged(ControllerSlotOption value)
+    {
+        SaveControllerSlots(3);
         NotifyControllerSetupChanged();
     }
 
     partial void OnSelectedControllerSetupPlayerChanged(ControllerSetupPlayerOption value) =>
         NotifyControllerSetupChanged();
 
-    partial void OnSelectedControllerSetupConsoleChanged(ControllerSetupConsoleOption value) =>
+    partial void OnSelectedControllerSetupConsoleChanged(ControllerSetupConsoleOption value)
+    {
+        SyncControllerSetupPlayers();
         NotifyControllerSetupChanged();
+    }
 
     partial void OnSelectedNintendoAButtonChanged(ControllerButtonOption value)
     {
@@ -964,17 +1095,31 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public void UpdateClock() => ClockText = DateTime.Now.ToString("h:mm tt").ToUpperInvariant();
 
+    /// <param name="deviceConnected">Connection state per physical device slot.</param>
     public void UpdateControllerStatus(
-        bool playerOneConnected,
-        bool playerTwoConnected,
-        int connectedControllerCount,
+        IReadOnlyList<bool> deviceConnected,
         IReadOnlyList<string?> controllerNames,
         string backendName)
     {
-        ControllerStatusText =
-            $"P1 C{SelectedControllerSlot.Index + 1} {(playerOneConnected ? "CONNECTED" : "NOT CONNECTED")}" +
-            $"  /  P2 C{SelectedPlayerTwoControllerSlot.Index + 1} " +
-            $"{(playerTwoConnected ? "CONNECTED" : "NOT CONNECTED")}";
+        var connectedControllerCount = deviceConnected.Count(connected => connected);
+        var slots = new[]
+        {
+            SelectedControllerSlot,
+            SelectedPlayerTwoControllerSlot,
+            SelectedPlayerThreeControllerSlot,
+            SelectedPlayerFourControllerSlot
+        };
+
+        // Only the Nintendo 64 profile has four ports, so the other profiles keep the P1/P2 line.
+        var reportedPlayers = IsNintendo64ControllerSetup ? slots.Length : TwoPlayerCount;
+        ControllerStatusText = string.Join(
+            "  /  ",
+            slots.Take(reportedPlayers).Select((slot, player) =>
+            {
+                var connected = slot.Index < deviceConnected.Count && deviceConnected[slot.Index];
+                return $"P{player + 1} C{slot.Index + 1} " +
+                    $"{(connected ? "CONNECTED" : "NOT CONNECTED")}";
+            }));
         ConnectedControllerCountText = FormatConnectedControllerCount(connectedControllerCount);
         ControllerInputBackendText = $"{backendName.ToUpperInvariant()} GAMEPAD INPUT";
 
@@ -1073,6 +1218,49 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         ControllerButtons.FirstOrDefault(option => option.Button == button)
         ?? ControllerButtons.First(option => option.Button == fallback);
 
+    private ControllerButtonOption FindN64Button(GamepadButton button) =>
+        N64ControllerButtons.FirstOrDefault(option => option.Button == button)
+        ?? N64ControllerButtons.First(option => option.Button == GamepadButton.None);
+
+    private void SetN64Button(
+        ControllerButtonOption value,
+        Action<N64ButtonMap, GamepadButton> assign,
+        [CallerMemberName] string? propertyName = null)
+    {
+        if (value is null)
+        {
+            return;
+        }
+
+        assign(SetupN64Map, value.Button);
+        PixelDeckSettingsStore.Save();
+        OnPropertyChanged(propertyName);
+        NotifyControllerSetupMappingsChanged();
+    }
+
+    /// <summary>
+    /// Trims the player picker to the ports the selected console actually has, moving the
+    /// selection back to Player One first so the bound picker never sees a missing item.
+    /// </summary>
+    private void SyncControllerSetupPlayers()
+    {
+        var desired = IsNintendo64ControllerSetup ? AllControllerSetupPlayers.Count : TwoPlayerCount;
+        if (SetupPlayerIndex >= desired)
+        {
+            SelectedControllerSetupPlayer = AllControllerSetupPlayers[0];
+        }
+
+        while (ControllerSetupPlayers.Count > desired)
+        {
+            ControllerSetupPlayers.RemoveAt(ControllerSetupPlayers.Count - 1);
+        }
+
+        while (ControllerSetupPlayers.Count < desired)
+        {
+            ControllerSetupPlayers.Add(AllControllerSetupPlayers[ControllerSetupPlayers.Count]);
+        }
+    }
+
     private ControllerButtonOption GetSelectedSetupButton(
         ControllerButtonOption playerOneNintendo,
         ControllerButtonOption playerTwoNintendo,
@@ -1110,6 +1298,8 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(SelectedControllerSetupSlot));
         OnPropertyChanged(nameof(IsNintendoControllerSetup));
         OnPropertyChanged(nameof(IsSuperNintendoControllerSetup));
+        OnPropertyChanged(nameof(IsNintendo64ControllerSetup));
+        OnPropertyChanged(nameof(SetupFixedControlsText));
         NotifyControllerSetupMappingsChanged();
     }
 
@@ -1123,6 +1313,16 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(SelectedSetupRButton));
         OnPropertyChanged(nameof(SelectedSetupStartButton));
         OnPropertyChanged(nameof(SelectedSetupSelectButton));
+        OnPropertyChanged(nameof(SelectedN64AButton));
+        OnPropertyChanged(nameof(SelectedN64BButton));
+        OnPropertyChanged(nameof(SelectedN64ZButton));
+        OnPropertyChanged(nameof(SelectedN64LButton));
+        OnPropertyChanged(nameof(SelectedN64RButton));
+        OnPropertyChanged(nameof(SelectedN64StartButton));
+        OnPropertyChanged(nameof(SelectedN64CUpButton));
+        OnPropertyChanged(nameof(SelectedN64CDownButton));
+        OnPropertyChanged(nameof(SelectedN64CLeftButton));
+        OnPropertyChanged(nameof(SelectedN64CRightButton));
         OnPropertyChanged(nameof(PaperDollSouthActionText));
         OnPropertyChanged(nameof(PaperDollEastActionText));
         OnPropertyChanged(nameof(PaperDollWestActionText));
@@ -1131,11 +1331,33 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(PaperDollRightShoulderActionText));
         OnPropertyChanged(nameof(PaperDollStartActionText));
         OnPropertyChanged(nameof(PaperDollBackActionText));
+        OnPropertyChanged(nameof(PaperDollLeftTriggerActionText));
     }
 
     private string FormatPaperDollAction(GamepadButton physicalButton)
     {
+        if (physicalButton == GamepadButton.None)
+        {
+            return "—";
+        }
+
         var actions = new List<string>(2);
+        if (IsNintendo64ControllerSetup)
+        {
+            var map = SetupN64Map;
+            if (map.A == physicalButton) actions.Add("A");
+            if (map.B == physicalButton) actions.Add("B");
+            if (map.Z == physicalButton) actions.Add("Z");
+            if (map.L == physicalButton) actions.Add("L");
+            if (map.R == physicalButton) actions.Add("R");
+            if (map.Start == physicalButton) actions.Add("START");
+            if (map.CUp == physicalButton) actions.Add("C↑");
+            if (map.CDown == physicalButton) actions.Add("C↓");
+            if (map.CLeft == physicalButton) actions.Add("C←");
+            if (map.CRight == physicalButton) actions.Add("C→");
+            return actions.Count == 0 ? "—" : string.Join(" + ", actions);
+        }
+
         if (SelectedSetupAButton.Button == physicalButton) actions.Add("A");
         if (SelectedSetupBButton.Button == physicalButton) actions.Add("B");
         if (IsSuperNintendoControllerSetup)
@@ -1153,7 +1375,12 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     private bool _isUpdatingControllerSlots;
 
-    private void SaveControllerSlots(bool playerOneChanged)
+    /// <summary>
+    /// Persists the four player-to-device assignments, keeping them distinct. The player that
+    /// just changed keeps the device it asked for; any other player holding that device is pushed
+    /// onto the first free slot.
+    /// </summary>
+    private void SaveControllerSlots(int changedPlayerIndex)
     {
         if (_isUpdatingControllerSlots)
         {
@@ -1163,27 +1390,44 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         _isUpdatingControllerSlots = true;
         try
         {
-            var settings = PixelDeckSettingsStore.Current;
-            if (SelectedControllerSlot.Index == SelectedPlayerTwoControllerSlot.Index)
+            var setters = new Action<ControllerSlotOption>[]
             {
-                if (playerOneChanged)
+                option => SelectedControllerSlot = option,
+                option => SelectedPlayerTwoControllerSlot = option,
+                option => SelectedPlayerThreeControllerSlot = option,
+                option => SelectedPlayerFourControllerSlot = option
+            };
+            var indices = new[]
+            {
+                SelectedControllerSlot.Index,
+                SelectedPlayerTwoControllerSlot.Index,
+                SelectedPlayerThreeControllerSlot.Index,
+                SelectedPlayerFourControllerSlot.Index
+            };
+
+            var taken = new bool[ControllerSlots.Count];
+            taken[indices[changedPlayerIndex]] = true;
+            for (var player = 0; player < indices.Length; player++)
+            {
+                if (player == changedPlayerIndex)
                 {
-                    var replacement = settings.ControllerIndex == SelectedControllerSlot.Index
-                        ? (SelectedControllerSlot.Index + 1) % ControllerSlots.Count
-                        : settings.ControllerIndex;
-                    SelectedPlayerTwoControllerSlot = ControllerSlots[replacement];
+                    continue;
                 }
-                else
+
+                if (taken[indices[player]])
                 {
-                    var replacement = settings.PlayerTwoControllerIndex == SelectedPlayerTwoControllerSlot.Index
-                        ? (SelectedPlayerTwoControllerSlot.Index + 1) % ControllerSlots.Count
-                        : settings.PlayerTwoControllerIndex;
-                    SelectedControllerSlot = ControllerSlots[replacement];
+                    indices[player] = Array.IndexOf(taken, false);
+                    setters[player](ControllerSlots[indices[player]]);
                 }
+
+                taken[indices[player]] = true;
             }
 
-            settings.ControllerIndex = SelectedControllerSlot.Index;
-            settings.PlayerTwoControllerIndex = SelectedPlayerTwoControllerSlot.Index;
+            var settings = PixelDeckSettingsStore.Current;
+            settings.ControllerIndex = indices[0];
+            settings.PlayerTwoControllerIndex = indices[1];
+            settings.PlayerThreeControllerIndex = indices[2];
+            settings.PlayerFourControllerIndex = indices[3];
             PixelDeckSettingsStore.Save();
             ControllerStatusText = "CHECKING CONTROLLERS";
         }
@@ -1353,13 +1597,18 @@ public enum LibrarySystem
 public enum ControllerSetupPlayer
 {
     PlayerOne,
-    PlayerTwo
+    PlayerTwo,
+
+    /// <summary>Nintendo 64 only; the NES and SNES cores are two-player.</summary>
+    PlayerThree,
+    PlayerFour
 }
 
 public enum ControllerSetupConsole
 {
     Nintendo,
-    SuperNintendo
+    SuperNintendo,
+    Nintendo64
 }
 
 public sealed record ControllerSetupPlayerOption(ControllerSetupPlayer Player, string Label);

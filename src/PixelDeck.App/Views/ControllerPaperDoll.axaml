@@ -4,7 +4,48 @@
              x:Class="PixelDeck.App.Views.ControllerPaperDoll"
              x:Name="Root"
              x:DataType="views:ControllerPaperDoll">
-    <Grid RowDefinitions="Auto,*" RowSpacing="12">
+    <UserControl.Resources>
+        <LinearGradientBrush x:Key="ShellFill" StartPoint="50%,0%" EndPoint="50%,100%">
+            <GradientStop Color="#32526F" Offset="0" />
+            <GradientStop Color="#1B2F45" Offset="0.4" />
+            <GradientStop Color="#0D1927" Offset="0.8" />
+            <GradientStop Color="#0A1420" Offset="1" />
+        </LinearGradientBrush>
+
+        <LinearGradientBrush x:Key="BumperFill" StartPoint="50%,0%" EndPoint="50%,100%">
+            <GradientStop Color="#27405B" Offset="0" />
+            <GradientStop Color="#152539" Offset="1" />
+        </LinearGradientBrush>
+
+        <LinearGradientBrush x:Key="TriggerFill" StartPoint="50%,0%" EndPoint="50%,100%">
+            <GradientStop Color="#1D3149" Offset="0" />
+            <GradientStop Color="#101E2E" Offset="1" />
+        </LinearGradientBrush>
+
+        <LinearGradientBrush x:Key="CapFill" StartPoint="50%,0%" EndPoint="50%,100%">
+            <GradientStop Color="#33506E" Offset="0" />
+            <GradientStop Color="#152B41" Offset="1" />
+        </LinearGradientBrush>
+
+        <LinearGradientBrush x:Key="ButtonFill" StartPoint="50%,0%" EndPoint="50%,100%">
+            <GradientStop Color="#2E4460" Offset="0" />
+            <GradientStop Color="#16273A" Offset="1" />
+        </LinearGradientBrush>
+
+        <LinearGradientBrush x:Key="PadFill" StartPoint="50%,0%" EndPoint="50%,100%">
+            <GradientStop Color="#152740" Offset="0" />
+            <GradientStop Color="#08111C" Offset="1" />
+        </LinearGradientBrush>
+
+        <SolidColorBrush x:Key="ShellStroke" Color="#5E7A99" />
+        <SolidColorBrush x:Key="WellFill" Color="#060D16" />
+        <SolidColorBrush x:Key="PartStroke" Color="#4E6683" />
+        <SolidColorBrush x:Key="CapLabel" Color="#7E93AB" />
+        <SolidColorBrush x:Key="Caption" Color="#6F8398" />
+        <SolidColorBrush x:Key="ActionText" Color="#EFF5FB" />
+    </UserControl.Resources>
+
+    <Grid RowDefinitions="Auto,*" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
             <StackPanel Spacing="3">
                 <TextBlock Text="{Binding ConsoleText, ElementName=Root}"
@@ -18,302 +59,436 @@
                            TextTrimming="CharacterEllipsis" />
             </StackPanel>
             <Border Grid.Column="1"
-                    Padding="10,6"
+                    Padding="11,6"
                     VerticalAlignment="Center"
                     CornerRadius="12"
-                    BorderBrush="#2E65B7FF"
+                    BorderBrush="#3865B7FF"
                     BorderThickness="1"
-                    Background="#1265B7FF">
-                <TextBlock Text="LIVE MAP"
-                           Foreground="#65B7FF"
-                           FontSize="9"
-                           FontWeight="Bold"
-                           LetterSpacing="1.2" />
+                    Background="#1465B7FF">
+                <StackPanel Orientation="Horizontal" Spacing="7">
+                    <Ellipse Width="6"
+                             Height="6"
+                             VerticalAlignment="Center"
+                             Fill="#65B7FF" />
+                    <TextBlock Text="LIVE MAP"
+                               Foreground="#65B7FF"
+                               FontSize="9"
+                               FontWeight="Bold"
+                               LetterSpacing="1.2" />
+                </StackPanel>
             </Border>
         </Grid>
 
         <Viewbox Grid.Row="1" Stretch="Uniform">
-            <Canvas Width="760" Height="430">
-                <Border Canvas.Left="125"
-                        Canvas.Top="12"
-                        Width="215"
-                        Height="48"
-                        Padding="15,7"
-                        CornerRadius="13,13,5,5"
-                        BorderBrush="#3AFFFFFF"
+            <Canvas Width="720" Height="430">
+
+                <!-- Triggers: tucked behind the bumpers -->
+                <Border Canvas.Left="181"
+                        Canvas.Top="0"
+                        Width="96"
+                        Height="54"
+                        Padding="0,5,0,22"
+                        CornerRadius="18,18,6,6"
+                        BorderBrush="#3B5372"
                         BorderThickness="2"
-                        Background="#17283A">
-                    <Grid ColumnDefinitions="Auto,*">
+                        Background="{StaticResource TriggerFill}">
+                    <StackPanel VerticalAlignment="Center" Spacing="1">
+                        <TextBlock Text="LT / L2"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{StaticResource Caption}"
+                                   FontSize="8"
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.8" />
+                        <Viewbox Width="72"
+                                 HorizontalAlignment="Center"
+                                 Stretch="Uniform"
+                                 StretchDirection="DownOnly">
+                            <TextBlock Text="{Binding LeftTriggerActionText, ElementName=Root}"
+                                       Foreground="{StaticResource ActionText}"
+                                       FontSize="12"
+                                       FontWeight="Black" />
+                        </Viewbox>
+                    </StackPanel>
+                </Border>
+
+                <Border Canvas.Left="443"
+                        Canvas.Top="0"
+                        Width="96"
+                        Height="54"
+                        Padding="0,5,0,22"
+                        CornerRadius="18,18,6,6"
+                        BorderBrush="#3B5372"
+                        BorderThickness="2"
+                        Background="{StaticResource TriggerFill}">
+                    <StackPanel VerticalAlignment="Center" Spacing="1">
+                        <TextBlock Text="RT / R2"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{StaticResource Caption}"
+                                   FontSize="8"
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.8" />
+                        <TextBlock Text="2× SPEED"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#65B7FF"
+                                   FontSize="11"
+                                   FontWeight="Black" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Bumpers: lower half is covered by the shell so they read as attached -->
+                <Border Canvas.Left="140"
+                        Canvas.Top="42"
+                        Width="178"
+                        Height="70"
+                        Padding="20,12,20,34"
+                        CornerRadius="22,22,10,10"
+                        BorderBrush="#587691"
+                        BorderThickness="2"
+                        Background="{StaticResource BumperFill}">
+                    <Grid ColumnDefinitions="Auto,*" VerticalAlignment="Center">
                         <TextBlock Text="LB / L1"
                                    VerticalAlignment="Center"
-                                   Foreground="#91A2B6"
-                                   FontSize="10"
-                                   FontWeight="Bold" />
+                                   Foreground="{StaticResource Caption}"
+                                   FontSize="9"
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.6" />
                         <TextBlock Grid.Column="1"
                                    Text="{Binding LeftShoulderActionText, ElementName=Root}"
                                    HorizontalAlignment="Right"
                                    VerticalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Black" />
+                                   Foreground="{StaticResource ActionText}"
+                                   FontSize="14"
+                                   FontWeight="Black"
+                                   TextTrimming="CharacterEllipsis" />
                     </Grid>
                 </Border>
 
-                <Border Canvas.Left="420"
-                        Canvas.Top="12"
-                        Width="215"
-                        Height="48"
-                        Padding="15,7"
-                        CornerRadius="13,13,5,5"
-                        BorderBrush="#3AFFFFFF"
+                <Border Canvas.Left="402"
+                        Canvas.Top="42"
+                        Width="178"
+                        Height="70"
+                        Padding="20,12,20,34"
+                        CornerRadius="22,22,10,10"
+                        BorderBrush="#587691"
                         BorderThickness="2"
-                        Background="#17283A">
-                    <Grid ColumnDefinitions="Auto,*">
+                        Background="{StaticResource BumperFill}">
+                    <Grid ColumnDefinitions="Auto,*" VerticalAlignment="Center">
                         <TextBlock Text="RB / R1"
                                    VerticalAlignment="Center"
-                                   Foreground="#91A2B6"
-                                   FontSize="10"
-                                   FontWeight="Bold" />
+                                   Foreground="{StaticResource Caption}"
+                                   FontSize="9"
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.6" />
                         <TextBlock Grid.Column="1"
                                    Text="{Binding RightShoulderActionText, ElementName=Root}"
                                    HorizontalAlignment="Right"
                                    VerticalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Black" />
+                                   Foreground="{StaticResource ActionText}"
+                                   FontSize="14"
+                                   FontWeight="Black"
+                                   TextTrimming="CharacterEllipsis" />
                     </Grid>
                 </Border>
 
-                <Border Canvas.Left="522"
-                        Canvas.Top="67"
-                        Width="146"
-                        Height="42"
-                        Padding="12,5"
-                        CornerRadius="7"
-                        BorderBrush="#3965B7FF"
-                        BorderThickness="1"
-                        Background="#132A43">
-                    <Grid ColumnDefinitions="Auto,*">
-                        <TextBlock Text="RT / R2"
-                                   VerticalAlignment="Center"
-                                   Foreground="#91A2B6"
-                                   FontSize="9"
-                                   FontWeight="Bold" />
-                        <TextBlock Grid.Column="1"
-                                   Text="2× SPEED"
-                                   HorizontalAlignment="Right"
-                                   VerticalAlignment="Center"
-                                   Foreground="#65B7FF"
-                                   FontSize="11"
-                                   FontWeight="Black" />
-                    </Grid>
-                </Border>
+                <!-- Shell -->
+                <Path Fill="{StaticResource ShellFill}"
+                      Stroke="{StaticResource ShellStroke}"
+                      StrokeThickness="5"
+                      StrokeJoin="Round"
+                      Data="M 360,124
+                            C 320,100 288,90 244,88
+                            C 198,86 154,92 126,114
+                            C 94,140 76,186 74,232
+                            C 72,290 86,352 114,394
+                            C 132,422 166,424 190,410
+                            C 234,388 292,368 360,366
+                            C 428,368 486,388 530,410
+                            C 554,424 588,422 606,394
+                            C 634,352 648,290 646,232
+                            C 644,186 626,140 594,114
+                            C 566,92 522,86 476,88
+                            C 432,90 400,100 360,124 Z">
+                    <Path.Effect>
+                        <DropShadowEffect BlurRadius="26"
+                                          OffsetX="0"
+                                          OffsetY="12"
+                                          Color="#000000"
+                                          Opacity="0.55" />
+                    </Path.Effect>
+                </Path>
 
-                <Path Fill="#15283B"
-                      Stroke="#4A5C70"
-                      StrokeThickness="7"
-                      Data="M 205,75 C 155,75 128,108 112,157 L 57,322 C 44,362 82,392 113,365 L 196,293 C 222,271 249,264 286,269 L 474,269 C 511,264 538,271 564,293 L 647,365 C 678,392 716,362 703,322 L 648,157 C 632,108 605,75 555,75 C 510,75 487,91 459,112 L 301,112 C 273,91 250,75 205,75 Z" />
+                <!-- Moulded top highlight -->
+                <Path Stroke="#26FFFFFF"
+                      StrokeThickness="3"
+                      StrokeLineCap="Round"
+                      Data="M 126,114
+                            C 154,92 198,86 244,88
+                            C 288,90 320,100 360,124
+                            C 400,100 432,90 476,88
+                            C 522,86 566,92 594,114" />
 
-                <Border Canvas.Left="335"
-                        Canvas.Top="137"
-                        Width="78"
-                        Height="33"
-                        CornerRadius="16"
-                        BorderBrush="#32FFFFFF"
-                        BorderThickness="1"
-                        Background="#0D1826">
-                    <Grid ColumnDefinitions="*,*">
+                <!-- Left stick -->
+                <Grid Canvas.Left="152" Canvas.Top="142" Width="96" Height="96">
+                    <Ellipse Fill="{StaticResource WellFill}"
+                             Stroke="{StaticResource PartStroke}"
+                             StrokeThickness="4" />
+                    <Ellipse Width="73" Height="73" Fill="#0D1A29" Stroke="#3A5069" StrokeThickness="2" />
+                    <Ellipse Width="55"
+                             Height="55"
+                             Fill="{StaticResource CapFill}"
+                             Stroke="#7B93AC"
+                             StrokeThickness="3" />
+                    <TextBlock Text="L"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource CapLabel}"
+                               FontSize="13"
+                               FontWeight="Black" />
+                </Grid>
+
+                <!-- D-pad -->
+                <Grid Canvas.Left="194" Canvas.Top="246" Width="100" Height="100">
+                    <Border Width="34"
+                            Height="96"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="8"
+                            Background="{StaticResource PadFill}"
+                            BorderBrush="{StaticResource PartStroke}"
+                            BorderThickness="2" />
+                    <Border Width="96"
+                            Height="34"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="8"
+                            Background="{StaticResource PadFill}"
+                            BorderBrush="{StaticResource PartStroke}"
+                            BorderThickness="2" />
+                    <Border Width="90"
+                            Height="28"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="6"
+                            Background="{StaticResource PadFill}" />
+                    <Border Width="28"
+                            Height="90"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            CornerRadius="6"
+                            Background="{StaticResource PadFill}" />
+                    <Ellipse Width="20" Height="20" Fill="#0A1523" Stroke="#3D5470" StrokeThickness="2" />
+                </Grid>
+
+                <!-- Right stick -->
+                <Grid Canvas.Left="402" Canvas.Top="250" Width="92" Height="92">
+                    <Ellipse Fill="{StaticResource WellFill}"
+                             Stroke="{StaticResource PartStroke}"
+                             StrokeThickness="4" />
+                    <Ellipse Width="70" Height="70" Fill="#0D1A29" Stroke="#3A5069" StrokeThickness="2" />
+                    <Ellipse Width="53"
+                             Height="53"
+                             Fill="{StaticResource CapFill}"
+                             Stroke="#7B93AC"
+                             StrokeThickness="3" />
+                    <TextBlock Text="R"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource CapLabel}"
+                               FontSize="13"
+                               FontWeight="Black" />
+                </Grid>
+
+                <!-- Select / back -->
+                <StackPanel Canvas.Left="258" Canvas.Top="114" Width="72" Spacing="4">
+                    <TextBlock Text="SELECT"
+                               HorizontalAlignment="Center"
+                               Foreground="{StaticResource Caption}"
+                               FontSize="8"
+                               FontWeight="Bold"
+                               LetterSpacing="1" />
+                    <Border Width="46"
+                            Height="24"
+                            CornerRadius="12"
+                            Background="#0C1826"
+                            BorderBrush="#3E5673"
+                            BorderThickness="2">
                         <TextBlock Text="−"
                                    HorizontalAlignment="Center"
                                    VerticalAlignment="Center"
-                                   Foreground="#A9B6C6"
-                                   FontSize="18"
-                                   FontWeight="Bold" />
-                        <TextBlock Grid.Column="1"
-                                   Text="+"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   Foreground="#A9B6C6"
+                                   Foreground="#A9B9CB"
                                    FontSize="16"
                                    FontWeight="Bold" />
-                    </Grid>
-                </Border>
-
-                <StackPanel Canvas.Left="314"
-                            Canvas.Top="173"
-                            Width="78"
-                            HorizontalAlignment="Center"
-                            Spacing="2">
-                    <TextBlock Text="SELECT"
-                               HorizontalAlignment="Center"
-                               Foreground="#6F8298"
-                               FontSize="8"
-                               FontWeight="Bold" />
+                    </Border>
                     <TextBlock Text="{Binding BackActionText, ElementName=Root}"
                                HorizontalAlignment="Center"
+                               Foreground="{StaticResource ActionText}"
                                FontSize="12"
-                               FontWeight="Black" />
+                               FontWeight="Black"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis" />
                 </StackPanel>
 
-                <StackPanel Canvas.Left="387"
-                            Canvas.Top="173"
-                            Width="78"
-                            HorizontalAlignment="Center"
-                            Spacing="2">
+                <!-- Start -->
+                <StackPanel Canvas.Left="390" Canvas.Top="114" Width="72" Spacing="4">
                     <TextBlock Text="START"
                                HorizontalAlignment="Center"
-                               Foreground="#6F8298"
+                               Foreground="{StaticResource Caption}"
                                FontSize="8"
-                               FontWeight="Bold" />
+                               FontWeight="Bold"
+                               LetterSpacing="1" />
+                    <Border Width="46"
+                            Height="24"
+                            CornerRadius="12"
+                            Background="#0C1826"
+                            BorderBrush="#3E5673"
+                            BorderThickness="2">
+                        <TextBlock Text="+"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="#A9B9CB"
+                                   FontSize="15"
+                                   FontWeight="Bold" />
+                    </Border>
                     <TextBlock Text="{Binding StartActionText, ElementName=Root}"
                                HorizontalAlignment="Center"
+                               Foreground="{StaticResource ActionText}"
                                FontSize="12"
-                               FontWeight="Black" />
+                               FontWeight="Black"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               TextTrimming="CharacterEllipsis" />
                 </StackPanel>
 
-                <Grid Canvas.Left="351" Canvas.Top="211" Width="58" Height="58">
-                    <Ellipse Fill="#203A54" Stroke="#547493" StrokeThickness="3" />
-                    <TextBlock Text="MENU"
+                <!-- Guide -->
+                <Grid Canvas.Left="334" Canvas.Top="184" Width="52" Height="52">
+                    <Ellipse Fill="#1465B7FF" />
+                    <Ellipse Width="40"
+                             Height="40"
+                             Fill="{StaticResource ButtonFill}"
+                             Stroke="#4C7FB8"
+                             StrokeThickness="2" />
+                    <Ellipse Width="13" Height="13" Fill="#65B7FF" />
+                </Grid>
+                <StackPanel Canvas.Left="295" Canvas.Top="240" Width="130" Spacing="1">
+                    <TextBlock Text="SYSTEM / GUIDE / PS"
                                HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               Foreground="#B8C7D8"
+                               Foreground="{StaticResource Caption}"
                                FontSize="8"
-                               FontWeight="Black" />
-                </Grid>
-
-                <Grid Canvas.Left="143" Canvas.Top="136" Width="122" Height="122">
-                    <Border Width="38"
-                            Height="112"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center"
-                            CornerRadius="7"
-                            Background="#0A1420"
-                            BorderBrush="#52677D"
-                            BorderThickness="2" />
-                    <Border Width="112"
-                            Height="38"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center"
-                            CornerRadius="7"
-                            Background="#0A1420"
-                            BorderBrush="#52677D"
-                            BorderThickness="2" />
-                    <TextBlock Text="MOVE"
+                               FontWeight="Bold"
+                               LetterSpacing="0.9" />
+                    <TextBlock Text="PAUSE MENU"
                                HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               Foreground="#E7EDF4"
+                               Foreground="#94A7BD"
                                FontSize="10"
-                               FontWeight="Black" />
-                </Grid>
-                <TextBlock Canvas.Left="165"
-                           Canvas.Top="263"
-                           Width="78"
-                           Text="D-PAD"
-                           TextAlignment="Center"
-                           Foreground="#718399"
-                           FontSize="9"
-                           FontWeight="Bold" />
+                               FontWeight="Black"
+                               LetterSpacing="0.5" />
+                </StackPanel>
 
-                <Grid Canvas.Left="247" Canvas.Top="232" Width="92" Height="92">
-                    <Ellipse Fill="#0A1420" Stroke="#52677D" StrokeThickness="5" />
-                    <Ellipse Width="55" Height="55" Fill="#1F3348" Stroke="#71869C" StrokeThickness="3" />
-                </Grid>
-                <TextBlock Canvas.Left="253"
-                           Canvas.Top="330"
-                           Width="80"
-                           Text="LEFT STICK"
-                           TextAlignment="Center"
-                           Foreground="#718399"
-                           FontSize="9"
-                           FontWeight="Bold" />
-
-                <Grid Canvas.Left="435" Canvas.Top="259" Width="82" Height="82">
-                    <Ellipse Fill="#0A1420" Stroke="#52677D" StrokeThickness="5" />
-                    <Ellipse Width="48" Height="48" Fill="#1F3348" Stroke="#71869C" StrokeThickness="3" />
-                </Grid>
-                <TextBlock Canvas.Left="436"
-                           Canvas.Top="347"
-                           Width="80"
-                           Text="RIGHT STICK"
-                           TextAlignment="Center"
-                           Foreground="#718399"
-                           FontSize="9"
-                           FontWeight="Bold" />
-
-                <Grid Canvas.Left="541" Canvas.Top="115" Width="72" Height="72">
-                    <Ellipse Fill="#263344" Stroke="#E4C746" StrokeThickness="4" />
+                <!-- Face buttons -->
+                <Grid Canvas.Left="500" Canvas.Top="118" Width="64" Height="64">
+                    <Ellipse Fill="#1FE4C746" />
+                    <Ellipse Width="56"
+                             Height="56"
+                             Fill="{StaticResource ButtonFill}"
+                             Stroke="#E4C746"
+                             StrokeThickness="3" />
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="NORTH"
                                    HorizontalAlignment="Center"
                                    Foreground="#E4C746"
                                    FontSize="7"
-                                   FontWeight="Bold" />
-                        <TextBlock Text="{Binding NorthActionText, ElementName=Root}"
-                                   HorizontalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Black" />
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.6" />
+                        <Viewbox Width="44"
+                                 HorizontalAlignment="Center"
+                                 Stretch="Uniform"
+                                 StretchDirection="DownOnly">
+                            <TextBlock Text="{Binding NorthActionText, ElementName=Root}"
+                                       Foreground="{StaticResource ActionText}"
+                                       FontSize="16"
+                                       FontWeight="Black" />
+                        </Viewbox>
                     </StackPanel>
                 </Grid>
 
-                <Grid Canvas.Left="477" Canvas.Top="179" Width="72" Height="72">
-                    <Ellipse Fill="#263344" Stroke="#4F91F2" StrokeThickness="4" />
+                <Grid Canvas.Left="454" Canvas.Top="164" Width="64" Height="64">
+                    <Ellipse Fill="#1F4F91F2" />
+                    <Ellipse Width="56"
+                             Height="56"
+                             Fill="{StaticResource ButtonFill}"
+                             Stroke="#4F91F2"
+                             StrokeThickness="3" />
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="WEST"
                                    HorizontalAlignment="Center"
                                    Foreground="#65A7F8"
                                    FontSize="7"
-                                   FontWeight="Bold" />
-                        <TextBlock Text="{Binding WestActionText, ElementName=Root}"
-                                   HorizontalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Black" />
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.6" />
+                        <Viewbox Width="44"
+                                 HorizontalAlignment="Center"
+                                 Stretch="Uniform"
+                                 StretchDirection="DownOnly">
+                            <TextBlock Text="{Binding WestActionText, ElementName=Root}"
+                                       Foreground="{StaticResource ActionText}"
+                                       FontSize="16"
+                                       FontWeight="Black" />
+                        </Viewbox>
                     </StackPanel>
                 </Grid>
 
-                <Grid Canvas.Left="605" Canvas.Top="179" Width="72" Height="72">
-                    <Ellipse Fill="#263344" Stroke="#D94E63" StrokeThickness="4" />
+                <Grid Canvas.Left="546" Canvas.Top="164" Width="64" Height="64">
+                    <Ellipse Fill="#1FD94E63" />
+                    <Ellipse Width="56"
+                             Height="56"
+                             Fill="{StaticResource ButtonFill}"
+                             Stroke="#D94E63"
+                             StrokeThickness="3" />
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="EAST"
                                    HorizontalAlignment="Center"
                                    Foreground="#EE6B7E"
                                    FontSize="7"
-                                   FontWeight="Bold" />
-                        <TextBlock Text="{Binding EastActionText, ElementName=Root}"
-                                   HorizontalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Black" />
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.6" />
+                        <Viewbox Width="44"
+                                 HorizontalAlignment="Center"
+                                 Stretch="Uniform"
+                                 StretchDirection="DownOnly">
+                            <TextBlock Text="{Binding EastActionText, ElementName=Root}"
+                                       Foreground="{StaticResource ActionText}"
+                                       FontSize="16"
+                                       FontWeight="Black" />
+                        </Viewbox>
                     </StackPanel>
                 </Grid>
 
-                <Grid Canvas.Left="541" Canvas.Top="243" Width="72" Height="72">
-                    <Ellipse Fill="#263344" Stroke="#54B87A" StrokeThickness="4" />
+                <Grid Canvas.Left="500" Canvas.Top="210" Width="64" Height="64">
+                    <Ellipse Fill="#1F54B87A" />
+                    <Ellipse Width="56"
+                             Height="56"
+                             Fill="{StaticResource ButtonFill}"
+                             Stroke="#54B87A"
+                             StrokeThickness="3" />
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="0">
                         <TextBlock Text="SOUTH"
                                    HorizontalAlignment="Center"
                                    Foreground="#70D295"
                                    FontSize="7"
-                                   FontWeight="Bold" />
-                        <TextBlock Text="{Binding SouthActionText, ElementName=Root}"
-                                   HorizontalAlignment="Center"
-                                   FontSize="15"
-                                   FontWeight="Black" />
+                                   FontWeight="Bold"
+                                   LetterSpacing="0.6" />
+                        <Viewbox Width="44"
+                                 HorizontalAlignment="Center"
+                                 Stretch="Uniform"
+                                 StretchDirection="DownOnly">
+                            <TextBlock Text="{Binding SouthActionText, ElementName=Root}"
+                                       Foreground="{StaticResource ActionText}"
+                                       FontSize="16"
+                                       FontWeight="Black" />
+                        </Viewbox>
                     </StackPanel>
                 </Grid>
-
-                <Border Canvas.Left="224"
-                        Canvas.Top="387"
-                        Width="312"
-                        Height="32"
-                        CornerRadius="16"
-                        Background="#0F1D2C"
-                        BorderBrush="#2CFFFFFF"
-                        BorderThickness="1">
-                    <TextBlock Text="SYSTEM / GUIDE / PS  ·  PAUSE MENU"
-                               HorizontalAlignment="Center"
-                               VerticalAlignment="Center"
-                               Foreground="#8194AA"
-                               FontSize="9"
-                               FontWeight="Bold"
-                               LetterSpacing="0.8" />
-                </Border>
             </Canvas>
         </Viewbox>
     </Grid>

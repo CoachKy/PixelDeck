@@ -18,7 +18,7 @@ public enum SnesButton : ushort
     R = 1 << 11
 }
 
-internal sealed class SnesBus
+internal sealed class SnesBus : I65816Bus
 {
     private const int MasterClocksPerScanline = 1_364;
     private const int MasterClocksPerCpuCycle = 6;
@@ -44,6 +44,9 @@ internal sealed class SnesBus
     private readonly SnesApu _apu = new();
     private readonly SnesDsp1? _dsp1;
     private readonly SnesCx4? _cx4;
+    private readonly Sa1? _sa1;
+    private readonly Sdd1? _sdd1;
+    private readonly SuperFx? _superFx;
     private uint _wramAddress;
     private byte _nmitimen;
     private byte _wrmpya;
@@ -88,6 +91,9 @@ internal sealed class SnesBus
         _cartridge = cartridge;
         _dsp1 = cartridge.HasDsp1 ? new SnesDsp1() : null;
         _cx4 = cartridge.HasCx4 ? new SnesCx4(cartridge) : null;
+        _sa1 = cartridge.HasSa1 ? new Sa1(cartridge) : null;
+        _sdd1 = cartridge.HasSdd1 ? new Sdd1(cartridge) : null;
+        _superFx = cartridge.HasSuperFx ? new SuperFx(cartridge) : null;
         Ppu = new SnesPpu();
         Ppu.IsPal = cartridge.Info.IsPal;
         Ppu.CounterLatchEnabled = (_pio & 0x80) != 0;
@@ -127,11 +133,83 @@ internal sealed class SnesBus
 
     internal byte NmiTimerControl => _nmitimen;
 
+    internal ushort VerticalIrqTarget => _verticalTimer;
+
+    internal ushort HorizontalIrqTarget => _horizontalTimer;
+
+    internal int CurrentScanline => _scanline;
+
+    // --- Transition diagnostics -------------------------------------------
+    // A game that blanks the screen and then waits is polling something. These
+    // count the three things FF3 could be waiting on so a stalled transition
+    // can be attributed without guessing.
+    internal long HvbJoyReads { get; private set; }
+
+    internal long HvbJoyAutoReadBusyReads { get; private set; }
+
+    internal long CounterLatchCount { get; private set; }
+
+    internal long DmaTransferCount { get; private set; }
+
+    internal long HdmaEnableWrites { get; private set; }
+
+    internal byte LastDmaChannelMask { get; private set; }
+
+    internal bool HasSa1 => _sa1 is not null;
+
+    internal long Sa1ExecutedInstructions => _sa1?.ExecutedInstructions ?? 0;
+
+    internal uint Sa1ProgramAddress => _sa1?.ProgramAddress ?? 0;
+
+    internal byte Sa1ControlRegister => _sa1?.ControlRegister ?? 0;
+
+    internal long Sa1DmaCount => _sa1?.DmaCount ?? 0;
+
+    internal Sa1Snapshot Sa1State => _sa1?.Snapshot ?? default;
+
+    internal bool HasSdd1 => _sdd1 is not null;
+
+    internal long Sdd1DecompressionCount => _sdd1?.DecompressionCount ?? 0;
+
+    internal long Sdd1CandidateTransfers => _sdd1?.CandidateTransfers ?? 0;
+
+    internal IReadOnlyList<(uint Source, byte Header)> Sdd1Runs =>
+        _sdd1?.Runs ?? [];
+
+    internal string Sdd1HeaderSummary => _sdd1 is null
+        ? "none"
+        : $"modes[2bpp,4bpp,8bpp,mode7]={string.Join(",", _sdd1.HeaderModeCounts)} " +
+          $"contexts={string.Join(",", _sdd1.HeaderContextCounts)}";
+
+    internal bool HasSuperFx => _superFx is not null;
+
+    internal long SuperFxExecutedInstructions => _superFx?.ExecutedInstructions ?? 0;
+
+    internal bool SuperFxRunning => _superFx?.IsRunning ?? false;
+
+    internal ushort SuperFxProgramCounter => _superFx?.ProgramCounter ?? 0;
+
+    private byte ReadHvbJoy()
+    {
+        var autoReadBusy = _automaticControllerReadRemainingMasterClocks > 0;
+        HvbJoyReads++;
+        if (autoReadBusy)
+        {
+            HvbJoyAutoReadBusyReads++;
+        }
+
+        return (byte)(
+            (_vblank ? 0x80 : 0) |
+            (_masterClockRemainder is <= 2 or >= 1_096 ? 0x40 : 0) |
+            (autoReadBusy ? 0x01 : 0) |
+            (_openBus & 0x3E));
+    }
+
     internal byte MemorySpeedControl => _memorySpeedControl;
 
     internal long TotalMasterClocks => _totalMasterClocks;
 
-    internal void BeginCpuInstructionTiming()
+    public void BeginCpuInstructionTiming()
     {
         _cpuInstructionTimingActive = true;
         _cpuInstructionAccessCount = 0;
@@ -139,7 +217,7 @@ internal sealed class SnesBus
         _cpuInstructionDmaMasterClocks = 0;
     }
 
-    internal CpuInstructionTiming EndCpuInstructionTiming(int minimumCpuCycles)
+    public CpuInstructionTiming EndCpuInstructionTiming(int minimumCpuCycles)
     {
         var cpuCycles = Math.Max(Math.Max(1, minimumCpuCycles), _cpuInstructionAccessCount);
         var internalCycles = cpuCycles - _cpuInstructionAccessCount;
@@ -152,13 +230,13 @@ internal sealed class SnesBus
         return new CpuInstructionTiming(cpuCycles, Math.Max(MasterClocksPerCpuCycle, masterClocks));
     }
 
-    internal byte CpuRead(uint address)
+    public byte CpuRead(uint address)
     {
         RecordCpuAccess(address);
         return Read(address);
     }
 
-    internal void CpuWrite(uint address, byte value)
+    public void CpuWrite(uint address, byte value)
     {
         RecordCpuAccess(address);
         Write(address, value);
@@ -222,6 +300,21 @@ internal sealed class SnesBus
         if (TryReadCx4(bank, offset, out var cx4Value))
         {
             return LatchOpenBus(cx4Value);
+        }
+
+        if (TryReadSa1(bank, offset, out var sa1Value))
+        {
+            return LatchOpenBus(sa1Value);
+        }
+
+        if (TryReadSdd1(bank, offset, out var sdd1Value))
+        {
+            return LatchOpenBus(sdd1Value);
+        }
+
+        if (TryReadSuperFx(bank, offset, out var superFxValue))
+        {
+            return LatchOpenBus(superFxValue);
         }
 
         if (bank is 0x7E or 0x7F)
@@ -301,6 +394,21 @@ internal sealed class SnesBus
             return;
         }
 
+        if (TryWriteSa1(bank, offset, value))
+        {
+            return;
+        }
+
+        if (TryWriteSdd1(bank, offset, value))
+        {
+            return;
+        }
+
+        if (TryWriteSuperFx(bank, offset, value))
+        {
+            return;
+        }
+
         if (TryWriteCx4(bank, offset, value))
         {
             return;
@@ -369,6 +477,8 @@ internal sealed class SnesBus
         masterClocks = Math.Max(MasterClocksPerCpuCycle, masterClocks);
         _totalMasterClocks += masterClocks;
         _apu.ClockMasterClocks(masterClocks);
+        _sa1?.Clock(masterClocks / MasterClocksPerCpuCycle);
+        _superFx?.Clock(masterClocks / MasterClocksPerCpuCycle);
         while (masterClocks > 0)
         {
             var clocksToEndOfScanline = MasterClocksPerScanline - _masterClockRemainder;
@@ -402,9 +512,11 @@ internal sealed class SnesBus
                 Ppu.BeginVBlank();
                 _vblank = true;
                 _nmiFlag = true;
+                VblankCount++;
                 if ((_nmitimen & 0x80) != 0)
                 {
                     _nmiPending = true;
+                    VblankNmiArmed++;
                 }
 
                 if ((_nmitimen & 0x01) != 0)
@@ -419,6 +531,17 @@ internal sealed class SnesBus
                 _scanline = 0;
                 _vblank = false;
                 FrameReady = true;
+
+                // Hardware clears RDNMI bit 7 at the end of VBlank as well as
+                // on read, so the flag never survives into active display.
+                _nmiFlag = false;
+
+                // Scanline 0 is a legal V-count IRQ target, but the wrap
+                // above bypasses the per-scanline check further up, so it
+                // has to be evaluated again here. Final Fantasy III programs
+                // $4209 to 0 and otherwise never receives its raster
+                // interrupt, leaving its main loop polling RDNMI forever.
+                CheckVerticalIrqAtScanlineStart();
             }
         }
     }
@@ -454,10 +577,16 @@ internal sealed class SnesBus
     {
         var horizontalIrqEnabled = (_nmitimen & 0x10) != 0;
         var verticalIrqEnabled = (_nmitimen & 0x20) != 0;
-        if (verticalIrqEnabled &&
-            _scanline == _verticalTimer &&
+        if (!verticalIrqEnabled)
+        {
+            return;
+        }
+
+        VerticalIrqScanlinesArmed++;
+        if (_scanline == _verticalTimer &&
             (!horizontalIrqEnabled || _horizontalTimer == 0))
         {
+            VerticalIrqMatches++;
             _irqFlag = true;
         }
     }
@@ -621,6 +750,230 @@ internal sealed class SnesBus
         Ppu.IsPal = _cartridge.Info.IsPal;
         Ppu.CounterLatchEnabled = (_pio & 0x80) != 0;
         FrameReady = false;
+    }
+
+    /// <summary>
+    /// The S-CPU's view of the SA-1: the shared register file at $2200-$23FF,
+    /// the coprocessor's internal RAM at $3000-$37FF, the backup-RAM window at
+    /// $6000-$7FFF, and the linear backup RAM in banks $40-$4F.
+    /// </summary>
+    /// <summary>
+    /// The Super FX's register file and instruction cache at $3000-$34FF, plus
+    /// the Game Pak RAM it shares with the S-CPU at $6000-$7FFF and banks
+    /// $70-$71. While the GSU owns a resource the S-CPU reads open bus.
+    /// </summary>
+    private bool TryReadSuperFx(byte bank, ushort address, out byte value)
+    {
+        if (_superFx is null)
+        {
+            value = 0;
+            return false;
+        }
+
+        if (bank is 0x70 or 0x71)
+        {
+            value = _superFx.OwnsRam
+                ? _openBus
+                : _superFx.ReadRam((uint)(((bank - 0x70) << 16) | address));
+            return true;
+        }
+
+        if (!IsSystemBank(bank))
+        {
+            value = 0;
+            return false;
+        }
+
+        if (address is >= 0x3000 and <= 0x34FF)
+        {
+            value = _superFx.ReadRegister(address);
+            return true;
+        }
+
+        if (address is >= 0x6000 and <= 0x7FFF)
+        {
+            value = _superFx.OwnsRam ? _openBus : _superFx.ReadRam((uint)(address - 0x6000));
+            return true;
+        }
+
+        if (address >= 0x8000 && _superFx.OwnsRom)
+        {
+            value = _openBus;
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private bool TryWriteSuperFx(byte bank, ushort address, byte value)
+    {
+        if (_superFx is null)
+        {
+            return false;
+        }
+
+        if (bank is 0x70 or 0x71)
+        {
+            if (!_superFx.OwnsRam)
+            {
+                _superFx.WriteRam((uint)(((bank - 0x70) << 16) | address), value);
+            }
+
+            return true;
+        }
+
+        if (!IsSystemBank(bank))
+        {
+            return false;
+        }
+
+        if (address is >= 0x3000 and <= 0x34FF)
+        {
+            _superFx.WriteRegister(address, value);
+            return true;
+        }
+
+        if (address is >= 0x6000 and <= 0x7FFF)
+        {
+            if (!_superFx.OwnsRam)
+            {
+                _superFx.WriteRam((uint)(address - 0x6000), value);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The S-DD1's own registers at $4800-$4807, plus every ROM read, which has
+    /// to pass through the chip's bank mapper rather than the plain LoROM
+    /// projection the cartridge would otherwise apply.
+    /// </summary>
+    private bool TryReadSdd1(byte bank, ushort address, out byte value)
+    {
+        if (_sdd1 is null)
+        {
+            value = 0;
+            return false;
+        }
+
+        if (IsSystemBank(bank) && address is >= 0x4800 and <= 0x4807)
+        {
+            value = _sdd1.ReadRegister(address);
+            return true;
+        }
+
+        if (bank >= 0xC0 || (IsSystemBank(bank) && address >= 0x8000))
+        {
+            value = _sdd1.ReadRom(((uint)bank << 16) | address);
+            return true;
+        }
+
+        value = 0;
+        return false;
+    }
+
+    private bool TryWriteSdd1(byte bank, ushort address, byte value)
+    {
+        if (_sdd1 is null || !IsSystemBank(bank) || address is < 0x4800 or > 0x4807)
+        {
+            return false;
+        }
+
+        _sdd1.WriteRegister(address, value);
+        return true;
+    }
+
+    private bool TryReadSa1(byte bank, ushort address, out byte value)
+    {
+        if (_sa1 is null)
+        {
+            value = 0;
+            return false;
+        }
+
+        if (bank is >= 0x40 and <= 0x4F)
+        {
+            value = _sa1.ReadBackupRam((uint)(((bank - 0x40) << 16) | address));
+            return true;
+        }
+
+        // Banks $C0-$FF are ROM through the super MMC for the S-CPU too, not
+        // the plain LoROM projection the cartridge mapper would apply.
+        if (bank >= 0xC0)
+        {
+            value = _sa1.ReadCartridgeRom(bank, address);
+            return true;
+        }
+
+        if (!IsSystemBank(bank))
+        {
+            value = 0;
+            return false;
+        }
+
+        // The redirected interrupt vectors have to be tested before the ROM
+        // window below, because they live inside it.
+        if (bank == 0x00 && address >= 0xFFEA && _sa1.TryReadSnesVector(address, out value))
+        {
+            return true;
+        }
+
+        switch (address)
+        {
+            case >= 0x2200 and <= 0x23FF:
+                value = _sa1.ReadRegister(address);
+                return true;
+            case >= 0x3000 and <= 0x37FF:
+                value = _sa1.ReadInternalRam((ushort)(address - 0x3000));
+                return true;
+            case >= 0x6000 and <= 0x7FFF:
+                value = _sa1.ReadSnesBackupRamWindow(address);
+                return true;
+            case >= 0x8000:
+                value = _sa1.ReadCartridgeRom(bank, address);
+                return true;
+            default:
+                value = 0;
+                return false;
+        }
+    }
+
+    private bool TryWriteSa1(byte bank, ushort address, byte value)
+    {
+        if (_sa1 is null)
+        {
+            return false;
+        }
+
+        if (bank is >= 0x40 and <= 0x4F)
+        {
+            _sa1.WriteBackupRam((uint)(((bank - 0x40) << 16) | address), value);
+            return true;
+        }
+
+        if (!IsSystemBank(bank))
+        {
+            return false;
+        }
+
+        switch (address)
+        {
+            case >= 0x2200 and <= 0x23FF:
+                _sa1.WriteRegister(address, value);
+                return true;
+            case >= 0x3000 and <= 0x37FF:
+                _sa1.WriteInternalRam((ushort)(address - 0x3000), value);
+                return true;
+            case >= 0x6000 and <= 0x7FFF:
+                _sa1.WriteSnesBackupRamWindow(address, value);
+                return true;
+            default:
+                return false;
+        }
     }
 
     private bool TryReadCx4(byte bank, ushort address, out byte value)
@@ -797,11 +1150,7 @@ internal sealed class SnesBus
         {
             0x4210 => ReadNmiFlag(),
             0x4211 => ReadIrqFlag(),
-            0x4212 => (byte)(
-                (_vblank ? 0x80 : 0) |
-                (_masterClockRemainder is <= 2 or >= 1_096 ? 0x40 : 0) |
-                (_automaticControllerReadRemainingMasterClocks > 0 ? 0x01 : 0) |
-                (_openBus & 0x3E)),
+            0x4212 => ReadHvbJoy(),
             0x4213 => _pio,
             0x4214 => (byte)_divisionQuotient,
             0x4215 => (byte)(_divisionQuotient >> 8),
@@ -880,9 +1229,12 @@ internal sealed class SnesBus
                 _verticalTimer = (ushort)((_verticalTimer & 0x00FF) | ((value & 1) << 8));
                 break;
             case 0x420B:
+                DmaTransferCount++;
+                LastDmaChannelMask = value;
                 PerformDma(value);
                 break;
             case 0x420C:
+                HdmaEnableWrites++;
                 _hdmaEnable = value;
                 break;
             case 0x420D:
@@ -914,6 +1266,11 @@ internal sealed class SnesBus
             var decrement = (control & 0x10) != 0;
             var ppuToCpu = (control & 0x80) != 0;
 
+            // An S-DD1 transfer looks like an ordinary ROM-to-PPU DMA; the chip
+            // substitutes decompressed bytes for the raw ROM contents.
+            var sdd1Transfer = !ppuToCpu &&
+                _sdd1?.TryBeginTransfer(channel, ((uint)aBank << 16) | aAddress) == true;
+
             for (var index = 0; index < transferSize; index++)
             {
                 var aBusAddress = ((uint)aBank << 16) | aAddress;
@@ -921,6 +1278,10 @@ internal sealed class SnesBus
                 if (ppuToCpu)
                 {
                     Write(aBusAddress, Read(bBusAddress));
+                }
+                else if (sdd1Transfer)
+                {
+                    Write(bBusAddress, _sdd1!.ReadTransferByte());
                 }
                 else
                 {
@@ -931,6 +1292,11 @@ internal sealed class SnesBus
                 {
                     aAddress = decrement ? (ushort)(aAddress - 1) : (ushort)(aAddress + 1);
                 }
+            }
+
+            if (sdd1Transfer)
+            {
+                _sdd1!.EndTransfer();
             }
 
             _dmaRegisters[registerBase + 2] = (byte)aAddress;
@@ -1033,6 +1399,12 @@ internal sealed class SnesBus
         return true;
     }
 
+    /// <summary>
+    /// Per-scanline HDMA writes counted by destination PPU register, so an
+    /// effect that renders wrong can be traced to the registers driving it.
+    /// </summary>
+    internal long[] HdmaWritesByRegister { get; } = new long[256];
+
     private void TransferHdmaChannel(int channel)
     {
         var registerBase = channel * 16;
@@ -1059,6 +1431,7 @@ internal sealed class SnesBus
             }
             else
             {
+                HdmaWritesByRegister[bBusAddress & 0xFF]++;
                 Write(bBusAddress, Read(aBusAddress));
             }
         }
@@ -1210,17 +1583,49 @@ internal sealed class SnesBus
         }
     }
 
-    private void LatchPpuCounters() =>
+    private void LatchPpuCounters()
+    {
+        CounterLatchCount++;
         Ppu.LatchCounters(
             (ushort)(_masterClockRemainder / 4),
             (ushort)_scanline);
+    }
 
     private byte ReadNmiFlag()
     {
+        // A game that polls RDNMI in its main loop while its NMI handler also
+        // acknowledges it can starve: the handler consumes the flag before the
+        // poll observes it. Counting both cases separates "the poll never sees
+        // the flag" from "the poll works and the stall is downstream".
+        RdnmiReads++;
+        if (_nmiFlag)
+        {
+            RdnmiReadsWithFlagSet++;
+        }
+
+        if ((_nmitimen & 0x80) != 0)
+        {
+            RdnmiReadsWhileNmiEnabled++;
+        }
+
         var value = (byte)((_nmiFlag ? 0x82 : 0x02) | (_openBus & 0x70));
         _nmiFlag = false;
         return value;
     }
+
+    internal long VerticalIrqScanlinesArmed { get; private set; }
+
+    internal long VerticalIrqMatches { get; private set; }
+
+    internal long VblankCount { get; private set; }
+
+    internal long VblankNmiArmed { get; private set; }
+
+    internal long RdnmiReads { get; private set; }
+
+    internal long RdnmiReadsWithFlagSet { get; private set; }
+
+    internal long RdnmiReadsWhileNmiEnabled { get; private set; }
 
     private byte ReadIrqFlag()
     {

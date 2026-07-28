@@ -34,7 +34,7 @@ internal sealed class Cpu65816
         2, 5, 5, 7, 5, 4, 6, 6, 2, 4, 4, 2, 8, 4, 7, 5
     ];
 
-    private readonly SnesBus _bus;
+    private readonly I65816Bus _bus;
     private ushort _a;
     private ushort _x;
     private ushort _y;
@@ -55,7 +55,7 @@ internal sealed class Cpu65816
     private bool _instructionAccumulatorWas8Bit;
     private bool _instructionIndexWas8Bit;
 
-    public Cpu65816(SnesBus bus)
+    public Cpu65816(I65816Bus bus)
     {
         _bus = bus;
     }
