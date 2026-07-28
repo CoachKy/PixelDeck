@@ -84,6 +84,54 @@ public sealed class N64AudioTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void ResampleProducesStableConstantPcmAfterItsHistoryWindow()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        var processor = new N64AudioProcessor(memory);
+        const short sampleValue = 12_000;
+        for (var index = 0; index < 16; index++)
+        {
+            memory.WriteUInt16(
+                (uint)(0x80002000 + (index * 2)),
+                unchecked((ushort)sampleValue));
+        }
+
+        var commands = new uint[]
+        {
+            0x07000000, 0x00000000, // A_SEGMENT 0 -> 0
+            0x08000000, 0x00000020, // A_SETBUFF in=0x000 count=32
+            0x04000000, 0x00002000, // A_LOADBUFF source PCM
+            0x08000000, 0x01000010, // A_SETBUFF in=0x000 out=0x100 count=16
+            0x05018000, 0x00005000, // A_RESAMPLE A_INIT, 1:1 pitch
+            0x08000000, 0x01000010, // A_SETBUFF out=0x100 count=16
+            0x06000000, 0x00003000  // A_SAVEBUFF -> 0x3000
+        };
+        WriteCommandList(memory, 0x1000, commands);
+
+        processor.Execute(new N64RspTask(
+            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1000, (uint)(commands.Length * 4), 0, 0));
+
+        // A_INIT starts with an empty four-sample history. Once the filter
+        // reaches loaded PCM, unity input must stay at unity without ringing.
+        for (var index = 0; index < 4; index++)
+        {
+            Assert.Equal(
+                0,
+                unchecked((short)memory.ReadUInt16((uint)(0x80003000 + (index * 2)))));
+        }
+
+        for (var index = 4; index < 8; index++)
+        {
+            Assert.InRange(
+                unchecked((short)memory.ReadUInt16((uint)(0x80003000 + (index * 2)))),
+                sampleValue - 1,
+                sampleValue + 1);
+        }
+
+        Assert.Equal(0, processor.UnsupportedCommands);
+    }
+
+    [Fact]
     public void LocalSuperMario64ProducesAudibleAudioWhenPresent()
     {
         var path = N64TestSupport.FindSuperMario64();

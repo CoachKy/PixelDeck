@@ -41,6 +41,7 @@ public partial class EmulatorWindow : Window
     private SnesMachine? _snesMachine;
     private EmulatorAudioOutput? _audioOutput;
     private Stopwatch? _playSession;
+    private readonly N64FrameRateEnforcer _n64FrameRateEnforcer = new();
     private GamepadButton _previousGamepadButtons;
     private GamepadButton _previousPlayerTwoGamepadButtons;
     private bool _pauseChordHeld;
@@ -68,7 +69,7 @@ public partial class EmulatorWindow : Window
         : this()
     {
         _game = game;
-        _saveStateCatalog = new SaveStateCatalog(Path.ChangeExtension(game.ScreenshotCachePath, ".state"));
+        _saveStateCatalog = new SaveStateCatalog(game.SaveStatePath);
     }
 
     private Button[] MainMenuButtons =>
@@ -219,7 +220,15 @@ public partial class EmulatorWindow : Window
                     nextFrameAt = clock.Elapsed;
                 }
 
-                nextFrameAt += GetFrameInterval(currentRate);
+                var frameInterval = GetFrameInterval(currentRate);
+                nextFrameAt += frameInterval;
+                if (_n64Machine is not null && currentRate == 1)
+                {
+                    nextFrameAt = _n64FrameRateEnforcer.BoundCatchUp(
+                        clock.Elapsed,
+                        nextFrameAt,
+                        frameInterval);
+                }
                 var remaining = nextFrameAt - clock.Elapsed;
                 if (remaining > TimeSpan.FromMilliseconds(1))
                 {

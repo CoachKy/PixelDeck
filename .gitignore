@@ -18,6 +18,19 @@
 /Games/SuperNintendo/*
 !/Games/SuperNintendo/README.md
 
+# Battery saves and save states are local user data.
+/Saves/*
+!/Saves/README.md
+!/Saves/Nintendo/
+!/Saves/Nintendo64/
+!/Saves/SuperNintendo/
+/Saves/Nintendo/*
+!/Saves/Nintendo/README.md
+/Saves/Nintendo64/*
+!/Saves/Nintendo64/README.md
+/Saves/SuperNintendo/*
+!/Saves/SuperNintendo/README.md
+
 # Accuracy-test ROMs are installed locally because their redistribution terms vary.
 /tests/PixelDeck.App.Tests/TestRoms/*
 !/tests/PixelDeck.App.Tests/TestRoms/README.md

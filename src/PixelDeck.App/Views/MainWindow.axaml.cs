@@ -18,8 +18,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _gamepadTimer;
     private readonly DispatcherTimer _libraryRefreshTimer;
     private readonly DashboardSoundPlayer _dashboardSounds = new();
-    private readonly GamepadReader _gamepad = new();
-    private readonly GamepadReader _playerTwoGamepad = new();
+    private readonly DashboardGamepadReader _dashboardGamepads = new();
     private readonly HeldButtonRepeater _libraryIndexVerticalRepeater =
         new(GamepadButton.DPadUp | GamepadButton.DPadDown);
     private FileSystemWatcher? _watcher;
@@ -58,8 +57,6 @@ public partial class MainWindow : Window
 
         await viewModel.RefreshAsync();
         ConfigureWatcher(viewModel.GamesFolder);
-        _gamepad.UserIndex = viewModel.SelectedControllerSlot.Index;
-        _playerTwoGamepad.UserIndex = viewModel.SelectedPlayerTwoControllerSlot.Index;
         UpdateControllerConnections(viewModel);
         _clockTimer.Start();
         _gamepadTimer.Start();
@@ -244,10 +241,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        _gamepad.UserIndex = viewModel.SelectedControllerSlot.Index;
-        _playerTwoGamepad.UserIndex = viewModel.SelectedPlayerTwoControllerSlot.Index;
         UpdateControllerConnections(viewModel);
-        var presses = _gamepad.ReadNewPresses(out var buttons);
+        var presses = _dashboardGamepads.ReadNewPresses(out var buttons);
 
         if (_isQuitConfirmationVisible)
         {
@@ -977,6 +972,7 @@ public partial class MainWindow : Window
 
         Show();
         Activate();
+        _dashboardGamepads.Reset();
         if (DataContext is MainViewModel viewModel)
         {
             _dashboardSoundsEnabled = false;

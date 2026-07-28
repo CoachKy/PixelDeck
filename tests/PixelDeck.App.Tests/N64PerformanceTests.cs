@@ -151,6 +151,49 @@ public sealed class N64PerformanceTests(ITestOutputHelper output)
             $"Rendered gameplay ran at {framesPerSecond:0.00} fps; the regression floor is 25 fps.");
     }
 
+    [Fact]
+    public void LocalSuperMario64GraphicsSkippedFramesProvideCatchUpHeadroomWhenPresent()
+    {
+        var path = N64TestSupport.FindSuperMario64();
+        if (path is null)
+        {
+            output.WriteLine("Local Super Mario 64 target is not installed; optional frameskip gate skipped.");
+            return;
+        }
+
+        var machine = N64Machine.Load(path);
+        for (var frame = 0; frame < 420; frame++)
+        {
+            machine.RunFrame();
+        }
+
+        const int measuredFrames = 60;
+        var started = Stopwatch.GetTimestamp();
+        for (var frame = 0; frame < measuredFrames; frame++)
+        {
+            machine.RunFrame(
+                renderGraphics: false,
+                executeGraphicsTasks: false);
+        }
+
+        var elapsed = Stopwatch.GetElapsedTime(started);
+        var framesPerSecond = measuredFrames / elapsed.TotalSeconds;
+        output.WriteLine(
+            $"{measuredFrames} graphics-skipped frames in {elapsed.TotalSeconds:0.000}s = " +
+            $"{framesPerSecond:0.00} fps ({framesPerSecond / N64Machine.NtscFramesPerSecond:P1} of realtime).");
+
+        Assert.Equal(0, machine.Cpu.UnsupportedInstructionCount);
+        if (NesPerformanceTests.IsContinuousIntegration)
+        {
+            return;
+        }
+
+        Assert.True(
+            framesPerSecond > 45,
+            $"Graphics-skipped gameplay ran at {framesPerSecond:0.00} fps; " +
+            "the frame enforcer needs catch-up headroom.");
+    }
+
     private static byte[] CreateBusyLoopCartridgeImage()
     {
         var image = new byte[0x2000];

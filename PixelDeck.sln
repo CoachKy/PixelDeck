@@ -21,6 +21,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{B3E90A7A
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PixelDeck.NesCompatibility", "tools\PixelDeck.NesCompatibility\PixelDeck.NesCompatibility.csproj", "{634CE24A-78DA-40B7-A1BE-27CBE88F02B0}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PixelDeck.N64Compatibility", "tools\PixelDeck.N64Compatibility\PixelDeck.N64Compatibility.csproj", "{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -103,6 +105,18 @@ Global
 		{634CE24A-78DA-40B7-A1BE-27CBE88F02B0}.Release|x64.Build.0 = Release|Any CPU
 		{634CE24A-78DA-40B7-A1BE-27CBE88F02B0}.Release|x86.ActiveCfg = Release|Any CPU
 		{634CE24A-78DA-40B7-A1BE-27CBE88F02B0}.Release|x86.Build.0 = Release|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Debug|x64.Build.0 = Debug|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Debug|x86.Build.0 = Debug|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Release|x64.ActiveCfg = Release|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Release|x64.Build.0 = Release|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Release|x86.ActiveCfg = Release|Any CPU
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -114,5 +128,6 @@ Global
 		{D991AF44-E30D-497E-AF80-96C2FECA9A31} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{6A840A65-F4DD-4F06-ACF7-B8D8D934F4D9} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{634CE24A-78DA-40B7-A1BE-27CBE88F02B0} = {B3E90A7A-713A-4D1C-8CE8-463D93D20A29}
+		{3B74A292-AFB3-49D9-BCE5-DF2F755CC5E8} = {B3E90A7A-713A-4D1C-8CE8-463D93D20A29}
 	EndGlobalSection
 EndGlobal

@@ -419,7 +419,7 @@ internal sealed class SnesPpu
         }
     }
 
-    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 14);
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 15);
 
     internal void SaveState(BinaryWriter writer, int stateVersion)
     {
@@ -490,7 +490,7 @@ internal sealed class SnesPpu
         writer.Write(_windowLogic);
     }
 
-    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 14);
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 15);
 
     internal void LoadState(BinaryReader reader, int stateVersion)
     {

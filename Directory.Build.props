@@ -11,6 +11,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/.codex-test-artifacts/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <!--

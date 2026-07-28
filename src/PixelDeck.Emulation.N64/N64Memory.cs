@@ -85,6 +85,9 @@ public sealed class N64Memory
     public N64Memory(N64Cartridge cartridge)
     {
         _cartridge = cartridge;
+        Eeprom = new byte[cartridge.SaveType == N64SaveType.Eeprom16Kbit
+            ? 2 * 1024
+            : 512];
         CpuTicksPerField = cartridge.VideoRegion == N64VideoRegion.Ntsc
             ? NtscCpuTicksPerField
             : PalCpuTicksPerField;
@@ -99,7 +102,11 @@ public sealed class N64Memory
 
     public byte[] PifRam { get; } = new byte[64];
 
-    public byte[] Eeprom { get; } = new byte[512];
+    /// <summary>
+    /// Cartridge EEPROM with the physical capacity declared by the game:
+    /// 512 bytes for 4-Kbit devices or 2 KiB for 16-Kbit devices.
+    /// </summary>
+    public byte[] Eeprom { get; }
 
     public bool EepromDirty { get; private set; }
 
@@ -1300,20 +1307,23 @@ public sealed class N64Memory
                 if (receiveLength >= 3)
                 {
                     PifRam[responseOffset] = 0x00;
-                    PifRam[responseOffset + 1] = 0x80;
+                    PifRam[responseOffset + 1] =
+                        _cartridge.SaveType == N64SaveType.Eeprom16Kbit
+                            ? (byte)0xC0
+                            : (byte)0x80;
                     PifRam[responseOffset + 2] = 0x00;
                 }
 
                 break;
             case 0x04 when transmitLength >= 2 && receiveLength >= 8:
             {
-                var block = PifRam[commandOffset + 1] & 0x3F;
+                var block = GetEepromBlock(PifRam[commandOffset + 1]);
                 Eeprom.AsSpan(block * 8, 8).CopyTo(PifRam.AsSpan(responseOffset, 8));
                 break;
             }
             case 0x05 when transmitLength >= 10:
             {
-                var block = PifRam[commandOffset + 1] & 0x3F;
+                var block = GetEepromBlock(PifRam[commandOffset + 1]);
                 PifRam.AsSpan(commandOffset + 2, 8).CopyTo(Eeprom.AsSpan(block * 8, 8));
                 EepromDirty = true;
                 if (receiveLength > 0)
@@ -1328,6 +1338,11 @@ public sealed class N64Memory
                 break;
         }
     }
+
+    private int GetEepromBlock(byte address) =>
+        _cartridge.SaveType == N64SaveType.Eeprom16Kbit
+            ? address
+            : address & 0x3F;
 
     private static uint Combine(uint original, uint value, uint mask) =>
         (original & ~mask) | (value & mask);

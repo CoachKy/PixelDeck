@@ -200,7 +200,10 @@ internal sealed class Sdd1Decompressor
     private int _highContextMask;
     private int _lowContextMask;
 
-    private int _outputByteIndex;
+    private readonly byte[] _output = new byte[2];
+    private int _outputCount;
+    private int _outputIndex;
+    private int _iterationIndex;
 
     public void Begin(Sdd1 chip, uint sourceAddress)
     {
@@ -227,64 +230,88 @@ internal sealed class Sdd1Decompressor
         Array.Clear(_contextState);
         Array.Clear(_contextMps);
         Array.Clear(_previousBits);
-        _outputByteIndex = 0;
+        _iterationIndex = 0;
+        _outputCount = 0;
+        _outputIndex = 0;
         InputBytesConsumed = 2;
     }
 
-    /// <summary>Produces one decompressed byte, eight decoded bits at a time.</summary>
+    /// <summary>Produces one decompressed byte.</summary>
     public byte ReadByte()
     {
-        var value = 0;
-        for (var index = 0; index < 8; index++)
+        if (_outputIndex >= _outputCount)
         {
-            var plane = PlaneForBit(index);
-            var previous = _previousBits[plane];
-            var context = ((plane & 1) << 4) |
-                          ((previous & _highContextMask) >> 5) |
-                          (previous & _lowContextMask);
-            var bit = DecodeBit(context & 0x1F);
-
-            // Each plane remembers the bits it has produced; they are what the
-            // context model predicts from next time round.
-            _previousBits[plane] = (ushort)(((previous << 1) | bit) & 0x01FF);
-            value = (value << 1) | bit;
+            DecodeIteration();
         }
 
-        _outputByteIndex++;
-        return (byte)value;
+        return _output[_outputIndex++];
     }
 
     /// <summary>
-    /// Chooses which bitplane supplies a given bit.
+    /// Decodes one iteration of the output stage.
     /// </summary>
     /// <remarks>
-    /// In the three paired modes a whole byte comes from one bitplane, matching
-    /// how the SNES stores a tile row as consecutive per-plane bytes; the two
-    /// planes of a pair alternate byte by byte. The modes differ only in which
-    /// pair is active, and that advances every 32 bytes — one tile's worth.
-    /// The fourth mode is per-pixel instead: each bit of the byte comes from a
-    /// different plane.
+    /// The three paired modes decode a plane pair together: for each of eight
+    /// pixels a bit is taken for the low plane and then the high plane, and the
+    /// iteration emits the two resulting bytes. That interleaving matters
+    /// beyond byte layout, because the probability model advances with every
+    /// decoded bit — decoding a whole byte of one plane first would feed every
+    /// later bit from the wrong state. A pair covers eight iterations, which is
+    /// the sixteen bytes the SNES uses for one plane pair of a tile.
+    /// The fourth mode is per-pixel instead: one byte whose eight bits each
+    /// come from a different plane.
     /// </remarks>
-    private int PlaneForBit(int bitIndex)
+    private void DecodeIteration()
     {
+        _outputIndex = 0;
+
         if (_bitplaneMode == 3)
         {
-            return bitIndex;
+            var pixel = 0;
+            for (var plane = 0; plane < 8; plane++)
+            {
+                pixel = (pixel << 1) | DecodePlaneBit(plane);
+            }
+
+            _output[0] = (byte)pixel;
+            _outputCount = 1;
+            _iterationIndex++;
+            return;
         }
 
-        // The pair advances every 32 output bytes. A 16-byte stride matches the
-        // SNES tile layout more obviously, but measures worse: it drops the
-        // decoded zero-byte share from 31% to 0.2%, and real tile data is
-        // mostly transparent. The plane index also selects the context, so a
-        // wrong stride corrupts the decode rather than just the layout.
         var pairBase = _bitplaneMode switch
         {
-            1 => (_outputByteIndex / 32 * 2) & 7,
-            2 => (_outputByteIndex / 32 & 1) * 2,
+            1 => (_iterationIndex / 8 * 2) & 7,
+            2 => (_iterationIndex / 8 & 1) * 2,
             _ => 0
         };
 
-        return pairBase + (_outputByteIndex & 1);
+        int low = 0, high = 0;
+        for (var index = 0; index < 8; index++)
+        {
+            low = (low << 1) | DecodePlaneBit(pairBase);
+            high = (high << 1) | DecodePlaneBit(pairBase + 1);
+        }
+
+        _output[0] = (byte)low;
+        _output[1] = (byte)high;
+        _outputCount = 2;
+        _iterationIndex++;
+    }
+
+    /// <summary>
+    /// Decodes one bit for a bitplane, using that plane's own history as the
+    /// prediction context and folding the result back into it.
+    /// </summary>
+    private int DecodePlaneBit(int plane)
+    {
+        var previous = _previousBits[plane];
+        var context = ((plane & 1) << 4) |
+                      ((previous & _highContextMask) >> 5) |
+                      (previous & _lowContextMask);
+        var bit = DecodeBit(context & 0x1F);
+        _previousBits[plane] = (ushort)(((previous << 1) | bit) & 0x01FF);
+        return bit;
     }
 
     /// <summary>

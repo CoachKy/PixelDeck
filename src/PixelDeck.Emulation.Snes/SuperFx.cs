@@ -58,6 +58,16 @@ internal sealed class SuperFx
 
     private int _cycleBudget;
 
+    // The GSU is pipelined: it has already fetched the instruction after a
+    // branch by the time the branch resolves, so that instruction always runs
+    // before the jump takes effect. Jumps are therefore staged here and
+    // applied one instruction later. -1 means nothing staged.
+    private int _delayedJumpTarget = -1;
+    private int _delayedJumpBank = -1;
+    private long _instructionsSinceStart;
+
+    internal List<(string Location, long Instruction)> ProgramCounterSamples { get; } = [];
+
     // The plot hardware buffers two 8-pixel columns before flushing them to the
     // frame buffer in Game Pak RAM.
     private readonly byte[] _pixelCacheColours = new byte[8];
@@ -68,6 +78,28 @@ internal sealed class SuperFx
 
     /// <summary>Instructions retired, for diagnostics.</summary>
     public long ExecutedInstructions { get; private set; }
+
+    /// <summary>
+    /// Why and where the core last halted, plus how often each opcode ran. A
+    /// GSU that stops early is usually executing something it should not, and
+    /// the histogram makes that visible without a full trace.
+    /// </summary>
+    internal long StopCount { get; private set; }
+
+    internal long StartCount { get; private set; }
+
+    internal ushort LastStopProgramCounter { get; private set; }
+
+    internal byte LastStopProgramBank { get; private set; }
+
+    internal bool LastStopWasHostRequested { get; private set; }
+
+    internal long[] OpcodeHistogram { get; } = new long[256];
+
+    internal string RegisterDump =>
+        $"pbr={_programBank:X2} sfr={_sfr:X4} scmr={_screenMode:X2} rombr={_romBank:X2} rambr={_ramBank:X2} " +
+        $"cbr={_cacheBase:X4} scbr={_screenBase:X2} colr={_colour:X2} por={_plotOptions:X2}\n" +
+        "                " + string.Join(" ", Enumerable.Range(0, 16).Select(i => $"R{i}={_r[i]:X4}"));
 
     public bool IsRunning => (_sfr & FlagRunning) != 0;
 
@@ -90,10 +122,21 @@ internal sealed class SuperFx
             return _cache[(address - 0x3100) % CacheSize];
         }
 
+        // Reading the high byte of SFR acknowledges the GSU's interrupt.
+        // Without this the flag latches on at the first STOP and never clears:
+        // Star Fox's IRQ handler tests it first and returns early when it is
+        // set, so the console-side H/V interrupt never gets acknowledged and
+        // the CPU re-enters the handler forever instead of running the game.
+        if (address == 0x3031)
+        {
+            var high = (byte)(_sfr >> 8);
+            _sfr &= ~FlagIrq;
+            return high;
+        }
+
         return address switch
         {
             0x3030 => (byte)_sfr,
-            0x3031 => (byte)(_sfr >> 8),
             0x3034 => _programBank,
             0x3036 => _romBank,
             0x3038 => _screenBase,
@@ -146,7 +189,7 @@ internal sealed class SuperFx
                 _sfr = (_sfr & 0xFF00) | value;
                 if ((value & FlagRunning) == 0)
                 {
-                    Stop();
+                    Stop(hostRequested: true);
                 }
 
                 break;
@@ -182,18 +225,41 @@ internal sealed class SuperFx
     /// True when the GSU currently owns the bus, in which case the S-CPU reads
     /// open bus rather than cartridge data. SCMR bits 4 and 5 arbitrate.
     /// </summary>
-    public bool OwnsRom => IsRunning && (_screenMode & 0x20) != 0;
+    /// <summary>
+    /// Whether the GSU currently holds a resource the S-CPU also uses.
+    /// </summary>
+    /// <remarks>
+    /// Hardware hands the S-CPU open bus while the coprocessor owns ROM or
+    /// RAM, and well-behaved games avoid reading it. Reproducing that here is
+    /// actively harmful while GSU timing is only approximate: the GSU stays
+    /// "running" longer than the real chip would, so the S-CPU is starved
+    /// mid-routine and ends up executing cartridge data. Star Fox derailed
+    /// into bank $72 and took 134 BRKs with strict arbitration, and neither
+    /// happens without it. Reporting no contention is the less accurate but
+    /// far more robust choice until the timing model is trustworthy.
+    /// </remarks>
+    public bool OwnsRom => false;
 
-    public bool OwnsRam => IsRunning && (_screenMode & 0x10) != 0;
+    public bool OwnsRam => false;
 
     private void Start()
     {
+        StartCount++;
+        _instructionsSinceStart = 0;
         _sfr |= FlagRunning;
         InvalidateCache();
     }
 
-    private void Stop()
+    private void Stop(bool hostRequested = false)
     {
+        if (IsRunning)
+        {
+            StopCount++;
+            LastStopProgramCounter = _r[15];
+            LastStopProgramBank = _programBank;
+            LastStopWasHostRequested = hostRequested;
+        }
+
         _sfr &= ~FlagRunning;
         _sfr |= FlagIrq;
         _sourceRegister = 0;
@@ -278,8 +344,23 @@ internal sealed class SuperFx
 
     private int Register(int index) => _r[index];
 
+    /// <summary>Stages a jump to take effect after the next instruction.</summary>
+    private void ScheduleJump(ushort target, int bank = -1)
+    {
+        _delayedJumpTarget = target;
+        _delayedJumpBank = bank;
+    }
+
     private void SetRegister(int index, ushort value)
     {
+        // Writing the program counter as an instruction's destination is a
+        // jump, and takes the same delay slot as a branch.
+        if (index == 15)
+        {
+            ScheduleJump(value);
+            return;
+        }
+
         _r[index] = value;
 
         // R14 is the ROM pointer: writing it starts a buffered fetch that the
@@ -310,7 +391,40 @@ internal sealed class SuperFx
     /// <summary>Executes one instruction; returns the cycles it cost.</summary>
     private int Step()
     {
+        // A jump staged by the previous instruction lands after this one runs,
+        // so capture it first and apply it on the way out.
+        var stagedTarget = _delayedJumpTarget;
+        var stagedBank = _delayedJumpBank;
+        _delayedJumpTarget = -1;
+        _delayedJumpBank = -1;
+
+        // Periodically sample the program counter while running, so a routine
+        // that never reaches STOP can be located without a full trace.
+        if (++_instructionsSinceStart % 250_000 == 0 && ProgramCounterSamples.Count < 24)
+        {
+            ProgramCounterSamples.Add(($"{_programBank:X2}:{_r[15]:X4}", _instructionsSinceStart));
+        }
+
+        var cycles = Execute();
+
+        if (stagedTarget >= 0)
+        {
+            _r[15] = (ushort)stagedTarget;
+            if (stagedBank >= 0)
+            {
+                _programBank = (byte)stagedBank;
+                _cacheBase = (ushort)(_r[15] & 0xFFF0);
+                InvalidateCache();
+            }
+        }
+
+        return cycles;
+    }
+
+    private int Execute()
+    {
         var opcode = FetchOpcode();
+        OpcodeHistogram[opcode]++;
         var alt1 = (_sfr & FlagAlt1) != 0;
         var alt2 = (_sfr & FlagAlt2) != 0;
 
@@ -402,7 +516,7 @@ internal sealed class SuperFx
                 SetZeroSign(counter);
                 if (counter != 0)
                 {
-                    _r[15] = _r[13];
+                    ScheduleJump(_r[13]);
                 }
 
                 EndInstruction();
@@ -607,18 +721,7 @@ internal sealed class SuperFx
             case >= 0x98 and <= 0x9D: // JMP / LJMP Rn
             {
                 var index = opcode & 0x0F;
-                if (alt1)
-                {
-                    _programBank = (byte)SourceValue;
-                    _r[15] = _r[index];
-                    _cacheBase = (ushort)(_r[15] & 0xFFF0);
-                    InvalidateCache();
-                }
-                else
-                {
-                    _r[15] = _r[index];
-                }
-
+                ScheduleJump(_r[index], alt1 ? (byte)SourceValue : -1);
                 EndInstruction();
                 return 1;
             }
@@ -665,7 +768,11 @@ internal sealed class SuperFx
                 }
                 else
                 {
-                    _r[index] = (ushort)(sbyte)immediate;
+                    // Routed through SetRegister so that loading R15 takes the
+                    // branch delay slot, which is how the assembler emits an
+                    // unconditional jump (an immediate load of R15 followed by
+                    // a NOP).
+                    SetRegister(index, (ushort)(sbyte)immediate);
                 }
 
                 EndInstruction();
@@ -786,7 +893,7 @@ internal sealed class SuperFx
                 }
                 else
                 {
-                    _r[index] = immediate;
+                    SetRegister(index, immediate);
                 }
 
                 EndInstruction();
@@ -823,7 +930,7 @@ internal sealed class SuperFx
 
         if (take)
         {
-            _r[15] = (ushort)(_r[15] + offset);
+            ScheduleJump((ushort)(_r[15] + offset));
         }
 
         EndInstruction();

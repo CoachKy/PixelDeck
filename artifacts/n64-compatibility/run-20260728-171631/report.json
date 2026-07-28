@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "pixel64Version": "0.9.010",
+  "startedAtUtc": "2026-07-28T17:16:33.498786+00:00",
+  "completedAtUtc": "2026-07-28T17:16:40.6904063+00:00",
+  "configuration": {
+    "gamesFolder": "C:\\GitHub\\PixelDeck\\Games\\Nintendo64",
+    "fieldsPerGame": 600,
+    "parallelism": 4,
+    "filter": "Mario 64",
+    "captureFlaggedFrames": false
+  },
+  "summary": {
+    "total": 1,
+    "uniqueImages": 1,
+    "passed": 1,
+    "warnings": 0,
+    "failed": 0,
+    "invalid": 0
+  },
+  "hardwareProfiles": [
+    {
+      "cic": "Cic6102",
+      "region": "Ntsc",
+      "total": 1,
+      "passed": 1,
+      "warnings": 0,
+      "failed": 0
+    }
+  ],
+  "blockers": [],
+  "games": [
+    {
+      "relativePath": "Super Mario 64 (USA).z64",
+      "fileName": "Super Mario 64 (USA).z64",
+      "sha256": "17CE077343C6133F8C9F2D6D6D9A4AB62C8CD2AA57C40AEA1F490B4C8BB21D91",
+      "status": "Pass",
+      "title": "SUPER MARIO 64",
+      "gameCode": "NSME",
+      "region": "Ntsc",
+      "cic": "Cic6102",
+      "saveType": "Eeprom4Kbit",
+      "sourceByteOrder": "BigEndian",
+      "isVerifiedTarget": true,
+      "reachedCartridgeEntryPoint": true,
+      "fieldsCompleted": 600,
+      "hostFieldsPerSecond": 85.7181160895304,
+      "p99FieldMilliseconds": 40.5344,
+      "instructionsExecuted": 469531250,
+      "programCounter": 2149871068,
+      "graphicsTasks": 197,
+      "audioTasks": 579,
+      "graphicsCommands": 543216,
+      "unsupportedGraphicsCommands": 0,
+      "unsupportedGraphicsOpcodes": "",
+      "detectedMicrocode": "Fast3d",
+      "graphicsBackend": "Pixel64 Fast3D software renderer",
+      "rdpOtherModeHigh": 12069888,
+      "rdpOtherModeLow": 252329984,
+      "rdpCycleType": 3,
+      "alphaPixelsRejected": 0,
+      "framebufferPixelsBlended": 1695403,
+      "unsupportedTextureFormats": "",
+      "audioCommands": 104996,
+      "unsupportedAudioCommands": 0,
+      "unsupportedAudioOpcodes": "",
+      "verticalInterrupts": 593,
+      "audioDmas": 579,
+      "controllerPolls": 197,
+      "maximumDistinctColors": 3479,
+      "distinctCheckpointFrames": 15,
+      "audioSamples": 618880,
+      "audioPeak": 1,
+      "droppedAudioSamples": 0,
+      "saveStateDeterministic": true,
+      "capturePath": null,
+      "findings": []
+    }
+  ]
+}

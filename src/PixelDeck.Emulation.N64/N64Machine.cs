@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -22,13 +23,20 @@ public sealed class N64Machine
     private readonly byte[] _cartridgeIdentity;
     private readonly string? _savePath;
     private readonly Fast3dRenderer _renderer;
+    [SuppressMessage(
+        "Performance",
+        "CA1859:Use concrete types when possible for improved performance",
+        Justification = "This is the intentional graphics-backend boundary for future conformant RDP implementations.")]
+    private readonly IN64GraphicsBackend _graphicsBackend;
     private readonly N64AudioProcessor _audioProcessor;
+    private bool _executeGraphicsTasks = true;
 
     private N64Machine(N64Cartridge cartridge, string? savePath)
     {
         Cartridge = cartridge;
         Memory = new N64Memory(cartridge);
         _renderer = new Fast3dRenderer(Memory);
+        _graphicsBackend = _renderer;
         _audioProcessor = new N64AudioProcessor(Memory);
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);
         _cartridgeIdentity = SHA256.HashData(cartridge.Rom);
@@ -72,6 +80,8 @@ public sealed class N64Machine
 
     public N64RspTask? LastGraphicsTask { get; private set; }
 
+    public IN64GraphicsBackend GraphicsBackend => _graphicsBackend;
+
     public Fast3dRenderer Renderer => _renderer;
 
     public N64AudioProcessor AudioProcessor => _audioProcessor;
@@ -98,10 +108,33 @@ public sealed class N64Machine
 
     public ReadOnlySpan<uint> RunFrame()
     {
-        RunInstructions(Memory.CpuTicksPerField);
-        RenderVideoInterface();
-        FrameNumber++;
-        return CurrentFrame;
+        return RunFrame(renderGraphics: true, executeGraphicsTasks: true);
+    }
+
+    /// <summary>
+    /// Advances a complete video field. A host that misses its real-time
+    /// deadline may suppress raster work or skip that field's graphics task
+    /// completely while CPU, audio, input, interrupts, and RSP completion
+    /// continue at the cartridge cadence.
+    /// </summary>
+    public ReadOnlySpan<uint> RunFrame(
+        bool renderGraphics,
+        bool executeGraphicsTasks = true)
+    {
+        _graphicsBackend.RasterizationEnabled = renderGraphics;
+        _executeGraphicsTasks = executeGraphicsTasks;
+        try
+        {
+            RunInstructions(Memory.CpuTicksPerField);
+            RenderVideoInterface();
+            FrameNumber++;
+            return CurrentFrame;
+        }
+        finally
+        {
+            _graphicsBackend.RasterizationEnabled = true;
+            _executeGraphicsTasks = true;
+        }
     }
 
     public void RunInstructions(int count)
@@ -405,7 +438,11 @@ public sealed class N64Machine
             case 1:
                 GraphicsTasksSubmitted++;
                 LastGraphicsTask = task;
-                _renderer.Execute(task);
+                if (_executeGraphicsTasks)
+                {
+                    _graphicsBackend.Execute(task);
+                }
+
                 Memory.CompleteRspTask();
                 Memory.CompleteDisplayProcessor();
                 break;

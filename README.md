@@ -72,13 +72,13 @@ PixelDeck uses SDL's standardized gamepad layer on Windows and Linux, including 
 
 Both local controller ports are active during NES, SNES, and Nintendo 64 gameplay; Player 1 controls the dashboard, while either controller can open and operate the in-game pause menu. Nintendo 64 uses the same P1/P2 device assignments and preserves the physical analog stick instead of reducing it to a digital direction; the right stick supplies the four C buttons. Right Trigger / R2 is reserved for 2X play speed on NES and SNES: hold it on either controller and release it to return immediately to normal speed. NES and SNES now share the same 60.0988 Hz absolute host clock and bounded audio-queue feedback at normal speed; fast-forward targets exactly 120.1976 emulated frames per second. NES mono and SNES stereo audio remain active during fast-forward, and rate changes preserve queued samples instead of inserting a silence discontinuity. PixelDeck consumes two emulated audio frames per host frame so music and effects run at twice the speed and pitch without accumulating a delayed queue. Nintendo removes the original eight-sprites-per-scanline limit by default, preventing composite characters from flickering in crowded scenes such as Zelda II towns. The `Remove 8-sprite limit` setting can be disabled when hardware-accurate flicker is preferred. NES accuracy controls select the common RP2C02G or an early RP2C02B-or-older PPU, opt into deterministic electrical OAM decay, and choose a stable or collision-prone CPU/PPU OAM phase. Settings are stored locally in `%LOCALAPPDATA%\PixelDeck\settings.json`.
 
-Inside the emulator, the controller's system button (Xbox Guide or PlayStation PS) opens the pause menu. Escape and Select + Start (View + Menu or Create + Options) are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save opens a per-game slot list with a new-slot choice and overwrite confirmation for existing slots. Load lists the game's existing slots and remains disabled when none exist. Legacy single-state files are preserved as numbered slots. Save states are cartridge-validated and stored locally beneath `Games/.pixeldeck`.
+Inside the emulator, the controller's system button (Xbox Guide or PlayStation PS) opens the pause menu. Escape and Select + Start (View + Menu or Create + Options) are keyboard/controller fallbacks. The menu can resume, save state, load state, reset the cartridge, or quit to the dashboard. Save opens a per-game slot list with a new-slot choice and overwrite confirmation for existing slots. Load lists the game's existing slots and remains disabled when none exist. Legacy single-state files are preserved as numbered slots. Save states are cartridge-validated and stored under the sibling `Saves` folder in `Nintendo`, `SuperNintendo`, or `Nintendo64`, preserving any nested game-folder layout.
 
 ## NES core status
 
 The in-repository core implements all 256 2A03 CPU opcode encodings, including the stable unofficial instructions and JAM behavior, controller ports, parity-correct OAM DMA, observable indexed dummy reads, the NMOS read/write/write sequence for memory-modifying instructions, soft-reset behavior, the main PPU registers and renderer, the five NES APU audio channels, save states, and cartridge mappers 0 (NROM), 1 (MMC1), 2 (UxROM), 3 (CNROM), 4 (MMC3), 5 (MMC5), 7 (AxROM), 8 (Super Magic Card mode 4), 9 (MMC2), 10 (MMC4), 11 (Color Dreams), 13 (CPROM), 15 (K-1029/K-1030P multicart), 19 (Namco 129/163), 21/22/23 (Konami VRC2/VRC4), 32 (Irem G-101), 33 (Taito TC0190), 34 (BNROM/NINA), 41 (Caltron), 64 (Tengen RAMBO-1), 66 (GxROM), 69 (Sunsoft FME-7/5B), 71 (Camerica), 75 (VRC1), 79 (NINA-03/06), 90 (J.Y. Company ASIC), 113, 118 (TxSROM), 119 (TQROM), 228, 232 (Camerica Quattro), and 240 (expansion-space GNROM). MMC5 includes its four PRG and CHR banking modes, protected work RAM, independent background/sprite CHR selection, CIRAM/ExRAM/fill nametable sources, extended attributes, scanline and PCM IRQs, multiplier, two pulse channels, 8-bit PCM, and mapper state restoration. MMC5 vertical split rendering remains outside the current compatibility envelope. VRC2/VRC4 support includes their board-specific address-line permutations, PRG/CHR banking, mirroring, VRC2 latch, VRC4 CPU/scanline IRQs, and mapper state restoration. RAMBO-1 includes its extended PRG/CHR modes and both filtered-A12 and CPU-cycle IRQ modes. A shared CPU-cycle scheduler advances the APU and cartridge timers once and the PPU three times for every CPU bus read, write, or idle cycle. It keeps distinct NMI, APU IRQ, and cartridge IRQ phases for instruction-boundary polling and implements NMI hijacking of BRK/IRQ entry. OAM and DMC DMA arbitrate the same get/put bus phases, including overlapping transfers, continuous controller-port reads, and simultaneous internal APU/controller plus external cartridge reads when the 2A03 bus collision selects both. The CPU data bus preserves the undriven controller pins, unmapped internal-I/O reads, and APU-status bit 5. The PPU produces each visible pixel on its individual dot from background pattern/attribute shift registers and active sprite counters/shifters. Background fetches, scrolling increments and copies, next-line sprite evaluation, and sprite pattern fetches run in their hardware rendering windows. MMC3 and RAMBO-1 see the resulting fetch addresses on every PPU dot instead of a synthetic scanline signal. Both Sharp/new and NEC/old zero-latch IRQ behaviors are implemented; Auto mode selects NES 2.0 mapper 4 submapper 0 or 4 metadata, and Dashboard Settings provides an override for ambiguous legacy iNES images. The dashboard also inspects RAM sizes, trainer, timing region, and default input device, sanitizes undefined fields in archaic iNES headers, and disables Play with an explicit compatibility status when the cartridge variant is unsupported.
 
-Battery-backed cartridge RAM is persisted independently from save states under `Games/.pixeldeck/saves`. Audio is mixed to a 48 kHz mono stream and played through the default Windows output device. Pulse sweep/envelope, triangle, noise, CPU-arbitrated DMC sample fetching, frame IRQs, and DMC IRQs are implemented and included in save states. Initial DMC fetches observe the hardware two-or-three-cycle phase delay instead of beginning immediately. The mixer uses a continuous soft-knee output limiter instead of hard clipping.
+Battery-backed cartridge RAM is persisted independently from save states under the sibling `Saves` folder. NES and SNES battery files use `.sav`; N64 files use `.eep`, `.sra`, or `.fla` according to the cartridge's storage type. Existing hashed files beneath `Games/.pixeldeck` are migrated without overwriting files already present in the new location. Audio is mixed to a 48 kHz mono stream and played through the default Windows output device. Pulse sweep/envelope, triangle, noise, CPU-arbitrated DMC sample fetching, frame IRQs, and DMC IRQs are implemented and included in save states. Initial DMC fetches observe the hardware two-or-three-cycle phase delay instead of beginning immediately. The mixer uses a continuous soft-knee output limiter instead of hard clipping.
 
 The automated NES accuracy baseline passes Blargg's complete official/unofficial instruction suite, all eight primary APU tests, and all ten PPU vblank/NMI tests (20 baseline ROMs). Expanded validation also passes the official and unofficial instruction-timing ROMs, the four instruction-misc/dummy-read ROMs, both CPU dummy-write ROMs, both CPU reset ROMs, all five `cpu_interrupts_v2` ROMs, all six APU power/reset ROMs, PPU open-bus decay, the extended PPU read-buffer/DMA test, OAM read and randomized OAM stress, and all six MMC3 IRQ ROMs across their appropriate Sharp/new and NEC/old modes, including exact scanline-phase timing. The five visual sprite-overflow ROMs pass their basics, details, exact timing, diagonal-bug, and live-emulation checks; all eleven sprite-zero-hit ROMs also pass, including alignment, clipping, 8x16 sprites, and edge timing.
 
@@ -128,7 +128,7 @@ SNES keyboard additions are A/S for X/Y and Q/W for L/R. All eight SNES buttons 
 
 ## Nintendo 64 core status
 
-Pixel64 0.4.006 opens the cartridge-attempt envelope of PixelDeck's
+Pixel64 0.9.011 opens the cartridge-attempt envelope of PixelDeck's
 in-repository Nintendo 64 core. Every structurally valid big-endian `.z64`,
 byte-swapped `.v64`, and little-endian `.n64` image discovered in
 `Games/Nintendo64` can now be launched without modifying the source file.
@@ -138,32 +138,43 @@ launching another title is an attempt, not a compatibility claim.
 The core reaches the real cartridge scheduler, handles the target's paired
 64 KiB TLB mapping and FR=0 floating-point register mode, services SP/DP and AI
 tasks, walks segmented Fast3D display lists, transforms and rasterizes
-triangles, copies texture loads into persistent 4 KiB TMEM, clips polygons in
-homogeneous coordinates, and honors the RDP render mode when comparing or
-updating depth. Fast3D clip-space Y now maps into the framebuffer's top-left
-coordinate system with matching front/back winding, so the title and castle
-grounds render upright. Timed SI DMA re-runs the resident PIF controller command
-on every read. A state-driven local trace presses Start after the title becomes
-interactive, selects Mario A, clears the opening dialog, reaches castle area 1,
-leaves the intro action, and proves that holding the analog stick moves Mario
-for 120 additional fields without an unknown CPU or Fast3D opcode.
+triangles, copies texture loads into persistent 4 KiB TMEM with row and
+word-half swizzling, clips polygons in homogeneous coordinates, and honors the
+RDP render mode when comparing or updating depth. Its software renderer applies
+the programmed color combiner to textured and untextured spans, tracks the RDP
+blend/fog colors, performs alpha comparison, and reads the framebuffer for
+programmed blender cycles. Fast3D clip-space Y maps into the framebuffer's
+top-left coordinate system with matching front/back winding, so the title and
+castle grounds render upright. Timed SI DMA re-runs the resident PIF controller
+command on every read. A state-driven local trace presses Start after the title
+becomes interactive, selects Mario A, clears the opening dialog, reaches castle
+area 1, leaves the intro action, and proves that holding the analog stick moves
+Mario for 120 additional fields without an unknown CPU or Fast3D opcode.
 
 Pixel64 is not yet graphics-accurate or generally game-compatible. An
 unverified game may stop on CPU, RSP, RDP, or platform behavior the core does
 not implement yet; PixelDeck reports that error in the emulator overlay instead
 of rejecting the cartridge from the library. The upright
-castle grounds execute and accept controller input, but exact TMEM row/swizzle
-addressing, lighting, combining, blending, and VI presentation remain
-incomplete; Mario can still appear as a white silhouette and isolated texture
-strips can be corrupted. The library therefore continues to mark the target
-`PARTIAL`. PixelDeck's existing gallery, alphabetical sections, title count,
-play history, version footer, fullscreen pause menu, state slots, and assigned
-Player 1/Player 2 controller ports are reused unchanged.
+castle grounds execute and accept controller input, but exact RDP coverage,
+dithering, two-cycle blending, lighting, and VI presentation remain incomplete;
+additional visual errors are expected. The library therefore continues to mark
+the target `PARTIAL`. The machine now submits graphics work through an
+`IN64GraphicsBackend` boundary, allowing a conformant renderer to be added
+without replacing the scheduler. PixelDeck's existing gallery, alphabetical
+sections, title count, play history, version footer, fullscreen pause menu,
+state slots, and assigned Player 1/Player 2 controller ports are reused
+unchanged.
 
 The shared SDL/XInput controller snapshot preserves raw left-stick magnitude
 for the N64 analog stick and maps the right stick to the four C-buttons. A,
 B, Start, Z, L, and R use the existing physical controller assignments and
 shoulder/trigger layout. Pixel64's dedicated remapping page is not yet
-available. See [Pixel64 0.4 certification](docs/PIXEL64-0.4-CERTIFICATION.md).
+available. Run the read-only
+[Pixel64 compatibility laboratory](docs/PIXEL64-COMPATIBILITY-LAB.md) to audit
+the local cartridge collection and produce per-title CPU, graphics, texture,
+audio, performance, and save-state evidence. The earlier release envelope is
+recorded in [Pixel64 0.4 certification](docs/PIXEL64-0.4-CERTIFICATION.md).
+The component and conformance plan is tracked in the
+[RMG-aligned Pixel64 roadmap](docs/PIXEL64-RMG-ROADMAP.md).
 
 Set `PIXELDECK_GAMES_FOLDER` to override the default games directory.

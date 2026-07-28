@@ -48,6 +48,7 @@ public sealed class SnesMachineTests
     [InlineData(11)]
     [InlineData(12)]
     [InlineData(13)]
+    [InlineData(14)]
     public void PreviousStateMigratesToTheCurrentCore(int stateVersion)
     {
         var gamePath = CreateSyntheticLoRom();
@@ -383,6 +384,45 @@ public sealed class SnesMachineTests
             bus.Write(0x004200, 0x80);
 
             Assert.True(bus.ConsumeNmi());
+        }
+        finally
+        {
+            File.Delete(gamePath);
+        }
+    }
+
+    [Fact]
+    public void RdnmiPollingCanObserveVblankBeforeNmiHandlerAcknowledgesIt()
+    {
+        var gamePath = CreateSyntheticLoRom(
+            program:
+            [
+                0x78,                   // SEI
+                0xA9, 0x80,             // LDA #$80
+                0x8D, 0x00, 0x42,       // STA $4200 - enable VBlank NMI
+                0xAD, 0x10, 0x42,       // loop: LDA $4210
+                0x10, 0xFB,             // BPL loop
+                0xA9, 0x5A,             // LDA #$5A
+                0x8D, 0x00, 0x00,       // STA $0000
+                0xDB                    // STP
+            ],
+            nmiProgram:
+            [
+                0xAD, 0x10, 0x42,       // LDA $4210 - acknowledge VBlank
+                0x40                    // RTI
+            ]);
+
+        try
+        {
+            var machine = SnesMachine.Load(gamePath);
+
+            for (var frame = 0; frame < 12 && machine.PeekMemory(0x0000) != 0x5A; frame++)
+            {
+                machine.RunFrame();
+            }
+
+            Assert.Equal(0x5A, machine.PeekMemory(0x0000));
+            Assert.True(machine.NmiCount > 0);
         }
         finally
         {
@@ -1558,7 +1598,7 @@ public sealed class SnesMachineTests
 
     private static MemoryStream SaveBusState(
         SnesBus bus,
-        int stateVersion = 14)
+        int stateVersion = 15)
     {
         var state = new MemoryStream();
         using (var writer = new BinaryWriter(
@@ -1576,7 +1616,7 @@ public sealed class SnesMachineTests
     private static void LoadBusState(
         SnesBus bus,
         MemoryStream state,
-        int stateVersion = 14)
+        int stateVersion = 15)
     {
         state.Position = 0;
         using var reader = new BinaryReader(
@@ -1590,7 +1630,8 @@ public sealed class SnesMachineTests
     private static string CreateSyntheticLoRom(
         byte[]? program = null,
         byte cartridgeType = 0x00,
-        byte ramSizeExponent = 0x00)
+        byte ramSizeExponent = 0x00,
+        byte[]? nmiProgram = null)
     {
         var image = new byte[32 * 1024];
         program ??=
@@ -1605,6 +1646,10 @@ public sealed class SnesMachineTests
             0xDB              // STP
         ];
         program.CopyTo(image, 0);
+        if (nmiProgram is not null)
+        {
+            nmiProgram.CopyTo(image, 0x0100);
+        }
 
         const int header = 0x7FC0;
         "PIXELDECK SNES TEST  ".Select(character => (byte)character).ToArray().CopyTo(image, header);
@@ -1619,6 +1664,8 @@ public sealed class SnesMachineTests
         image[header + 0x1F] = 0x12;
         image[header + 0x3C] = 0x00;
         image[header + 0x3D] = 0x80;
+        image[header + 0x3A] = 0x00;
+        image[header + 0x3B] = 0x81;
 
         var path = Path.Combine(Path.GetTempPath(), $"PixelDeck-{Guid.NewGuid():N}.sfc");
         File.WriteAllBytes(path, image);

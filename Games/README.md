@@ -8,6 +8,10 @@ PixelDeck keeps each console library in its own directory:
 
 PixelDeck creates all three directories automatically and scans their subdirectories.
 
+ROM-created files are kept out of the game library. Battery saves and numbered
+save states are written to the sibling `Saves` folder using the same console
+and nested folder layout.
+
 Supported discovery formats currently include `.nes`, `.fds`, `.sfc`, `.smc`, `.gb`, `.gbc`, `.gba`, `.n64`, `.z64`, `.v64`, `.nds`, `.gcm`, `.rvz`, `.wbfs`, `.iso`, `.dol`, and `.elf`.
 
 PixelDeck reads embedded SNES titles. A validated legacy Nintendo cartridge-header title can rescue an opaque 8.3-style NES filename, but it does not replace a readable filename because those 16-character fields are frequently abbreviated or inaccurate. For complete, filename-independent naming, place a standard ClrMamePro `.dat`, Logiqx XML catalog, or PixelDeck JSON catalog in `.pixeldeck/metadata`. Matching and caching stay entirely local; game files are never uploaded or renamed.

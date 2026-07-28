@@ -47,6 +47,16 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void MachineExposesItsGraphicsBackendThroughThePluginBoundary()
+    {
+        var machine = N64Machine.Create(
+            N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+
+        Assert.Same(machine.Renderer, machine.GraphicsBackend);
+        Assert.Equal("Pixel64 Fast3D software renderer", machine.GraphicsBackend.Name);
+    }
+
+    [Fact]
     public void EveryLocalNintendo64CartridgeIsRecognizedAndCanAttemptBoot()
     {
         foreach (var path in N64TestSupport.FindCartridges())
@@ -334,6 +344,96 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void SiPifSupportsTheFull16KbitEepromAddressSpace()
+    {
+        var image = N64TestSupport.CreateCartridgeImage();
+        SetGameCode(image, "NGEE");
+        var memory = new N64Memory(N64Cartridge.FromBytes(image));
+        var expected = new byte[] { 0x47, 0x4F, 0x4C, 0x44, 0x45, 0x4E, 0x45, 0x59 };
+
+        Assert.Equal(2 * 1024, memory.Eeprom.Length);
+
+        // Channels 0-3 are controllers. Four empty descriptors advance to
+        // channel 4, where command 5 writes one eight-byte EEPROM block.
+        memory.Rdram[0x104] = 10;
+        memory.Rdram[0x105] = 1;
+        memory.Rdram[0x106] = 0x05;
+        memory.Rdram[0x107] = 0xC1;
+        expected.CopyTo(memory.Rdram, 0x108);
+        memory.Rdram[0x111] = 0xFE;
+        RunPifRoundTrip(memory);
+
+        Assert.True(memory.EepromDirty);
+        Assert.Equal(expected, memory.Eeprom.AsSpan(0xC1 * 8, 8).ToArray());
+
+        // Reading the same high block proves that the address no longer
+        // wraps through the 4-Kbit device's six-bit address mask.
+        memory.Rdram.AsSpan(0x100, 64).Clear();
+        memory.Rdram[0x104] = 2;
+        memory.Rdram[0x105] = 8;
+        memory.Rdram[0x106] = 0x04;
+        memory.Rdram[0x107] = 0xC1;
+        memory.Rdram[0x110] = 0xFE;
+        RunPifRoundTrip(memory);
+
+        Assert.Equal(expected, memory.Rdram.AsSpan(0x108, 8).ToArray());
+    }
+
+    [Theory]
+    [InlineData("NPXE", 0x80)]
+    [InlineData("NGEE", 0xC0)]
+    public void SiPifReportsTheInstalledEepromCapacity(string gameCode, byte expectedType)
+    {
+        var image = N64TestSupport.CreateCartridgeImage();
+        SetGameCode(image, gameCode);
+        var memory = new N64Memory(N64Cartridge.FromBytes(image));
+
+        memory.Rdram[0x104] = 1;
+        memory.Rdram[0x105] = 3;
+        memory.Rdram[0x106] = 0x00;
+        memory.Rdram[0x10A] = 0xFE;
+        RunPifRoundTrip(memory);
+
+        Assert.Equal(0x00, memory.Rdram[0x107]);
+        Assert.Equal(expectedType, memory.Rdram[0x108]);
+        Assert.Equal(0x00, memory.Rdram[0x109]);
+    }
+
+    [Fact]
+    public void MachinePersistsAndReloadsEvery16KbitEepromBlock()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"Pixel64-eeprom-{Guid.NewGuid():N}");
+        var romPath = Path.Combine(root, "GoldenEye.z64");
+        var savePath = Path.Combine(root, "GoldenEye.eep");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var image = N64TestSupport.CreateCartridgeImage();
+            SetGameCode(image, "NGEE");
+            File.WriteAllBytes(romPath, image);
+            var machine = N64Machine.Load(romPath, savePath);
+            var expected = new byte[] { 0x50, 0x49, 0x58, 0x45, 0x4C, 0x36, 0x34, 0x21 };
+
+            machine.Memory.Rdram[0x104] = 10;
+            machine.Memory.Rdram[0x105] = 1;
+            machine.Memory.Rdram[0x106] = 0x05;
+            machine.Memory.Rdram[0x107] = 0xFF;
+            expected.CopyTo(machine.Memory.Rdram, 0x108);
+            machine.Memory.Rdram[0x111] = 0xFE;
+            RunPifRoundTrip(machine.Memory);
+            machine.FlushBatterySave();
+
+            Assert.Equal(2 * 1024, new FileInfo(savePath).Length);
+            var restored = N64Machine.Load(romPath, savePath);
+            Assert.Equal(expected, restored.Memory.Eeprom.AsSpan(0xFF * 8, 8).ToArray());
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void SiPifReportsEmptyControllerPortsAsAbsentUntilAPadIsPluggedIn()
     {
         var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
@@ -369,6 +469,24 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
         Assert.Equal(0, memory.Rdram[0x102] & 0x80);
         Assert.Equal(0x05, memory.Rdram[0x104]);
+    }
+
+    private static void RunPifRoundTrip(N64Memory memory)
+    {
+        memory.Rdram[0x13F] = 1;
+        memory.WriteUInt32(0xA4800000, 0x100);
+        memory.WriteUInt32(0xA4800010, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+        memory.WriteUInt32(0xA4800004, 0x1FC007C0);
+        memory.AdvanceCpuTicks(256);
+    }
+
+    private static void SetGameCode(byte[] image, string gameCode)
+    {
+        image[0x3B] = (byte)gameCode[0];
+        image[0x3C] = (byte)gameCode[1];
+        image[0x3D] = (byte)gameCode[2];
+        image[0x3E] = (byte)gameCode[3];
     }
 
     [Fact]
@@ -468,6 +586,117 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void Fast3dRdpStateTracksBlendAndFogColorsForCompatibilityTraces()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x200, 0xEF000000);
+        memory.WriteUInt32(0x204, 0x00404000);
+        memory.WriteUInt32(0x208, 0xF8000000);
+        memory.WriteUInt32(0x20C, 0x10203040);
+        memory.WriteUInt32(0x210, 0xF9000000);
+        memory.WriteUInt32(0x214, 0x50607080);
+        memory.WriteUInt32(0x218, 0xFC000000);
+        memory.WriteUInt32(0x21C, 0x00018600);
+        memory.WriteUInt32(0x220, 0xB8000000);
+        memory.WriteUInt32(0x224, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 40, 0, 0));
+
+        var state = renderer.RdpState;
+        Assert.Equal(0x00404000u, state.OtherModeLow);
+        Assert.Equal(new Vector4(16 / 255f, 32 / 255f, 48 / 255f, 64 / 255f), state.FogColor);
+        Assert.Equal(new Vector4(80 / 255f, 96 / 255f, 112 / 255f, 128 / 255f), state.BlendColor);
+        Assert.True(state.CombinerConfigured);
+    }
+
+    [Fact]
+    public void Fast3dMarioStylePauseShadeUsesCombinerAndFramebufferBlender()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x400, 0x0000FFFF);
+        memory.WriteUInt32(0x200, 0xFF180003);
+        memory.WriteUInt32(0x204, 0x00000400);
+        memory.WriteUInt32(0x208, 0xEF000000);
+        // P=combined input, A=input alpha, M=framebuffer, B=1-A.
+        memory.WriteUInt32(0x20C, 0x00404000);
+        memory.WriteUInt32(0x210, 0xFC000000);
+        // (0 - 0) * 0 + primitive for both colour and alpha.
+        memory.WriteUInt32(0x214, 0x00018600);
+        memory.WriteUInt32(0x218, 0xFA000000);
+        memory.WriteUInt32(0x21C, 0xFF000080);
+        memory.WriteUInt32(0x220, 0xF6000000);
+        memory.WriteUInt32(0x224, 0);
+        memory.WriteUInt32(0x228, 0xB8000000);
+        memory.WriteUInt32(0x22C, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 48, 0, 0));
+
+        var pixel = memory.ReadUInt32(0x400);
+        Assert.InRange((pixel >> 24) & 0xFF, 126u, 129u);
+        Assert.Equal(0u, (pixel >> 16) & 0xFF);
+        Assert.InRange((pixel >> 8) & 0xFF, 126u, 129u);
+        Assert.Equal(1, renderer.FramebufferPixelsBlended);
+    }
+
+    [Fact]
+    public void Fast3dAlphaCompareRejectsPixelsBelowBlendColorThreshold()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x400, 0x123456FF);
+        memory.WriteUInt32(0x200, 0xFF180003);
+        memory.WriteUInt32(0x204, 0x00000400);
+        memory.WriteUInt32(0x208, 0xEF000000);
+        memory.WriteUInt32(0x20C, 0x00000001);
+        memory.WriteUInt32(0x210, 0xF9000000);
+        memory.WriteUInt32(0x214, 0x000000C0);
+        memory.WriteUInt32(0x218, 0xFC000000);
+        memory.WriteUInt32(0x21C, 0x00018600);
+        memory.WriteUInt32(0x220, 0xFA000000);
+        memory.WriteUInt32(0x224, 0xFF000080);
+        memory.WriteUInt32(0x228, 0xF6000000);
+        memory.WriteUInt32(0x22C, 0);
+        memory.WriteUInt32(0x230, 0xB8000000);
+        memory.WriteUInt32(0x234, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 56, 0, 0));
+
+        Assert.Equal(0x123456FFu, memory.ReadUInt32(0x400));
+        Assert.Equal(1, renderer.AlphaPixelsRejected);
+    }
+
+    [Fact]
+    public void Fast3dSuppressedFrameParsesCommandsWithoutWritingPixels()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x1000, 0xFF100003);
+        memory.WriteUInt32(0x1004, 0x00002000);
+        memory.WriteUInt32(0x1008, 0xF7000000);
+        memory.WriteUInt32(0x100C, 0x7C1F7C1F);
+        memory.WriteUInt32(0x1010, 0xF600C00C);
+        memory.WriteUInt32(0x1014, 0x00000000);
+        memory.WriteUInt32(0x1018, 0xB8000000);
+        memory.WriteUInt32(0x101C, 0);
+        var renderer = new Fast3dRenderer(memory)
+        {
+            RasterizationEnabled = false
+        };
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1000, 32, 0, 0));
+
+        Assert.Equal(0u, memory.ReadUInt16(0x2000));
+        Assert.Equal(4, renderer.CommandsProcessed);
+        Assert.Equal(0, renderer.FillRectanglesDrawn);
+        Assert.Equal(0x2000u, renderer.ColorImageAddress);
+    }
+
+    [Fact]
     public void Fast3dTextureRectangleSamplesAnRgba16Texture()
     {
         var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
@@ -475,17 +704,21 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         memory.WriteUInt16(0x102, 0x07C1);
         memory.WriteUInt16(0x104, 0x003F);
         memory.WriteUInt16(0x106, 0xFFFF);
-        memory.WriteUInt32(0x200, 0xFD100000);
+        memory.WriteUInt16(0x108, 0xFFC1);
+        memory.WriteUInt16(0x10A, 0xF83F);
+        memory.WriteUInt16(0x10C, 0x07FF);
+        memory.WriteUInt16(0x10E, 0x0001);
+        memory.WriteUInt32(0x200, 0xFD100003);
         memory.WriteUInt32(0x204, 0x00000100);
         memory.WriteUInt32(0x208, 0xF5100200);
         memory.WriteUInt32(0x20C, 0);
         memory.WriteUInt32(0x210, 0xF3000000);
-        memory.WriteUInt32(0x214, 0x00003000);
+        memory.WriteUInt32(0x214, 0x00007800);
         memory.WriteUInt32(0x218, 0xF2000000);
-        memory.WriteUInt32(0x21C, 0x00004004);
+        memory.WriteUInt32(0x21C, 0x0000C004);
         memory.WriteUInt32(0x220, 0xFF100003);
         memory.WriteUInt32(0x224, 0x00000400);
-        memory.WriteUInt32(0x228, 0xE4008008);
+        memory.WriteUInt32(0x228, 0xE4010008);
         memory.WriteUInt32(0x22C, 0);
         memory.WriteUInt32(0x230, 0xB3000000);
         memory.WriteUInt32(0x234, 0);
@@ -500,8 +733,12 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
         Assert.Equal(0xF801, memory.ReadUInt16(0x400));
         Assert.Equal(0x07C1, memory.ReadUInt16(0x402));
-        Assert.Equal(0x003F, memory.ReadUInt16(0x408));
-        Assert.Equal(0xFFFF, memory.ReadUInt16(0x40A));
+        Assert.Equal(0x003F, memory.ReadUInt16(0x404));
+        Assert.Equal(0xFFFF, memory.ReadUInt16(0x406));
+        Assert.Equal(0xFFC1, memory.ReadUInt16(0x408));
+        Assert.Equal(0xF83F, memory.ReadUInt16(0x40A));
+        Assert.Equal(0x07FF, memory.ReadUInt16(0x40C));
+        Assert.Equal(0x0001, memory.ReadUInt16(0x40E));
         Assert.Equal(1, renderer.TextureRectanglesDrawn);
     }
 
@@ -513,21 +750,25 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         memory.WriteUInt16(0x102, 0x07C1);
         memory.WriteUInt16(0x104, 0x003F);
         memory.WriteUInt16(0x106, 0xFFFF);
-        memory.WriteUInt32(0x200, 0xFD100000);
+        memory.WriteUInt16(0x108, 0xFFC1);
+        memory.WriteUInt16(0x10A, 0xF83F);
+        memory.WriteUInt16(0x10C, 0x07FF);
+        memory.WriteUInt16(0x10E, 0x0001);
+        memory.WriteUInt32(0x200, 0xFD100003);
         memory.WriteUInt32(0x204, 0x00000100);
         memory.WriteUInt32(0x208, 0xF5100000);
         memory.WriteUInt32(0x20C, 0x07000000);
         memory.WriteUInt32(0x210, 0xF3000000);
-        memory.WriteUInt32(0x214, 0x07003000);
+        memory.WriteUInt32(0x214, 0x07007800);
         memory.WriteUInt32(0x218, 0xB8000000);
         memory.WriteUInt32(0x21C, 0);
         memory.WriteUInt32(0x300, 0xF5100200);
         memory.WriteUInt32(0x304, 0);
         memory.WriteUInt32(0x308, 0xF2000000);
-        memory.WriteUInt32(0x30C, 0x00004004);
+        memory.WriteUInt32(0x30C, 0x0000C004);
         memory.WriteUInt32(0x310, 0xFF100003);
         memory.WriteUInt32(0x314, 0x00000400);
-        memory.WriteUInt32(0x318, 0xE4008008);
+        memory.WriteUInt32(0x318, 0xE4010008);
         memory.WriteUInt32(0x31C, 0);
         memory.WriteUInt32(0x320, 0xB3000000);
         memory.WriteUInt32(0x324, 0);
@@ -546,8 +787,12 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
         Assert.Equal(0xF801, memory.ReadUInt16(0x400));
         Assert.Equal(0x07C1, memory.ReadUInt16(0x402));
-        Assert.Equal(0x003F, memory.ReadUInt16(0x408));
-        Assert.Equal(0xFFFF, memory.ReadUInt16(0x40A));
+        Assert.Equal(0x003F, memory.ReadUInt16(0x404));
+        Assert.Equal(0xFFFF, memory.ReadUInt16(0x406));
+        Assert.Equal(0xFFC1, memory.ReadUInt16(0x408));
+        Assert.Equal(0xF83F, memory.ReadUInt16(0x40A));
+        Assert.Equal(0x07FF, memory.ReadUInt16(0x40C));
+        Assert.Equal(0x0001, memory.ReadUInt16(0x40E));
         Assert.Equal(1, renderer.TextureRectanglesDrawn);
     }
 
@@ -923,7 +1168,28 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         var playableFrames = 0;
         var fieldsRun = 0;
         var controllerTransitions = new List<string>();
-        var maximumFields = autoplay ? 6_000 : 600;
+        var traceAudio = string.Equals(
+            Environment.GetEnvironmentVariable("PIXEL64_TRACE_AUDIO"),
+            "1",
+            StringComparison.Ordinal);
+        var audioDrainBuffer = new float[1_068];
+        var audioDrainRemainder = 0;
+        var audioRequestedValues = 0L;
+        var audioReadValues = 0L;
+        var audioNonFiniteValues = 0L;
+        var audioClippedValues = 0L;
+        var audioMaximumDelta = 0f;
+        var previousAudioValue = 0f;
+        var hasPreviousAudioValue = false;
+        var maximumFields =
+            int.TryParse(
+                Environment.GetEnvironmentVariable("PIXEL64_TRACE_FIELDS"),
+                out var requestedFields) &&
+            requestedFields > 0
+                ? requestedFields
+                : autoplay
+                    ? 6_000
+                    : 600;
         for (var field = 0; field < maximumFields; field++)
         {
             if (autoplay)
@@ -973,6 +1239,39 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
             machine.RunFrame();
             fieldsRun = field + 1;
+            if (traceAudio && machine.AudioTasksSubmitted > 0)
+            {
+                audioDrainRemainder += N64Machine.AudioSampleRate * 2;
+                var requestedValues = audioDrainRemainder / 60;
+                audioDrainRemainder %= 60;
+                audioRequestedValues += requestedValues;
+                var valuesRead = machine.ReadAudioSamples(audioDrainBuffer.AsSpan(0, requestedValues));
+                audioReadValues += valuesRead;
+                for (var sample = 0; sample < valuesRead; sample++)
+                {
+                    var value = audioDrainBuffer[sample];
+                    if (!float.IsFinite(value))
+                    {
+                        audioNonFiniteValues++;
+                        continue;
+                    }
+
+                    if (Math.Abs(value) >= 0.999f)
+                    {
+                        audioClippedValues++;
+                    }
+
+                    if (hasPreviousAudioValue)
+                    {
+                        audioMaximumDelta = Math.Max(
+                            audioMaximumDelta,
+                            Math.Abs(value - previousAudioValue));
+                    }
+
+                    previousAudioValue = value;
+                    hasPreviousAudioValue = true;
+                }
+            }
             if (playableField >= 0 && ++playableFrames >= 120)
             {
                 break;
@@ -1099,6 +1398,17 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         output.WriteLine(
             $"tasks gfx={machine.GraphicsTasksSubmitted} audio={machine.AudioTasksSubmitted} " +
             $"ai={machine.Memory.AudioDmasCompleted} last={machine.LastRspTask}");
+        if (traceAudio)
+        {
+            output.WriteLine(
+                $"audio-drain requested={audioRequestedValues} read={audioReadValues} " +
+                $"short={audioRequestedValues - audioReadValues} " +
+                $"buffered={machine.BufferedAudioSampleCount} " +
+                $"dropped={machine.DroppedAudioSampleCount} " +
+                $"non-finite={audioNonFiniteValues} clipped={audioClippedValues} " +
+                $"max-delta={audioMaximumDelta:0.0000} " +
+                $"ucode-unsupported={machine.AudioProcessor.UnsupportedCommands}");
+        }
         output.WriteLine(
             $"VI origin=0x{machine.Memory.ViOrigin:X8} width={machine.Memory.ViWidth} " +
             $"colors={machine.CurrentFrame.ToArray().Distinct().Count()} " +

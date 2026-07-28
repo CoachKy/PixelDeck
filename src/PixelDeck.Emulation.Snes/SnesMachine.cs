@@ -4,7 +4,7 @@ public sealed class SnesMachine
 {
     public const int AudioSampleRate = SnesDsp.SampleRate;
     private const uint SaveStateMagic = 0x31534E50; // PNS1
-    private const int SaveStateVersion = 14;
+    private const int SaveStateVersion = 15;
     private const int SaveStateChecksumLength = 32;
     private const int MaximumSaveStatePayloadLength = 16 * 1_024 * 1_024;
     private readonly SnesBus _bus;
@@ -84,6 +84,8 @@ public sealed class SnesMachine
     public bool SuperFxRunning => _bus.SuperFxRunning;
 
     public ushort SuperFxProgramCounter => _bus.SuperFxProgramCounter;
+
+    internal string SuperFxDiagnostics => _bus.SuperFxDiagnostics;
 
     public long NonZeroBrightnessWrites => _bus.Ppu.NonZeroBrightnessWrites;
 
@@ -195,7 +197,9 @@ public sealed class SnesMachine
     internal void StepInstructionForDiagnostics()
     {
         _cpu.Step();
-        _bus.AdvanceMasterClocks(_cpu.LastMasterClocks);
+        _bus.AdvanceMasterClocks(
+            _cpu.LastMasterClocks,
+            completesCpuInstruction: true);
     }
 
     public ReadOnlySpan<uint> RunFrame()
@@ -211,7 +215,9 @@ public sealed class SnesMachine
             }
 
             _cpu.Step();
-            _bus.AdvanceMasterClocks(_cpu.LastMasterClocks);
+            _bus.AdvanceMasterClocks(
+                _cpu.LastMasterClocks,
+                completesCpuInstruction: true);
         }
 
         return _bus.Ppu.FrameBuffer;
@@ -235,7 +241,7 @@ public sealed class SnesMachine
         {
             throw new ArgumentOutOfRangeException(
                 nameof(stateVersion),
-                "PixelSNES can only write the current state or its v10-v13 migration fixtures.");
+                "PixelSNES can only write the current state or its v10-v14 migration fixtures.");
         }
 
         using var payloadStream = new MemoryStream();

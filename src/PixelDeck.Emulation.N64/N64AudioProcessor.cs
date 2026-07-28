@@ -16,6 +16,10 @@ public sealed class N64AudioProcessor
     private const byte FlagVolume = 0x04;
     private const byte FlagLeft = 0x02;
     private const byte FlagAux = 0x08;
+    private const int ResamplePhaseCount = 64;
+    private const int ResampleTapCount = 4;
+    private const int ResampleCoefficientScale = 1 << 15;
+    private static readonly short[] ResampleCoefficients = CreateResampleCoefficients();
 
     private readonly N64Memory _memory;
     private readonly byte[] _scratch = new byte[ScratchSize];
@@ -192,7 +196,7 @@ public sealed class N64AudioProcessor
 
     private void ClearBuffer(int offset, int count)
     {
-        var span = ScratchSpan(offset, count);
+        var span = ScratchSpan(offset, AlignUp(count, 16));
         span.Clear();
     }
 
@@ -208,7 +212,7 @@ public sealed class N64AudioProcessor
 
     private void MoveScratch(int source, int destination, int count)
     {
-        var from = ScratchSpan(source, count);
+        var from = ScratchSpan(source, AlignUp(count, 16));
         var to = ScratchSpan(destination, from.Length);
         from[..to.Length].CopyTo(to);
     }
@@ -224,7 +228,7 @@ public sealed class N64AudioProcessor
 
     private void Mix(short gain, int source, int destination)
     {
-        var samples = _count / 2;
+        var samples = AlignUp(_count, 32) / 2;
         for (var index = 0; index < samples; index++)
         {
             var input = ReadScratchInt16(source + (index * 2));
@@ -236,7 +240,7 @@ public sealed class N64AudioProcessor
     private void Interleave(int left, int right)
     {
         // count describes one channel; the interleaved output is twice as long.
-        var samples = _count / 2;
+        var samples = AlignUp(_count, 16) / 2;
         for (var index = 0; index < samples; index++)
         {
             WriteScratchInt16(_outAddress + (index * 4), ReadScratchInt16(left + (index * 2)));
@@ -259,7 +263,7 @@ public sealed class N64AudioProcessor
             }
         }
 
-        var frames = _count / 32;
+        var frames = AlignUp(_count, 32) / 32;
         var sourceOffset = _inAddress;
         var destinationOffset = _outAddress;
         var previous1 = _adpcmState[15];
@@ -341,16 +345,22 @@ public sealed class N64AudioProcessor
             position = ReadRdramUInt16(stateAddress + 8);
         }
 
-        var outputSamples = _count / 2;
+        var outputSamples = AlignUp(_count, 16) / 2;
         var destination = _outAddress;
         for (var index = 0; index < outputSamples; index++)
         {
             var whole = (int)(position >> 16);
-            var fraction = (int)(position & 0xFFFF);
-            var sample0 = SampleForResample(whole);
-            var sample1 = SampleForResample(whole + 1);
-            var interpolated = sample0 + (((sample1 - sample0) * fraction) >> 16);
-            WriteScratchInt16(destination, ClampToInt16(interpolated));
+            var phase = (int)((position & 0xFFFF) >> 10);
+            var coefficientOffset = phase * ResampleTapCount;
+            long filtered = 0;
+            for (var tap = 0; tap < ResampleTapCount; tap++)
+            {
+                filtered +=
+                    (long)SampleForResample(whole - 1 + tap) *
+                    ResampleCoefficients[coefficientOffset + tap];
+            }
+
+            WriteScratchInt16(destination, ClampToInt16(filtered >> 15));
             destination += 2;
             position += step;
         }
@@ -373,6 +383,72 @@ public sealed class N64AudioProcessor
         index < 4
             ? _resampleState[Math.Max(index, 0)]
             : ReadScratchInt16(_inAddress + ((index - 4) * 2));
+
+    /// <summary>
+    /// Builds a four-tap, 64-phase Lanczos polyphase filter. The N64 audio
+    /// microcode also evaluates four neighboring samples from one of 64
+    /// fractional phases. Generating the coefficients here keeps the filter
+    /// independent while avoiding the aliasing and stair-step distortion of
+    /// the previous two-sample linear interpolation.
+    /// </summary>
+    private static short[] CreateResampleCoefficients()
+    {
+        var result = new short[ResamplePhaseCount * ResampleTapCount];
+        Span<double> weights = stackalloc double[ResampleTapCount];
+        for (var phase = 0; phase < ResamplePhaseCount; phase++)
+        {
+            var fraction = phase / (double)ResamplePhaseCount;
+            var sum = 0.0;
+            for (var tap = 0; tap < ResampleTapCount; tap++)
+            {
+                // Samples are [x-1, x, x+1, x+2], so the integer position
+                // corresponds to the second tap.
+                var distance = (tap - 1) - fraction;
+                var weight = Lanczos2(distance);
+                weights[tap] = weight;
+                sum += weight;
+            }
+
+            var quantizedSum = 0;
+            var phaseOffset = phase * ResampleTapCount;
+            for (var tap = 0; tap < ResampleTapCount; tap++)
+            {
+                var coefficient = (int)Math.Round(
+                    (weights[tap] / sum) * ResampleCoefficientScale,
+                    MidpointRounding.AwayFromZero);
+                coefficient = Math.Clamp(coefficient, short.MinValue, short.MaxValue);
+                result[phaseOffset + tap] = (short)coefficient;
+                quantizedSum += coefficient;
+            }
+
+            // Preserve unity DC gain after Q15 quantization.
+            var correction = ResampleCoefficientScale - quantizedSum;
+            result[phaseOffset + 1] = (short)Math.Clamp(
+                result[phaseOffset + 1] + correction,
+                short.MinValue,
+                short.MaxValue);
+        }
+
+        return result;
+    }
+
+    private static double Lanczos2(double value)
+    {
+        var magnitude = Math.Abs(value);
+        if (magnitude < 1e-12)
+        {
+            return 1.0;
+        }
+
+        if (magnitude >= 2.0)
+        {
+            return 0.0;
+        }
+
+        var piValue = Math.PI * value;
+        return (Math.Sin(piValue) / piValue) *
+               (Math.Sin(piValue / 2.0) / (piValue / 2.0));
+    }
 
     private void EnvelopeMixer(byte flags, uint stateAddress)
     {
@@ -519,6 +595,9 @@ public sealed class N64AudioProcessor
     }
 
     private static int SignExtendNibble(int value) => (value << 28) >> 28;
+
+    private static int AlignUp(int value, int alignment) =>
+        (value + (alignment - 1)) & -alignment;
 
     private static short ClampToInt16(long value) =>
         (short)Math.Clamp(value, short.MinValue, short.MaxValue);

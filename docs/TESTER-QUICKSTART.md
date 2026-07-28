@@ -13,10 +13,13 @@ you do not need to install the .NET SDK or runtime.
 Do not run PixelDeck from inside the ZIP. Keep every published DLL and native
 library beside the executable.
 
-When updating to another test build, preserve the existing `Games` folder.
-`Games\.pixeldeck` contains local battery saves, save states, screenshots, and
-metadata. Either copy that folder into the new extracted build or replace the
-application files without deleting `Games`.
+When updating to another test build, preserve the existing `Games` and `Saves`
+folders. `Saves` contains local battery saves and save states grouped beneath
+`Nintendo`, `SuperNintendo`, and `Nintendo64`. `Games\.pixeldeck` contains
+local metadata and screenshots. Existing saves in the old cache location are
+migrated automatically without overwriting saves already in `Saves`.
+Either copy those folders into the new extracted build or replace the
+application files without deleting them.
 
 Windows may show a SmartScreen warning because this early test build is not
 code-signed. Only continue if the ZIP came directly from the PixelDeck

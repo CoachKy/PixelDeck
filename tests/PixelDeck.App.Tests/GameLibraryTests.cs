@@ -26,7 +26,20 @@ public sealed class GameLibraryTests
             Assert.Equal("16 KB", game.SizeText);
             Assert.EndsWith(".png", game.ScreenshotCachePath);
             Assert.EndsWith(".sav", game.SaveRamPath);
-            Assert.Contains($"{Path.DirectorySeparatorChar}saves{Path.DirectorySeparatorChar}", game.SaveRamPath);
+            Assert.Equal(
+                Path.Combine(
+                    Directory.GetParent(testRoot)!.FullName,
+                    "Saves",
+                    GameLibrary.NintendoFolderName,
+                    "My_Homebrew.sav"),
+                game.SaveRamPath);
+            Assert.Equal(
+                Path.Combine(
+                    Directory.GetParent(testRoot)!.FullName,
+                    "Saves",
+                    GameLibrary.NintendoFolderName,
+                    "My_Homebrew.state"),
+                game.SaveStatePath);
             Assert.False(game.HasScreenshot);
             Assert.Equal(0, game.MapperNumber);
             Assert.True(game.CanLaunch);
@@ -158,6 +171,7 @@ public sealed class GameLibraryTests
             Assert.True(game.CanLaunch);
             Assert.Contains("verified route", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("development", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith(".eep", game.SaveRamPath, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -186,6 +200,7 @@ public sealed class GameLibraryTests
             Assert.True(game.CanLaunch);
             Assert.Contains("boot attempt enabled", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("development", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith(".eep", game.SaveRamPath, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -408,6 +423,88 @@ public sealed class GameLibraryTests
             Assert.True(Directory.Exists(library.NintendoFolder));
             Assert.True(Directory.Exists(library.Nintendo64Folder));
             Assert.True(Directory.Exists(library.SuperNintendoFolder));
+            Assert.Equal(
+                Path.Combine(Directory.GetParent(testRoot)!.FullName, "Saves"),
+                library.SavesFolder);
+            Assert.True(Directory.Exists(library.NintendoSavesFolder));
+            Assert.True(Directory.Exists(library.Nintendo64SavesFolder));
+            Assert.True(Directory.Exists(library.SuperNintendoSavesFolder));
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_PreservesNestedConsoleFoldersInTheSaveLayout()
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var nestedFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.SuperNintendoFolderName, "RPG"));
+            await File.WriteAllBytesAsync(
+                Path.Combine(nestedFolder.FullName, "Final Fantasy III.sfc"),
+                CreateSnesImage());
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+            var expectedFolder = Path.Combine(
+                Directory.GetParent(testRoot)!.FullName,
+                "Saves",
+                GameLibrary.SuperNintendoFolderName,
+                "RPG");
+
+            Assert.Equal(Path.Combine(expectedFolder, "Final Fantasy III.sav"), game.SaveRamPath);
+            Assert.Equal(Path.Combine(expectedFolder, "Final Fantasy III.state"), game.SaveStatePath);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_MigratesLegacyBatteryAndStateFilesWithoutOverwritingNewSaves()
+    {
+        var testRoot = CreateTestDirectory();
+
+        try
+        {
+            var relativeGamePath = Path.Combine(
+                GameLibrary.NintendoFolderName,
+                "Legacy Game.nes");
+            var gamePath = Path.Combine(testRoot, relativeGamePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(gamePath)!);
+            await File.WriteAllBytesAsync(gamePath, CreateNesImage(mapper: 0));
+
+            var legacyKey = GetLegacyCacheKey(relativeGamePath);
+            var legacyBatteryFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, ".pixeldeck", "saves"));
+            var legacyStateFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, ".pixeldeck", "screenshots"));
+            var legacyBatteryPath = Path.Combine(legacyBatteryFolder.FullName, legacyKey + ".sav");
+            var legacyStatePath = Path.Combine(legacyStateFolder.FullName, legacyKey + ".slot-002.state");
+            await File.WriteAllBytesAsync(legacyBatteryPath, [0x10, 0x20]);
+            await File.WriteAllBytesAsync(legacyStatePath, [0x30, 0x40]);
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+            var migratedStatePath = Path.Combine(
+                Path.GetDirectoryName(game.SaveStatePath)!,
+                "Legacy Game.slot-002.state");
+
+            Assert.Equal([0x10, 0x20], await File.ReadAllBytesAsync(game.SaveRamPath));
+            Assert.Equal([0x30, 0x40], await File.ReadAllBytesAsync(migratedStatePath));
+            Assert.False(File.Exists(legacyBatteryPath));
+            Assert.False(File.Exists(legacyStatePath));
+
+            await File.WriteAllBytesAsync(game.SaveRamPath, [0xAA]);
+            await File.WriteAllBytesAsync(legacyBatteryPath, [0xBB]);
+            _ = await new GameLibrary(testRoot).ScanAsync();
+
+            Assert.Equal([0xAA], await File.ReadAllBytesAsync(game.SaveRamPath));
+            Assert.Equal([0xBB], await File.ReadAllBytesAsync(legacyBatteryPath));
         }
         finally
         {
@@ -418,9 +515,8 @@ public sealed class GameLibraryTests
     private static string CreateTestDirectory()
     {
         var testParent = Path.Combine(Path.GetTempPath(), "PixelDeck.Tests");
-        var testRoot = Path.Combine(testParent, Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(testRoot);
-        return testRoot;
+        var testContainer = Path.Combine(testParent, Guid.NewGuid().ToString("N"));
+        return Directory.CreateDirectory(Path.Combine(testContainer, "Games")).FullName;
     }
 
     private static string? FindLocalN64Target()
@@ -556,15 +652,25 @@ public sealed class GameLibraryTests
         var testParent = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "PixelDeck.Tests"))
             .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var resolvedRoot = Path.GetFullPath(testRoot);
+        var testContainer = Directory.GetParent(resolvedRoot)?.FullName
+            ?? throw new InvalidOperationException("The test games folder has no parent.");
 
-        if (!resolvedRoot.StartsWith(testParent, StringComparison.OrdinalIgnoreCase))
+        if (!resolvedRoot.StartsWith(testParent, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetFileName(resolvedRoot), "Games", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Refusing to remove a directory outside the PixelDeck test area.");
         }
 
-        if (Directory.Exists(resolvedRoot))
+        if (Directory.Exists(testContainer))
         {
-            Directory.Delete(resolvedRoot, recursive: true);
+            Directory.Delete(testContainer, recursive: true);
         }
+    }
+
+    private static string GetLegacyCacheKey(string relativeGamePath)
+    {
+        var normalizedPath = relativeGamePath.Replace('\\', '/').ToUpperInvariant();
+        var hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalizedPath));
+        return Convert.ToHexString(hash)[..20].ToLowerInvariant();
     }
 }

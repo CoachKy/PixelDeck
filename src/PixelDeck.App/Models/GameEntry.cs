@@ -30,6 +30,8 @@ public sealed record GameEntry(
 
     public string SaveRamPath { get; init; } = string.Empty;
 
+    public string SaveStatePath { get; init; } = string.Empty;
+
     public int? MapperNumber { get; init; }
 
     public int SubmapperNumber { get; init; }

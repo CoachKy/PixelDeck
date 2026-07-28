@@ -19,16 +19,16 @@ public sealed class GameLibrary
     private static readonly Dictionary<string, PlatformDefinition> Platforms =
         new Dictionary<string, PlatformDefinition>(StringComparer.OrdinalIgnoreCase)
         {
-            [".nes"] = new("Nintendo Entertainment System", "NES", Color.Parse("#F04464")),
-            [".fds"] = new("Famicom Disk System", "FDS", Color.Parse("#E9573F")),
-            [".sfc"] = new("Super Nintendo Entertainment System", "SNES", Color.Parse("#8B7CF6")),
-            [".smc"] = new("Super Nintendo Entertainment System", "SNES", Color.Parse("#8B7CF6")),
+            [".nes"] = new("Nintendo Entertainment System", "NES", Color.Parse("#F04464"), NintendoFolderName),
+            [".fds"] = new("Famicom Disk System", "FDS", Color.Parse("#E9573F"), NintendoFolderName),
+            [".sfc"] = new("Super Nintendo Entertainment System", "SNES", Color.Parse("#8B7CF6"), SuperNintendoFolderName),
+            [".smc"] = new("Super Nintendo Entertainment System", "SNES", Color.Parse("#8B7CF6"), SuperNintendoFolderName),
             [".gb"] = new("Game Boy", "GB", Color.Parse("#9BBF45")),
             [".gbc"] = new("Game Boy Color", "GBC", Color.Parse("#F0A43A")),
             [".gba"] = new("Game Boy Advance", "GBA", Color.Parse("#6C63D9")),
-            [".n64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5")),
-            [".z64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5")),
-            [".v64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5")),
+            [".n64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5"), Nintendo64FolderName),
+            [".z64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5"), Nintendo64FolderName),
+            [".v64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5"), Nintendo64FolderName),
             [".nds"] = new("Nintendo DS", "NDS", Color.Parse("#5A9CF8")),
             [".gcm"] = new("Nintendo GameCube", "GC", Color.Parse("#6D72E8")),
             [".rvz"] = new("Nintendo GameCube / Wii", "GC/WII", Color.Parse("#4CB4D8")),
@@ -39,6 +39,7 @@ public sealed class GameLibrary
         };
 
     private readonly RomTitleResolver _titleResolver;
+    private readonly GameSaveStorage _saveStorage;
 
     public GameLibrary(string? gamesFolder = null)
     {
@@ -48,6 +49,10 @@ public sealed class GameLibrary
         Nintendo64Folder = Directory.CreateDirectory(Path.Combine(GamesFolder, Nintendo64FolderName)).FullName;
         SuperNintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, SuperNintendoFolderName)).FullName;
         _titleResolver = new RomTitleResolver(GamesFolder);
+        _saveStorage = new GameSaveStorage(GamesFolder);
+        NintendoSavesFolder = _saveStorage.EnsurePlatformFolder(NintendoFolderName);
+        Nintendo64SavesFolder = _saveStorage.EnsurePlatformFolder(Nintendo64FolderName);
+        SuperNintendoSavesFolder = _saveStorage.EnsurePlatformFolder(SuperNintendoFolderName);
     }
 
     public string GamesFolder { get; }
@@ -57,6 +62,14 @@ public sealed class GameLibrary
     public string Nintendo64Folder { get; }
 
     public string SuperNintendoFolder { get; }
+
+    public string SavesFolder => _saveStorage.RootFolder;
+
+    public string NintendoSavesFolder { get; }
+
+    public string Nintendo64SavesFolder { get; }
+
+    public string SuperNintendoSavesFolder { get; }
 
     public string MetadataFolder => _titleResolver.CatalogFolder;
 
@@ -100,6 +113,13 @@ public sealed class GameLibrary
                     extension,
                     fallbackTitle,
                     compatibility.CartridgeTitle);
+                var savePaths = platform.SaveFolderName is null
+                    ? null
+                    : _saveStorage.GetPaths(
+                        relativePath,
+                        platform.SaveFolderName,
+                        compatibility.BatterySaveExtension,
+                        cacheKey);
 
                 results.Add(new GameEntry(
                     title,
@@ -114,7 +134,8 @@ public sealed class GameLibrary
                 {
                     ScreenshotPath = screenshotPath,
                     ScreenshotCachePath = screenshotCachePath,
-                    SaveRamPath = GetCachePath("saves", cacheKey, ".sav"),
+                    SaveRamPath = savePaths?.BatteryPath ?? string.Empty,
+                    SaveStatePath = savePaths?.StatePath ?? string.Empty,
                     MapperNumber = compatibility.MapperNumber,
                     SubmapperNumber = compatibility.SubmapperNumber,
                     CartridgeDescription = compatibility.CartridgeDescription,
@@ -195,7 +216,8 @@ public sealed class GameLibrary
                         ? "UNKNOWN CIC"
                         : cartridge.Cic.ToString().Replace("Cic", "CIC "),
                     true,
-                    cartridge.Title);
+                    cartridge.Title,
+                    cartridge.SaveExtension);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
             {
@@ -306,7 +328,11 @@ public sealed class GameLibrary
         return sidecarScreenshot ?? (File.Exists(screenshotCachePath) ? screenshotCachePath : null);
     }
 
-    private sealed record PlatformDefinition(string Name, string Code, Color AccentColor);
+    private sealed record PlatformDefinition(
+        string Name,
+        string Code,
+        Color AccentColor,
+        string? SaveFolderName = null);
 
     private sealed record Compatibility(
         int? MapperNumber,
@@ -315,5 +341,6 @@ public sealed class GameLibrary
         string Message,
         string? CartridgeDescription,
         bool IsLimited = false,
-        string? CartridgeTitle = null);
+        string? CartridgeTitle = null,
+        string BatterySaveExtension = ".sav");
 }

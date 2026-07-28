@@ -61,6 +61,7 @@ internal sealed class SnesBus : I65816Bus
     private bool _vblank;
     private bool _nmiFlag;
     private bool _nmiPending;
+    private int _nmiRecognitionDelayInstructions;
     private bool _irqFlag;
     private ushort _controllerOne;
     private ushort _controllerTwo;
@@ -188,6 +189,30 @@ internal sealed class SnesBus : I65816Bus
     internal bool SuperFxRunning => _superFx?.IsRunning ?? false;
 
     internal ushort SuperFxProgramCounter => _superFx?.ProgramCounter ?? 0;
+
+    internal string SuperFxDiagnostics
+    {
+        get
+        {
+            if (_superFx is null)
+            {
+                return "none";
+            }
+
+            var top = _superFx.OpcodeHistogram
+                .Select((count, opcode) => (opcode, count))
+                .Where(entry => entry.count > 0)
+                .OrderByDescending(entry => entry.count)
+                .Take(8)
+                .Select(entry => $"{entry.opcode:X2}:{entry.count:N0}");
+
+            return $"starts={_superFx.StartCount} stops={_superFx.StopCount} " +
+                   $"lastStop={_superFx.LastStopProgramBank:X2}:{_superFx.LastStopProgramCounter:X4} " +
+                   $"byHost={_superFx.LastStopWasHostRequested} | top opcodes {string.Join(" ", top)}\n" +
+                   $"                {_superFx.RegisterDump}\n" +
+                   $"                pc samples: {string.Join(" ", _superFx.ProgramCounterSamples.Select(s => s.Location))}";
+        }
+    }
 
     private byte ReadHvbJoy()
     {
@@ -472,7 +497,9 @@ internal sealed class SnesBus : I65816Bus
         AdvanceMasterClocks(Math.Max(1, cpuCycles) * MasterClocksPerCpuCycle);
     }
 
-    internal void AdvanceMasterClocks(int masterClocks)
+    internal void AdvanceMasterClocks(
+        int masterClocks,
+        bool completesCpuInstruction = false)
     {
         masterClocks = Math.Max(MasterClocksPerCpuCycle, masterClocks);
         _totalMasterClocks += masterClocks;
@@ -515,7 +542,15 @@ internal sealed class SnesBus : I65816Bus
                 VblankCount++;
                 if ((_nmitimen & 0x80) != 0)
                 {
-                    _nmiPending = true;
+                    // The 65816 samples interrupts one CPU cycle before the
+                    // instruction boundary. If VBlank begins after that
+                    // sample, the next opcode executes before NMI service.
+                    // FF3 relies on that opcode being able to read RDNMI
+                    // before its NMI handler acknowledges the same flag.
+                    ArmNmi(
+                        delayOneInstruction:
+                            completesCpuInstruction &&
+                            masterClocks <= MasterClocksPerCpuCycle);
                     VblankNmiArmed++;
                 }
 
@@ -593,9 +628,30 @@ internal sealed class SnesBus : I65816Bus
 
     public bool ConsumeNmi()
     {
-        var pending = _nmiPending;
+        if (!_nmiPending)
+        {
+            return false;
+        }
+
+        if (_nmiRecognitionDelayInstructions > 0)
+        {
+            _nmiRecognitionDelayInstructions--;
+            return false;
+        }
+
         _nmiPending = false;
-        return pending;
+        return true;
+    }
+
+    private void ArmNmi(bool delayOneInstruction)
+    {
+        if (_nmiPending)
+        {
+            return;
+        }
+
+        _nmiPending = true;
+        _nmiRecognitionDelayInstructions = delayOneInstruction ? 1 : 0;
     }
 
     public void SetControllerState(int player, SnesButton buttons)
@@ -610,7 +666,7 @@ internal sealed class SnesBus : I65816Bus
         }
     }
 
-    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 14);
+    internal void SaveState(BinaryWriter writer) => SaveState(writer, stateVersion: 15);
 
     internal void SaveState(BinaryWriter writer, int stateVersion)
     {
@@ -630,6 +686,10 @@ internal sealed class SnesBus : I65816Bus
         writer.Write(_vblank);
         writer.Write(_nmiFlag);
         writer.Write(_nmiPending);
+        if (stateVersion >= 15)
+        {
+            writer.Write(_nmiRecognitionDelayInstructions);
+        }
         writer.Write(_irqFlag);
         writer.Write(Volatile.Read(ref _controllerOne));
         writer.Write(Volatile.Read(ref _controllerTwo));
@@ -670,7 +730,7 @@ internal sealed class SnesBus : I65816Bus
         Ppu.SaveState(writer, stateVersion);
     }
 
-    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 14);
+    internal void LoadState(BinaryReader reader) => LoadState(reader, stateVersion: 15);
 
     internal void LoadState(BinaryReader reader, int stateVersion)
     {
@@ -690,6 +750,8 @@ internal sealed class SnesBus : I65816Bus
         _vblank = reader.ReadBoolean();
         _nmiFlag = reader.ReadBoolean();
         _nmiPending = reader.ReadBoolean();
+        _nmiRecognitionDelayInstructions =
+            stateVersion >= 15 ? reader.ReadInt32() : 0;
         _irqFlag = reader.ReadBoolean();
         Volatile.Write(ref _controllerOne, reader.ReadUInt16());
         Volatile.Write(ref _controllerTwo, reader.ReadUInt16());
@@ -1186,7 +1248,9 @@ internal sealed class SnesBus : I65816Bus
                     _vblank &&
                     _nmiFlag)
                 {
-                    _nmiPending = true;
+                    // NMITIMEN writes lock interrupt recognition until the
+                    // following instruction boundary on the S-CPU.
+                    ArmNmi(delayOneInstruction: _cpuInstructionTimingActive);
                 }
                 if ((value & 0x01) == 0)
                 {
