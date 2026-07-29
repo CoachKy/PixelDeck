@@ -309,6 +309,19 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private bool isBusy = true;
 
+    /// <summary>
+    /// Drives the loading splash, which belongs to startup alone.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <see cref="IsBusy"/>. That flag marks any library scan,
+    /// and scans happen long after startup — the folder watcher fires one every
+    /// time a game exits and writes its save and play history. Binding the
+    /// splash to it threw the full startup screen back up on returning from a
+    /// game.
+    /// </remarks>
+    [ObservableProperty]
+    private bool isStartingUp = true;
+
     // --- Splash startup + update -------------------------------------------
 
     [ObservableProperty]
@@ -996,14 +1009,21 @@ public partial class MainViewModel : ViewModelBase, IDisposable
             checkForUpdatesOnStartup: PixelDeckSettingsStore.Current.CheckForUpdatesOnStartup);
         _updateCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
+        // Held up when an update was staged: PixelDeck is about to be replaced
+        // and relaunched, so showing the dashboard first would only flash it.
+        var openingDashboard = true;
+
         try
         {
-            return await coordinator.RunAsync(
+            var result = await coordinator.RunAsync(
                 _ => Task.CompletedTask, // Settings load eagerly through their static store.
                 _ => RefreshAsync(),
                 PromptForUpdateAsync,
                 new UpdateDownloadRelay(this),
                 _updateCancellation.Token);
+
+            openingDashboard = result.Outcome != StartupOutcome.UpdateStaged;
+            return result;
         }
         catch (OperationCanceledException)
         {
@@ -1022,6 +1042,11 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
         finally
         {
+            if (openingDashboard)
+            {
+                IsStartingUp = false;
+            }
+
             _updateCancellation?.Dispose();
             _updateCancellation = null;
         }

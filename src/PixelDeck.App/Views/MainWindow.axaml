@@ -1305,7 +1305,7 @@
         -->
         <Grid Name="LoadingOverlay"
               ZIndex="200"
-              IsVisible="{Binding IsBusy}"
+              IsVisible="{Binding IsStartingUp}"
               Background="#F5081120">
             <StackPanel Width="460"
                         HorizontalAlignment="Center"
