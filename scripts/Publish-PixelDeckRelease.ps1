@@ -103,4 +103,5 @@ foreach ($rid in $Runtime) {
 }
 
 Write-Host "`nArtifacts in $OutputRoot" -ForegroundColor Cyan
-Write-Host "Upload every package and its .sha256 to the GitHub release, tagged v$version." -ForegroundColor Yellow
+Write-Host "Upload every package and its .sha256 to a SINGLE GitHub release tagged $tagVersion." -ForegroundColor Yellow
+Write-Host "Both runtimes share one release: the updater reads releases/latest and picks its own asset." -ForegroundColor Yellow
