@@ -73,7 +73,7 @@ public partial class EmulatorWindow : Window
     }
 
     private Button[] MainMenuButtons =>
-        [ResumeButton, SaveStateButton, LoadStateButton, ResetGameButton, QuitGameButton];
+        [ResumeButton, SaveStateButton, LoadStateButton, LibraryImageButton, ResetGameButton, QuitGameButton];
 
     private Button[] ActiveMenuButtons => _pauseMenuMode == PauseMenuMode.Main
         ? MainMenuButtons
@@ -350,7 +350,13 @@ public partial class EmulatorWindow : Window
 
         LoadingOverlay.IsVisible = false;
 
-        if (_game is not null && !_screenshotSaved && frameNumber >= 120 && hasUsefulImage)
+        // A picture the player chose themselves outranks the automatic one, so
+        // games that already have a library image are left alone.
+        if (_game is not null &&
+            !_game.HasChosenLibraryImage &&
+            !_screenshotSaved &&
+            frameNumber >= 120 &&
+            hasUsefulImage)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_game.ScreenshotCachePath)!);
             bitmap.Save(_game.ScreenshotCachePath, PngBitmapEncoderOptions.Default);
@@ -701,12 +707,46 @@ public partial class EmulatorWindow : Window
             case 0: Resume(); break;
             case 1: OpenSaveStateMenu(); break;
             case 2: OpenLoadStateMenu(); break;
-            case 3: ResetGame(); break;
-            case 4: Close(); break;
+            case 3: CaptureLibraryImage(); break;
+            case 4: ResetGame(); break;
+            case 5: Close(); break;
         }
     }
 
     private void Resume() => SetPaused(false);
+
+    /// <summary>
+    /// Stores the frame the player paused on as this game's library image.
+    /// </summary>
+    /// <remarks>
+    /// The pause menu is a separate control composited over the video, so the
+    /// emulator's own bitmap already excludes it — no need to hide the overlay
+    /// or re-run the machine to get a clean capture.
+    /// </remarks>
+    private void CaptureLibraryImage()
+    {
+        if (_game is null || _frameBitmap is null || _game.LibraryImagePath.Length == 0)
+        {
+            StateStatusText.Text = "NO FRAME TO CAPTURE YET";
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_game.LibraryImagePath)!);
+            _frameBitmap.Save(_game.LibraryImagePath, PngBitmapEncoderOptions.Default);
+            _game.AdoptCapturedLibraryImage();
+
+            // The chosen picture now wins, so the automatic screenshot must not
+            // overwrite it later in this session either.
+            _screenshotSaved = true;
+            StateStatusText.Text = "LIBRARY IMAGE UPDATED";
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            StateStatusText.Text = $"LIBRARY IMAGE FAILED  ·  {exception.Message}".ToUpperInvariant();
+        }
+    }
 
     private void HandlePauseBack()
     {
@@ -1166,6 +1206,8 @@ public partial class EmulatorWindow : Window
     }
 
     private void OnResumeClick(object? sender, RoutedEventArgs eventArgs) => Resume();
+
+    private void OnLibraryImageClick(object? sender, RoutedEventArgs eventArgs) => CaptureLibraryImage();
 
     private void OnSaveStateClick(object? sender, RoutedEventArgs eventArgs) => OpenSaveStateMenu();
 

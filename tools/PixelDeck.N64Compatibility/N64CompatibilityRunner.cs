@@ -96,7 +96,7 @@ internal sealed class N64CompatibilityRunner
             .ToArray();
 
         return new(
-            SchemaVersion: 1,
+            SchemaVersion: 2,
             Pixel64Version: FormatVersion(typeof(N64Machine).Assembly.GetName().Version),
             StartedAtUtc: startedAt,
             CompletedAtUtc: completedAt,
@@ -105,7 +105,8 @@ internal sealed class N64CompatibilityRunner
                 options.FieldsPerGame,
                 options.Parallelism,
                 options.Filter,
-                options.CaptureFlaggedFrames),
+                options.CaptureFlaggedFrames,
+                options.CaptureGraphicsTasks),
             Summary: summary,
             HardwareProfiles: profiles,
             Blockers: blockers,
@@ -161,6 +162,11 @@ internal sealed class N64CompatibilityRunner
             // battery data is neither loaded from nor written to the user's
             // Saves folder.
             machine = N64Machine.Create(cartridge);
+            if (options.CaptureGraphicsTasks)
+            {
+                machine.RequestGraphicsTaskCapture();
+            }
+
             var startingInstructions = machine.Cpu.InstructionsExecuted;
             for (var field = 0; field < options.FieldsPerGame; field++)
             {
@@ -209,6 +215,10 @@ internal sealed class N64CompatibilityRunner
                 audioPeak,
                 failures,
                 warnings);
+            if (options.CaptureGraphicsTasks && machine.LastGraphicsCapture is null)
+            {
+                warnings.Add("No graphics task was submitted during the bounded capture route.");
+            }
 
             var status = CompatibilityClassifier.Classify(true, failures, warnings);
             var capturePath = WriteCaptureWhenNeeded(
@@ -219,6 +229,12 @@ internal sealed class N64CompatibilityRunner
                 lastFrame,
                 lastFrameWidth,
                 lastFrameHeight,
+                options);
+            var graphicsCapturePath = WriteGraphicsCapture(
+                index,
+                relativePath,
+                hash,
+                machine.LastGraphicsCapture,
                 options);
             return CreateGameResult(
                 relativePath,
@@ -235,6 +251,7 @@ internal sealed class N64CompatibilityRunner
                 audioPeak,
                 saveStateDeterministic,
                 capturePath,
+                graphicsCapturePath,
                 [.. failures, .. warnings]);
         }
         catch (Exception exception)
@@ -249,6 +266,12 @@ internal sealed class N64CompatibilityRunner
                 lastFrameWidth,
                 lastFrameHeight,
                 options);
+            var graphicsCapturePath = WriteGraphicsCapture(
+                index,
+                relativePath,
+                hash,
+                machine?.LastGraphicsCapture,
+                options);
             return CreateGameResult(
                 relativePath,
                 fileName,
@@ -264,6 +287,7 @@ internal sealed class N64CompatibilityRunner
                 audioPeak,
                 saveStateDeterministic,
                 capturePath,
+                graphicsCapturePath,
                 failures);
         }
     }
@@ -373,6 +397,7 @@ internal sealed class N64CompatibilityRunner
         float audioPeak,
         bool saveStateDeterministic,
         string? capturePath,
+        string? graphicsCapturePath,
         IReadOnlyList<string> findings) =>
         new()
         {
@@ -425,6 +450,7 @@ internal sealed class N64CompatibilityRunner
             DroppedAudioSamples = machine?.DroppedAudioSampleCount ?? 0,
             SaveStateDeterministic = saveStateDeterministic,
             CapturePath = capturePath,
+            GraphicsCapturePath = graphicsCapturePath,
             Findings = findings
         };
 
@@ -645,6 +671,33 @@ internal sealed class N64CompatibilityRunner
             frame,
             width,
             height);
+        return relativeCapture.Replace('\\', '/');
+    }
+
+    private static string? WriteGraphicsCapture(
+        int index,
+        string relativePath,
+        string hash,
+        N64GraphicsTaskCapture? capture,
+        CompatibilityOptions options)
+    {
+        if (!options.CaptureGraphicsTasks || capture is null)
+        {
+            return null;
+        }
+
+        var safeName = string.Concat(
+            Path.GetFileNameWithoutExtension(relativePath)
+                .Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character));
+        if (safeName.Length > 80)
+        {
+            safeName = safeName[..80];
+        }
+
+        var relativeCapture = Path.Combine(
+            "graphics-tasks",
+            $"{index:D4}-{safeName}-{hash[..8]}.p64gfx");
+        capture.Save(Path.Combine(options.OutputFolder, relativeCapture));
         return relativeCapture.Replace('\\', '/');
     }
 

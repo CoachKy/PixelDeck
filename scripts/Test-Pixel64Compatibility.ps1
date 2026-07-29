@@ -10,6 +10,8 @@ param(
 
     [switch]$NoCaptures,
 
+    [switch]$GraphicsCaptures,
+
     [switch]$Strict
 )
 
@@ -41,6 +43,10 @@ if (-not [string]::IsNullOrWhiteSpace($Filter)) {
 
 if ($NoCaptures) {
     $Arguments += '--no-captures'
+}
+
+if ($GraphicsCaptures) {
+    $Arguments += '--graphics-captures'
 }
 
 if ($Strict) {

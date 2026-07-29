@@ -111,16 +111,17 @@ public sealed class N64AudioTests(ITestOutputHelper output)
         processor.Execute(new N64RspTask(
             2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1000, (uint)(commands.Length * 4), 0, 0));
 
-        // A_INIT starts with an empty four-sample history. Once the filter
-        // reaches loaded PCM, unity input must stay at unity without ringing.
-        for (var index = 0; index < 4; index++)
+        // A_INIT starts with an empty four-sample history. The ABI window is
+        // [history 0..3, input 0..], so a unity-rate stream reaches input on
+        // the fourth output and then remains stable.
+        for (var index = 0; index < 3; index++)
         {
             Assert.Equal(
                 0,
                 unchecked((short)memory.ReadUInt16((uint)(0x80003000 + (index * 2)))));
         }
 
-        for (var index = 4; index < 8; index++)
+        for (var index = 3; index < 8; index++)
         {
             Assert.InRange(
                 unchecked((short)memory.ReadUInt16((uint)(0x80003000 + (index * 2)))),
@@ -129,6 +130,55 @@ public sealed class N64AudioTests(ITestOutputHelper output)
         }
 
         Assert.Equal(0, processor.UnsupportedCommands);
+    }
+
+    [Fact]
+    public void ResamplePersistsTheNextAbiHistoryWindow()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        var processor = new N64AudioProcessor(memory);
+        short[] source = [101, 203, 307, 409, 503, 601, 701, 809, 907, 1_009, 1_103, 1_201];
+        for (var index = 0; index < source.Length; index++)
+        {
+            memory.WriteUInt16(
+                (uint)(0x80002000 + (index * 2)),
+                unchecked((ushort)source[index]));
+        }
+
+        var commands = new uint[]
+        {
+            0x07000000, 0x00000000, // A_SEGMENT 0 -> 0
+            0x08000000, 0x00000020, // A_SETBUFF in=0x000 count=32
+            0x04000000, 0x00002000, // A_LOADBUFF source PCM
+            0x08000000, 0x01000010, // A_SETBUFF in=0x000 out=0x100 count=16
+            0x05018000, 0x00005000  // A_RESAMPLE A_INIT, 1:1 pitch
+        };
+        WriteCommandList(memory, 0x1000, commands);
+
+        processor.Execute(new N64RspTask(
+            2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x1000, (uint)(commands.Length * 4), 0, 0));
+
+        // Eight unity-rate outputs advance the four-sample input window by
+        // eight positions. The next invocation must therefore resume with
+        // source samples 4..7, not replay the preceding history.
+        for (var index = 0; index < 4; index++)
+        {
+            Assert.Equal(
+                unchecked((ushort)source[index + 4]),
+                memory.ReadUInt16((uint)(0x80005000 + (index * 2))));
+        }
+
+        Assert.Equal(0, memory.ReadUInt16(0x80005008));
+    }
+
+    [Fact]
+    public void MachineExposesReplaceableAudioBackendBoundary()
+    {
+        var machine = N64Machine.Create(
+            N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+
+        Assert.Same(machine.AudioProcessor, machine.AudioBackend);
+        Assert.Equal("Pixel64 Audio HLE", machine.AudioBackend.Name);
     }
 
     [Fact]

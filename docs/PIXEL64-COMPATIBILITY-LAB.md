@@ -24,12 +24,17 @@ Useful focused runs:
 ```powershell
 .\scripts\Test-Pixel64Compatibility.ps1 -Filter 'Mario 64' -FieldsPerGame 600
 .\scripts\Test-Pixel64Compatibility.ps1 -NoCaptures
+.\scripts\Test-Pixel64Compatibility.ps1 -Filter 'Mario 64' -GraphicsCaptures
 .\scripts\Test-Pixel64Compatibility.ps1 -Strict
 ```
 
 `-Strict` returns a non-zero exit code when a cartridge is invalid or the core
 fails. Warnings remain review items so an unverified cartridge or a slow,
 static boot scene does not make automation unusable.
+
+`-GraphicsCaptures` asks each machine to capture its first submitted graphics
+task. A short audit that does not reach a display list reports that honestly as
+a warning instead of creating synthetic evidence.
 
 ## Evidence
 
@@ -39,6 +44,48 @@ Each run creates:
 - `games.csv` for sorting and comparing counters;
 - `report.json` for automation and future baseline comparisons;
 - `captures/*.bmp` for the last available frame from warning/failure cases.
+- `graphics-tasks/*.p64gfx` for the first pre-execution graphics task when
+  `-GraphicsCaptures` is enabled.
+
+The `.p64gfx` format contains the RSP task descriptor and an exact compressed
+snapshot of the 8 MiB RDRAM visible to that task. It does not contain the full
+cartridge image, but RDRAM can include game-derived code and assets; captures
+are local diagnostic evidence and must not be committed or distributed without
+permission. Each file has a versioned header and SHA-256 integrity check, and
+malformed, truncated, oversized, or trailing data is rejected.
+
+Replay a capture without booting the game:
+
+```powershell
+dotnet run --project tools/PixelDeck.N64GraphicsReplay -- `
+  'artifacts/n64-compatibility/<run>/graphics-tasks/<capture>.p64gfx' `
+  --repeat 3
+```
+
+Export the direct native RDP packet stream, then replay it without running the
+Fast3D display-list decoder:
+
+```powershell
+dotnet run --project tools/PixelDeck.N64GraphicsReplay -- `
+  'artifacts/n64-compatibility/<run>/graphics-tasks/<capture>.p64gfx' `
+  --export-rdp 'artifacts/n64-compatibility/<run>/graphics-tasks/<capture>.p64rdp'
+
+dotnet run --project tools/PixelDeck.N64GraphicsReplay -- `
+  'artifacts/n64-compatibility/<run>/graphics-tasks/<capture>.p64rdp' `
+  --repeat 3
+```
+
+The `.p64rdp` format has a versioned header, compressed 8 MiB pre-task RDRAM,
+ordered variable-length native packets, microcode metadata, and a SHA-256
+checksum over the logical contents. It rejects truncation, oversized records,
+checksum mismatches, and trailing data. It also records the exact number of
+HLE primitive commands omitted because Pixel64 does not yet lower transformed
+Fast3D triangles back into native RDP edge packets. Only a trace with zero
+omissions and zero unsupported source commands is reported as complete.
+
+The replay utility reports input and output memory hashes, backend identity,
+command coverage, render-target state, and whether repeated executions were
+deterministic.
 
 The report records cartridge identity, CIC, video region, save type, source
 byte order, CPU progress, exact program counter, graphics and audio task
@@ -47,7 +94,7 @@ controller polling, visual liveness, audio output, dropped samples,
 performance, exact next-field save-state determinism, and the final RDP
 other-mode/cycle state with alpha-rejection and framebuffer-blend counters.
 
-## Graphics backend roadmap
+## Graphics backend and replay roadmap
 
 `N64Machine` now submits graphics tasks through `IN64GraphicsBackend`. The
 bundled implementation remains Pixel64's optimized Fast3D software renderer,
@@ -60,10 +107,14 @@ the framebuffer for programmed blender cycles. These changes cover the
 full-screen shade family used by Super Mario 64's pause UI. Coverage, dithering,
 and two-cycle behavior remain approximations.
 
-The next backend milestone is a Vulkan capability probe and a separate
-paraLLEl-RDP adapter. It must remain optional, preserve the software fallback,
-and pass identical scheduler, save-state, controller, and compatibility-lab
-routes before it can become the preferred renderer.
+Graphics-task capture/replay is the first conformance layer around that
+boundary. Direct native RDP packet capture/replay is now the second. Native
+triangle-edge lowering, hidden RDRAM, and image assertions are the remaining
+capture work before a Vulkan capability probe and separate paraLLEl-RDP adapter
+can be evaluated on identical renderer inputs. A new backend must remain
+optional, preserve the software fallback, and pass the same scheduler,
+save-state, controller, replay, and compatibility-lab routes before it can
+become the preferred renderer.
 
 ## Reading the status
 

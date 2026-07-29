@@ -6,6 +6,8 @@ using CommunityToolkit.Mvvm.Input;
 using PixelDeck.App.Input;
 using PixelDeck.App.Models;
 using PixelDeck.App.Services;
+using PixelDeck.App.Services.Startup;
+using PixelDeck.App.Services.Updates;
 using PixelDeck.App.Settings;
 using PixelDeck.Emulation.Nes;
 using PixelDeck.Emulation.N64;
@@ -296,8 +298,63 @@ public partial class MainViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private int selectedRecentIndex = -1;
 
+    /// <summary>
+    /// Guards against overlapping scans. Kept separate from <see cref="IsBusy"/>
+    /// so that the busy flag can start out set — it drives the loading splash,
+    /// which has to be up from the first rendered frame rather than only once
+    /// the first scan begins.
+    /// </summary>
+    private bool _isScanning;
+
     [ObservableProperty]
-    private bool isBusy;
+    private bool isBusy = true;
+
+    // --- Splash startup + update -------------------------------------------
+
+    [ObservableProperty]
+    private int startupPercent;
+
+    /// <summary>
+    /// True once startup switches from indeterminate to staged percentages, so
+    /// the splash bar only claims to know progress when it actually does.
+    /// </summary>
+    [ObservableProperty]
+    private bool hasStartupProgress;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsUpdatePromptVisible))]
+    private ReleaseInfo? availableUpdate;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsUpdatePromptVisible))]
+    private bool isPreparingUpdate;
+
+    [ObservableProperty]
+    private string updateFailureMessage = string.Empty;
+
+    /// <summary>The update panel shows only while a choice is outstanding.</summary>
+    public bool IsUpdatePromptVisible => AvailableUpdate is not null && !IsPreparingUpdate;
+
+    /// <summary>Assembly version of the running build, for update comparisons.</summary>
+    public static Version ProductVersion { get; } =
+        typeof(MainViewModel).Assembly.GetName().Version ?? new Version(0, 0);
+
+    public string UpdateInstalledVersionText =>
+        $"Installed  {ProductVersion.Major}.{ProductVersion.Minor}.{ProductVersion.Build:000}";
+
+    public string UpdateAvailableVersionText =>
+        AvailableUpdate is null ? string.Empty : $"Available  {AvailableUpdate.Version}";
+
+    public string UpdateReleaseTitleText => AvailableUpdate?.Title ?? string.Empty;
+
+    public string UpdateReleaseNotesText => AvailableUpdate?.Notes ?? string.Empty;
+
+    public string UpdateReleaseDetailText => AvailableUpdate is null
+        ? string.Empty
+        : string.Join(
+            "     ",
+            new[] { AvailableUpdate.PublishedText, AvailableUpdate.AssetSizeText }
+                .Where(part => part.Length > 0));
 
     [ObservableProperty]
     private string statusText = "SCANNING LOCAL LIBRARY";
@@ -916,14 +973,136 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
     }
 
+    private TaskCompletionSource<UpdateDecision>? _updateDecision;
+    private CancellationTokenSource? _updateCancellation;
+
+    /// <summary>Set once the player declines, so the splash does not ask again this session.</summary>
+    private bool _updateDeclinedThisSession;
+
+    /// <summary>
+    /// Runs the splash startup sequence. Returns the staged update when the
+    /// player approved one, in which case the dashboard must not be opened.
+    /// </summary>
+    public async Task<StartupResult> RunStartupAsync(
+        IUpdateService updateService,
+        CancellationToken cancellationToken)
+    {
+        HasStartupProgress = true;
+        var pipeline = new StartupPipeline(new StartupProgressRelay(this));
+        var coordinator = new StartupCoordinator(
+            updateService,
+            pipeline,
+            ProductVersion,
+            checkForUpdatesOnStartup: PixelDeckSettingsStore.Current.CheckForUpdatesOnStartup);
+        _updateCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        try
+        {
+            return await coordinator.RunAsync(
+                _ => Task.CompletedTask, // Settings load eagerly through their static store.
+                _ => RefreshAsync(),
+                PromptForUpdateAsync,
+                new UpdateDownloadRelay(this),
+                _updateCancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelling a download returns to ordinary startup on this build.
+            AvailableUpdate = null;
+            IsPreparingUpdate = false;
+            StatusText = "UPDATE CANCELLED";
+            return new StartupResult(StartupOutcome.OpenDashboard);
+        }
+        catch (UpdatePreparationException failure)
+        {
+            UpdateFailureMessage = failure.Message;
+            AvailableUpdate = null;
+            IsPreparingUpdate = false;
+            return new StartupResult(StartupOutcome.OpenDashboard);
+        }
+        finally
+        {
+            _updateCancellation?.Dispose();
+            _updateCancellation = null;
+        }
+    }
+
+    private Task<UpdateDecision> PromptForUpdateAsync(ReleaseInfo release, CancellationToken cancellationToken)
+    {
+        if (_updateDeclinedThisSession)
+        {
+            return Task.FromResult(UpdateDecision.ContinueWithoutUpdating);
+        }
+
+        AvailableUpdate = release;
+        _updateDecision = new TaskCompletionSource<UpdateDecision>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        return _updateDecision.Task.WaitAsync(cancellationToken);
+    }
+
+    [RelayCommand]
+    private void UpdateNow()
+    {
+        IsPreparingUpdate = true;
+        _updateDecision?.TrySetResult(UpdateDecision.UpdateNow);
+    }
+
+    [RelayCommand]
+    private void ContinueWithoutUpdating()
+    {
+        _updateDeclinedThisSession = true;
+        AvailableUpdate = null;
+        _updateDecision?.TrySetResult(UpdateDecision.ContinueWithoutUpdating);
+    }
+
+    [RelayCommand]
+    private void CancelUpdate() => _updateCancellation?.Cancel();
+
+    /// <summary>Forwards pipeline stages onto the splash's bound properties.</summary>
+    private sealed class StartupProgressRelay(MainViewModel owner) : IProgress<StartupProgress>
+    {
+        public void Report(StartupProgress value)
+        {
+            owner.StartupPercent = value.Percent;
+            owner.StatusText = value.Status.ToUpperInvariant();
+        }
+    }
+
+    /// <summary>
+    /// Turns byte counts into splash text and, when the size is known, into the
+    /// update slice of the startup bar.
+    /// </summary>
+    private sealed class UpdateDownloadRelay(MainViewModel owner) : IProgress<UpdateDownloadProgress>
+    {
+        public void Report(UpdateDownloadProgress value)
+        {
+            if (value.Fraction is { } fraction)
+            {
+                owner.StartupPercent = StartupStage.UpdateCheck +
+                    (int)(fraction * (StartupStage.Complete - StartupStage.UpdateCheck));
+                owner.StatusText =
+                    $"DOWNLOADING {FormatBytes(value.BytesReceived)} OF {FormatBytes(value.TotalBytes!.Value)}";
+            }
+            else
+            {
+                owner.StatusText = $"DOWNLOADING {FormatBytes(value.BytesReceived)}";
+            }
+        }
+
+        private static string FormatBytes(long bytes) => bytes < 1024L * 1024
+            ? $"{bytes / 1024.0:0} KB"
+            : $"{bytes / (1024.0 * 1024):0} MB";
+    }
+
     [RelayCommand]
     public async Task RefreshAsync()
     {
-        if (IsBusy)
+        if (_isScanning)
         {
             return;
         }
 
+        _isScanning = true;
         IsBusy = true;
         StatusText = "SCANNING LOCAL LIBRARY";
         NotifyLibraryStateChanged();
@@ -957,6 +1136,7 @@ public partial class MainViewModel : ViewModelBase, IDisposable
         }
         finally
         {
+            _isScanning = false;
             IsBusy = false;
             NotifyLibraryStateChanged();
             NotifyHomeStateChanged();

@@ -96,6 +96,7 @@ internal sealed class EmulatorAudioOutput : IDisposable
         private long _underrunSampleCount;
         private float[] _rateSourceBuffer = new float[8_192];
         private readonly AudioUnderrunSmoother _n64UnderrunSmoother = new();
+        private readonly AudioRebufferGate _n64RebufferGate = new();
 
         public EmulatorSampleProvider(NesMachine machine)
         {
@@ -190,12 +191,15 @@ internal sealed class EmulatorAudioOutput : IDisposable
             if (Volatile.Read(ref _isPaused) == 0)
             {
                 var playbackRate = Volatile.Read(ref _playbackRate);
-                if (!ShouldWaitForN64Prebuffer(destination.Length, playbackRate))
+                if (ShouldWaitForN64Prebuffer(destination.Length, playbackRate))
                 {
-                    samplesRead = playbackRate == 1
-                        ? ReadMachineSamples(destination)
-                        : ReadRateConvertedSamples(destination, playbackRate);
+                    destination.Clear();
+                    return count;
                 }
+
+                samplesRead = playbackRate == 1
+                    ? ReadMachineSamples(destination)
+                    : ReadRateConvertedSamples(destination, playbackRate);
 
                 var isN64 = Volatile.Read(ref _n64Machine) is not null;
                 if (samplesRead > 0)
@@ -208,6 +212,7 @@ internal sealed class EmulatorAudioOutput : IDisposable
                     Interlocked.Add(ref _underrunSampleCount, destination.Length - samplesRead);
                     if (isN64)
                     {
+                        _n64RebufferGate.OnUnderrun();
                         _n64UnderrunSmoother.Process(
                             destination,
                             samplesRead,
@@ -231,7 +236,7 @@ internal sealed class EmulatorAudioOutput : IDisposable
         private bool ShouldWaitForN64Prebuffer(int requestedOutputValues, int playbackRate)
         {
             var n64Machine = Volatile.Read(ref _n64Machine);
-            if (n64Machine is null || Volatile.Read(ref _hasStarted) != 0)
+            if (n64Machine is null)
             {
                 return false;
             }
@@ -249,18 +254,16 @@ internal sealed class EmulatorAudioOutput : IDisposable
                 1_000;
             var bufferedValues = n64Machine.BufferedAudioSampleCount;
 
-            if (bufferedValues < Math.Max(requestedSourceValues, prebufferValues))
-            {
-                return true;
-            }
-
-            return false;
+            return _n64RebufferGate.ShouldWait(
+                bufferedValues,
+                Math.Max(requestedSourceValues, prebufferValues));
         }
 
         private void ResetStreamState()
         {
             Volatile.Write(ref _hasStarted, 0);
             Volatile.Write(ref _sourceFramePhase, 0);
+            _n64RebufferGate.Reset();
             _n64UnderrunSmoother.Reset();
         }
 

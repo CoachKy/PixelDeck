@@ -91,6 +91,15 @@ public sealed class PixelDeckSettings
     /// </remarks>
     public List<N64ButtonMap> N64Ports { get; set; } = CreateDefaultN64Ports();
 
+    /// <summary>Whether the splash screen looks for a newer GitHub release at startup.</summary>
+    public bool CheckForUpdatesOnStartup { get; set; } = true;
+
+    /// <summary>
+    /// Installs an available update without asking. Off unless the player turns
+    /// it on deliberately: normal updates always require approval.
+    /// </summary>
+    public bool AutomaticallyInstallUpdates { get; set; }
+
     internal static List<N64ButtonMap> CreateDefaultN64Ports() =>
         [.. Enumerable.Range(0, N64ButtonMap.PortCount).Select(static _ => new N64ButtonMap())];
 }

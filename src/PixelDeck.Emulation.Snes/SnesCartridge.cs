@@ -22,7 +22,18 @@ public sealed record SnesCartridgeInfo(
     ushort ResetVector,
     bool HasCopierHeader,
     bool IsSupported,
-    string CompatibilityMessage);
+    string CompatibilityMessage)
+{
+    /// <summary>
+    /// True for boards the core loads and runs but does not yet render
+    /// correctly, so the library can offer them without claiming they play.
+    /// Super FX cartridges execute and complete their coprocessor jobs, but no
+    /// GSU-drawn output has been verified as correct.
+    /// </summary>
+    public bool IsLimitedCompatibility =>
+        MapMode == SnesMapMode.LoRom &&
+        CartridgeType is 0x13 or 0x14 or 0x15 or 0x1A;
+}
 
 public sealed class SnesCartridge
 {

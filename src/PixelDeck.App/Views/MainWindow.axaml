@@ -1295,5 +1295,126 @@
                 </StackPanel>
             </Border>
         </Grid>
+
+        <!--
+            Loading splash. This has to be a direct child of the root grid:
+            nested inside the content grid it would be clipped to that grid's
+            margin and row, so it would never cover the window. Being last in
+            document order and carrying the highest ZIndex puts it above every
+            other layer, including the quit confirmation.
+        -->
+        <Grid Name="LoadingOverlay"
+              ZIndex="200"
+              IsVisible="{Binding IsBusy}"
+              Background="#F5081120">
+            <StackPanel Width="460"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="26">
+                <Image Height="104" Stretch="Uniform">
+                    <Image.Source>
+                        <CroppedBitmap Source="/Assets/PixelDeckLogo.png"
+                                       SourceRect="183,234,1527,377" />
+                    </Image.Source>
+                </Image>
+
+                <!--
+                    Determinate once startup reports staged percentages;
+                    indeterminate before that, so the bar never implies it knows
+                    how long an unstarted network call will take.
+                -->
+                <ProgressBar Height="6"
+                             CornerRadius="3"
+                             Minimum="0"
+                             Maximum="100"
+                             Value="{Binding StartupPercent}"
+                             IsIndeterminate="{Binding !HasStartupProgress}"
+                             Background="#1AFFFFFF"
+                             Foreground="#3A9EF7" />
+
+                <TextBlock Text="{Binding StatusText}"
+                           HorizontalAlignment="Center"
+                           Foreground="#8FA6C4"
+                           FontSize="12"
+                           FontWeight="Bold"
+                           LetterSpacing="1.6" />
+
+                <!-- Shown only while the player has a choice outstanding. -->
+                <Border IsVisible="{Binding IsUpdatePromptVisible}"
+                        Margin="0,10,0,0"
+                        Padding="26"
+                        CornerRadius="14"
+                        BorderBrush="#35FFFFFF"
+                        BorderThickness="1"
+                        Background="#F20B1727">
+                    <StackPanel Spacing="14">
+                        <TextBlock Text="{Binding UpdateReleaseTitleText}"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#F6F8FC"
+                                   FontSize="17"
+                                   FontWeight="Bold"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center" />
+
+                        <StackPanel HorizontalAlignment="Center" Spacing="2">
+                            <TextBlock Text="{Binding UpdateInstalledVersionText}"
+                                       HorizontalAlignment="Center"
+                                       Foreground="#607087"
+                                       FontSize="11" />
+                            <TextBlock Text="{Binding UpdateAvailableVersionText}"
+                                       HorizontalAlignment="Center"
+                                       Foreground="#3A9EF7"
+                                       FontSize="11"
+                                       FontWeight="Bold" />
+                        </StackPanel>
+
+                        <TextBlock Text="{Binding UpdateReleaseNotesText}"
+                                   Foreground="#8FA6C4"
+                                   FontSize="11"
+                                   MaxHeight="76"
+                                   TextWrapping="Wrap"
+                                   TextAlignment="Center" />
+
+                        <TextBlock Text="{Binding UpdateReleaseDetailText}"
+                                   HorizontalAlignment="Center"
+                                   Foreground="#607087"
+                                   FontSize="10"
+                                   LetterSpacing="1.1" />
+
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Center"
+                                    Spacing="12">
+                            <Button Classes="utility"
+                                    Width="176"
+                                    HorizontalContentAlignment="Center"
+                                    Command="{Binding UpdateNowCommand}"
+                                    Content="Update Now" />
+                            <Button Classes="utility"
+                                    Width="216"
+                                    HorizontalContentAlignment="Center"
+                                    Command="{Binding ContinueWithoutUpdatingCommand}"
+                                    Content="Continue Without Updating" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Cancellation stays available right up until staging completes. -->
+                <Button IsVisible="{Binding IsPreparingUpdate}"
+                        Classes="utility"
+                        Width="176"
+                        HorizontalAlignment="Center"
+                        HorizontalContentAlignment="Center"
+                        Command="{Binding CancelUpdateCommand}"
+                        Content="Cancel" />
+
+                <TextBlock Text="{Binding UpdateFailureMessage}"
+                           IsVisible="{Binding UpdateFailureMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                           HorizontalAlignment="Center"
+                           Foreground="#F0A43A"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           TextAlignment="Center" />
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

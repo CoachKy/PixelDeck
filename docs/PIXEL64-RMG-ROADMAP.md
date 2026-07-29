@@ -18,10 +18,12 @@ existing Fast3D software renderer as the bundled fallback.
 | CPU, memory, devices, scheduler | `N64Machine`, `Vr4300Cpu`, `N64Memory` | In place; incomplete hardware coverage |
 | Graphics task boundary | `IN64GraphicsBackend` | In place |
 | Bundled HLE renderer | `Fast3dRenderer` | In place; approximate RDP behavior |
-| Audio task processor | `N64AudioProcessor` | Separate component; interface boundary still needed |
+| Audio task boundary | `IN64AudioBackend` | In place |
+| Bundled audio HLE | `N64AudioProcessor` | In place; ABI coverage incomplete |
 | Controller input | PixelDeck controller snapshot and PIF handling | In place |
 | Per-title evidence | Pixel64 compatibility laboratory | In place |
-| RDP command dump and replay | — | Next milestone |
+| Graphics-task capture and replay | `.p64gfx`, `N64GraphicsReplay` | In place |
+| Raw RDP command dump and replay | `.p64rdp`, `N64RdpReplay` | Direct packets in place; HLE triangle lowering remains |
 | Conformant RDP backend | — | Planned |
 | Interchangeable RSP backend | — | Planned |
 | Per-game compatibility profiles | — | Planned |
@@ -38,15 +40,24 @@ existing Fast3D software renderer as the bundled fallback.
 
 ### 2. Add RDP dump and replay
 
-- Capture the RDP command stream and referenced RDRAM/TMEM state independently
-  of the running CPU.
-- Build a deterministic replay tool that can render one captured frame through
-  any `IN64GraphicsBackend`.
+- Capture a versioned graphics task and its exact pre-execution RDRAM without
+  storing the full cartridge image. **Complete.**
+- Build a deterministic replay tool that can execute a capture through any
+  `IN64GraphicsBackend`. **Complete.**
+- Extract a backend-neutral raw RDP command stream plus referenced RDRAM/TMEM
+  state independently of Fast3D display-list decoding. **Direct packet
+  capture/replay complete; native HLE triangle lowering remains.**
 - Store image hashes and selected pixel assertions for regression comparison.
 - Keep ROM data and copyrighted assets out of committed fixtures.
 
-This is the highest-value next step: it makes graphics bugs reproducible in
-seconds and gives every future backend the same conformance input.
+The `.p64rdp` stage now captures canonical RDP state, image, texture, combiner,
+fill, sync, scissor, color, and texture-rectangle packets against exact
+pre-task RDRAM. Legacy other-mode commands are normalized and segmented image
+addresses are resolved before storage. A trace is marked incomplete whenever
+the current HLE RSP path rasterizes a triangle without emitting its native RDP
+edge packet. Completing that lowering, followed by hidden-RDRAM coverage, is
+required before Pixel64 can claim the same low-level dump envelope as
+paraLLEl-RDP.
 
 ### 3. Add an optional conformant RDP backend
 
@@ -60,7 +71,9 @@ seconds and gives every future backend the same conformance input.
 
 ### 4. Separate the RSP
 
-- Introduce an `IN64RspBackend` boundary for graphics and audio task execution.
+- Keep graphics and audio task ownership behind `IN64GraphicsBackend` and
+  `IN64AudioBackend`; both boundaries are now in place.
+- Introduce an `IN64RspBackend` boundary for low-level task execution.
 - Preserve the current HLE processors as the portable fallback.
 - Add an LLE-capable backend only after task lifecycle, interrupts, and
   save-state ownership are explicit.

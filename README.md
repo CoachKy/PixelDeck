@@ -128,7 +128,7 @@ SNES keyboard additions are A/S for X/Y and Q/W for L/R. All eight SNES buttons 
 
 ## Nintendo 64 core status
 
-Pixel64 0.9.011 opens the cartridge-attempt envelope of PixelDeck's
+Pixel64 0.9.014 opens the cartridge-attempt envelope of PixelDeck's
 in-repository Nintendo 64 core. Every structurally valid big-endian `.z64`,
 byte-swapped `.v64`, and little-endian `.n64` image discovered in
 `Games/Nintendo64` can now be launched without modifying the source file.
@@ -160,10 +160,19 @@ dithering, two-cycle blending, lighting, and VI presentation remain incomplete;
 additional visual errors are expected. The library therefore continues to mark
 the target `PARTIAL`. The machine now submits graphics work through an
 `IN64GraphicsBackend` boundary, allowing a conformant renderer to be added
-without replacing the scheduler. PixelDeck's existing gallery, alphabetical
-sections, title count, play history, version footer, fullscreen pause menu,
-state slots, and assigned Player 1/Player 2 controller ports are reused
-unchanged.
+without replacing the scheduler. Audio RSP tasks have a corresponding
+`IN64AudioBackend` boundary. The bundled audio HLE preserves the ABI
+resampler's four-sample cursor across task boundaries, while host playback
+fully re-buffers after an underrun instead of repeatedly restarting from
+partial fragments. A one-shot `.p64gfx` capture records the
+graphics task plus its exact pre-execution RDRAM. That capture can now be
+lowered into a versioned `.p64rdp` packet trace and replayed independently of
+the Fast3D display-list decoder. Traces explicitly report any HLE triangles
+that could not yet be represented as native RDP packets. The standalone replay
+tool executes either input repeatedly without booting the game. PixelDeck's existing
+gallery, alphabetical sections, title count, play history, version footer,
+fullscreen pause menu, state slots, and assigned Player 1/Player 2 controller
+ports are reused unchanged.
 
 The shared SDL/XInput controller snapshot preserves raw left-stick magnitude
 for the N64 analog stick and maps the right stick to the four C-buttons. A,

@@ -39,7 +39,7 @@ internal static class CompatibilityReportWriter
             "graphicsBackend,rdpOtherModeHigh,rdpOtherModeLow,rdpCycleType,alphaRejected," +
             "framebufferBlended,unsupportedTextures,audioCommands,unsupportedAudio,audioOpcodes,viInterrupts," +
             "audioDmas,controllerPolls,maxColors,distinctFrames,audioSamples,audioPeak," +
-            "droppedAudio,stateDeterministic,capture,findings");
+            "droppedAudio,stateDeterministic,capture,graphicsCapture,findings");
         foreach (var game in games)
         {
             AppendCsvRow(
@@ -86,6 +86,7 @@ internal static class CompatibilityReportWriter
                 game.DroppedAudioSamples.ToString(CultureInfo.InvariantCulture),
                 game.SaveStateDeterministic.ToString(),
                 game.CapturePath ?? string.Empty,
+                game.GraphicsCapturePath ?? string.Empty,
                 string.Join(" | ", game.Findings));
         }
 
@@ -103,6 +104,8 @@ internal static class CompatibilityReportWriter
         output.AppendLine($"- Games folder: `{EscapeMarkdown(report.Configuration.GamesFolder)}`");
         output.AppendLine($"- Video fields per image: `{report.Configuration.FieldsPerGame}`");
         output.AppendLine($"- Parallel emulators: `{report.Configuration.Parallelism}`");
+        output.AppendLine(
+            $"- Graphics-task captures: `{report.Configuration.CaptureGraphicsTasks}`");
         if (!string.IsNullOrWhiteSpace(report.Configuration.Filter))
         {
             output.AppendLine($"- Filename filter: `{EscapeMarkdown(report.Configuration.Filter)}`");

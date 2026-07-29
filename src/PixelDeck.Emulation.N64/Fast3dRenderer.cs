@@ -3,7 +3,7 @@ using System.Numerics;
 
 namespace PixelDeck.Emulation.N64;
 
-public sealed class Fast3dRenderer : IN64GraphicsBackend
+public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 {
     private const uint AlphaCompareMask = 0x3;
     private const uint ImageRead = 0x40;
@@ -226,6 +226,7 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                 case 0x05: // F3DEX2 G_TRI1
                     if (_microcode == N64Microcode.F3dex2)
                     {
+                        RecordOmittedHlePrimitives(1);
                         DrawTriangleF3dex2(word0);
                     }
 
@@ -233,6 +234,7 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                 case 0x07: // F3DEX2 G_QUAD
                     if (_microcode == N64Microcode.F3dex2)
                     {
+                        RecordOmittedHlePrimitives(2);
                         DrawTriangleF3dex2(word0);
                         DrawTriangleF3dex2(word1);
                     }
@@ -261,6 +263,7 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                     MoveMemoryF3dex2(word0, word1);
                     break;
                 case 0x06 when _microcode == N64Microcode.F3dex2: // F3DEX2 G_TRI2
+                    RecordOmittedHlePrimitives(2);
                     DrawTriangleF3dex2(word0);
                     DrawTriangleF3dex2(word1);
                     break;
@@ -296,6 +299,7 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                     break;
                 case 0xBF: // F3D G_TRI1
                     // Fast3D stores indices multiplied by 10; F3DEX by 2.
+                    RecordOmittedHlePrimitives(1);
                     if (_microcode == N64Microcode.F3dex)
                     {
                         DrawTriangleF3dex2(word1);
@@ -307,6 +311,7 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
 
                     break;
                 case 0xB1 when _microcode == N64Microcode.F3dex: // F3DEX G_TRI2
+                    RecordOmittedHlePrimitives(2);
                     DrawTriangleF3dex2(word0);
                     DrawTriangleF3dex2(word1);
                     break;
@@ -321,6 +326,7 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                             continue; // unused slot padding
                         }
 
+                        RecordOmittedHlePrimitives(1);
                         DrawTriangleIndices(first, second, third);
                     }
 
@@ -352,74 +358,48 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                     break;
                 }
                 case 0xF6: // G_FILLRECT
-                    FillRectangle(word0, word1);
-                    break;
                 case 0xF7: // G_SETFILLCOLOR
-                    _fillColor = word1;
-                    break;
                 case 0xF2: // G_SETTILESIZE
-                    SetTileSize(word0, word1);
-                    break;
                 case 0xF3: // G_LOADBLOCK
-                    LoadTextureBlock(word0, word1);
-                    break;
                 case 0xF5: // G_SETTILE
-                    SetTile(word0, word1);
-                    break;
                 case 0xFD: // G_SETTIMG
-                    SetTextureImage(word0, word1);
-                    break;
                 case 0xFC: // G_SETCOMBINE
-                    DecodeCombiner(word0, word1);
-                    break;
                 case 0xFE: // G_SETZIMG
-                    _depthImageAddress = ResolveAddress(word1);
-                    break;
                 case 0xFF: // G_SETCIMG
-                    _colorImageSize = (int)((word0 >> 19) & 3);
-                    _colorImageWidth = (int)(word0 & 0xFFF) + 1;
-                    _colorImageAddress = ResolveAddress(word1);
-                    break;
-                case 0xB9: // G_SETOTHERMODE_L
-                    SetOtherModeLow(word0, word1);
-                    break;
-                case 0xBA: // G_SETOTHERMODE_H
-                    SetOtherModeHigh(word0, word1);
-                    break;
                 case 0xF0: // G_LOADTLUT
-                    LoadTextureLookupTable(word0, word1);
-                    break;
                 case 0xF4: // G_LOADTILE
-                    LoadTextureTile(word0, word1);
-                    break;
-                case 0xE2: // F3DEX2 G_SETOTHERMODE_L
-                    SetOtherModeLow(ConvertF3dex2ModeSelector(word0), word1);
-                    break;
-                case 0xE3: // F3DEX2 G_SETOTHERMODE_H
-                    SetOtherModeHigh(ConvertF3dex2ModeSelector(word0), word1);
-                    break;
-                case 0xEF: // G_RDPSETOTHERMODE: both halves at once
-                    _otherModeHigh = word0 & 0x00FFFFFF;
-                    _otherModeLow = word1;
-                    break;
-                case 0xED: // G_SETSCISSOR — upper left in word0, lower right in word1
-                    _scissorLeft = (int)((word0 >> 12) & 0xFFF) / 4;
-                    _scissorTop = (int)(word0 & 0xFFF) / 4;
-                    _scissorRight = (int)((word1 >> 12) & 0xFFF) / 4;
-                    _scissorBottom = (int)(word1 & 0xFFF) / 4;
-                    break;
+                case 0xEF: // G_RDPSETOTHERMODE
                 case 0xFB: // G_SETENVCOLOR
-                    _environmentColor = DecodeRgba32(word1);
-                    break;
-                case 0x00:
                 case 0xE7: // G_RDPPIPESYNC
                 case 0xE6: // G_RDPLOADSYNC
                 case 0xE8: // G_RDPTILESYNC
                 case 0xE9: // G_RDPFULLSYNC
-                case 0xB4: // G_RDPHALF_1
-                    break;
                 case 0xF8: // G_SETFOGCOLOR
-                    _fogColor = DecodeRgba32(word1);
+                case 0xF9: // G_SETBLENDCOLOR
+                case 0xFA: // G_SETPRIMCOLOR
+                    CaptureAndExecuteRdpCommand(word0, word1);
+                    break;
+                case 0xB9: // G_SETOTHERMODE_L
+                    SetOtherModeLow(word0, word1);
+                    CaptureCanonicalOtherMode();
+                    break;
+                case 0xBA: // G_SETOTHERMODE_H
+                    SetOtherModeHigh(word0, word1);
+                    CaptureCanonicalOtherMode();
+                    break;
+                case 0xE2: // F3DEX2 G_SETOTHERMODE_L
+                    SetOtherModeLow(ConvertF3dex2ModeSelector(word0), word1);
+                    CaptureCanonicalOtherMode();
+                    break;
+                case 0xE3: // F3DEX2 G_SETOTHERMODE_H
+                    SetOtherModeHigh(ConvertF3dex2ModeSelector(word0), word1);
+                    CaptureCanonicalOtherMode();
+                    break;
+                case 0xED: // G_SETSCISSOR — upper left in word0, lower right in word1
+                    CaptureAndExecuteRdpCommand(word0, word1);
+                    break;
+                case 0x00:
+                case 0xB4: // G_RDPHALF_1
                     break;
                 case 0xE4: // G_TEXRECT
                 case 0xE5: // G_TEXRECTFLIP
@@ -435,15 +415,9 @@ public sealed class Fast3dRenderer : IN64GraphicsBackend
                     commandsInList += 2;
                     remainingBudget -= 2;
                     CommandsProcessed += 2;
-                    DrawTextureRectangle(word0, word1, halfOne, halfTwo, opcode == 0xE5);
+                    CaptureAndExecuteRdpCommand(word0, word1, halfOne, halfTwo);
                     break;
                 }
-                case 0xF9: // G_SETBLENDCOLOR
-                    _blendColor = DecodeRgba32(word1);
-                    break;
-                case 0xFA: // G_SETPRIMCOLOR
-                    _primitiveColor = DecodeRgba32(word1);
-                    break;
                 default:
                     UnsupportedCommands++;
                     _unsupportedCommandCounts[opcode] =

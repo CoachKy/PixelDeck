@@ -7,6 +7,7 @@ internal sealed record CompatibilityOptions(
     int Parallelism,
     string? Filter,
     bool CaptureFlaggedFrames,
+    bool CaptureGraphicsTasks,
     bool Strict)
 {
     public static CompatibilityOptions Parse(string[] args)
@@ -22,6 +23,7 @@ internal sealed record CompatibilityOptions(
         var parallelism = Math.Clamp(Environment.ProcessorCount / 2, 1, 4);
         string? filter = null;
         var captureFlaggedFrames = true;
+        var captureGraphicsTasks = false;
         var strict = false;
 
         for (var index = 0; index < args.Length; index++)
@@ -50,6 +52,9 @@ internal sealed record CompatibilityOptions(
                 case "--no-captures":
                     captureFlaggedFrames = false;
                     break;
+                case "--graphics-captures":
+                    captureGraphicsTasks = true;
+                    break;
                 case "--strict":
                     strict = true;
                     break;
@@ -68,6 +73,7 @@ internal sealed record CompatibilityOptions(
             parallelism,
             string.IsNullOrWhiteSpace(filter) ? null : filter,
             captureFlaggedFrames,
+            captureGraphicsTasks,
             strict);
     }
 
@@ -81,6 +87,7 @@ internal sealed record CompatibilityOptions(
           --parallel <count>  Concurrent emulators (default: up to 4)
           --filter <text>     Audit matching filenames only
           --no-captures       Do not create BMP captures for warnings/failures
+          --graphics-captures Save the first graphics task as a .p64gfx replay
           --strict            Return a failure exit code for failed/invalid images
           --help              Show this help
         """;

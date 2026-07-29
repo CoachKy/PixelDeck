@@ -19,6 +19,7 @@ public sealed record GameEntry(
     private int _sessionCount;
     private DateTime? _lastPlayedUtc;
     private bool _isLibrarySelected;
+    private bool _hasChosenLibraryImage;
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -27,6 +28,20 @@ public sealed record GameEntry(
     public Bitmap? Screenshot { get; private set; }
 
     public string ScreenshotCachePath { get; init; } = string.Empty;
+
+    /// <summary>Where a library image captured from the pause menu is stored.</summary>
+    public string LibraryImagePath { get; init; } = string.Empty;
+
+    /// <summary>
+    /// True when the player has deliberately chosen this game's picture, either
+    /// by placing one beside the ROM or by capturing one in game. The automatic
+    /// boot screenshot leaves those alone.
+    /// </summary>
+    public bool HasChosenLibraryImage
+    {
+        get => _hasChosenLibraryImage;
+        init => _hasChosenLibraryImage = value;
+    }
 
     public string SaveRamPath { get; init; } = string.Empty;
 
@@ -147,6 +162,37 @@ public sealed record GameEntry(
         {
             Screenshot = null;
         }
+    }
+
+    /// <summary>
+    /// Adopts a library image the player just captured, replacing whatever the
+    /// card was showing. Marks the picture as deliberately chosen so the
+    /// automatic boot screenshot will not replace it later.
+    /// </summary>
+    public void AdoptCapturedLibraryImage()
+    {
+        if (LibraryImagePath.Length == 0)
+        {
+            return;
+        }
+
+        _hasChosenLibraryImage = true;
+
+        var previous = Screenshot;
+        try
+        {
+            Screenshot = new Bitmap(LibraryImagePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or NotSupportedException)
+        {
+            return;
+        }
+
+        previous?.Dispose();
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Screenshot)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasScreenshot)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasNoScreenshot)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasChosenLibraryImage)));
     }
 
     public void Dispose()

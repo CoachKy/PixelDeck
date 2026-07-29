@@ -87,6 +87,8 @@ public sealed class SnesMachine
 
     internal string SuperFxDiagnostics => _bus.SuperFxDiagnostics;
 
+    internal IReadOnlyList<string> SuperFxWatchSamples => _bus.SuperFxWatchSamples;
+
     public long NonZeroBrightnessWrites => _bus.Ppu.NonZeroBrightnessWrites;
 
     public byte LastDisplayControlValue => _bus.Ppu.LastDisplayControlValue;

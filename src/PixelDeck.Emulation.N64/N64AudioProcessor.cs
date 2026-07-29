@@ -8,7 +8,7 @@ namespace PixelDeck.Emulation.N64;
 /// including Super Mario 64. Commands operate on a 4 KiB DMEM-style scratch
 /// buffer; A_LOADBUFF/A_SAVEBUFF move PCM between RDRAM and the scratch.
 /// </summary>
-public sealed class N64AudioProcessor
+public sealed class N64AudioProcessor : IN64AudioBackend
 {
     private const int ScratchSize = 0x1000;
     private const byte FlagInit = 0x01;
@@ -51,6 +51,11 @@ public sealed class N64AudioProcessor
     public long UnsupportedCommands { get; private set; }
 
     public SortedDictionary<uint, long> UnsupportedCommandCounts { get; } = [];
+
+    public string Name => "Pixel64 Audio HLE";
+
+    IReadOnlyDictionary<uint, long> IN64AudioBackend.UnsupportedCommandCounts =>
+        UnsupportedCommandCounts;
 
     public void Execute(N64RspTask task)
     {
@@ -118,7 +123,7 @@ public sealed class N64AudioProcessor
         }
     }
 
-    internal void SaveState(BinaryWriter writer)
+    public void SaveState(BinaryWriter writer)
     {
         foreach (var value in _segments) writer.Write(value);
         foreach (var value in _codebook) writer.Write(value);
@@ -137,7 +142,7 @@ public sealed class N64AudioProcessor
         writer.Write(_scratch);
     }
 
-    internal void LoadState(BinaryReader reader)
+    public void LoadState(BinaryReader reader)
     {
         for (var index = 0; index < _segments.Length; index++) _segments[index] = reader.ReadUInt32();
         for (var index = 0; index < _codebook.Length; index++) _codebook[index] = reader.ReadInt16();
@@ -356,7 +361,7 @@ public sealed class N64AudioProcessor
             for (var tap = 0; tap < ResampleTapCount; tap++)
             {
                 filtered +=
-                    (long)SampleForResample(whole - 1 + tap) *
+                    (long)SampleForResample(whole + tap) *
                     ResampleCoefficients[coefficientOffset + tap];
             }
 
@@ -368,7 +373,7 @@ public sealed class N64AudioProcessor
         var consumed = (int)(position >> 16);
         for (var index = 0; index < 4; index++)
         {
-            _resampleState[index] = SampleForResample(consumed - 4 + index);
+            _resampleState[index] = SampleForResample(consumed + index);
         }
 
         for (var index = 0; index < 4; index++)

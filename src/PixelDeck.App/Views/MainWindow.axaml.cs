@@ -5,6 +5,8 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using PixelDeck.App.Audio;
 using PixelDeck.App.Input;
+using PixelDeck.App.Services.Startup;
+using PixelDeck.App.Services.Updates;
 using PixelDeck.App.Settings;
 using PixelDeck.App.ViewModels;
 
@@ -22,6 +24,7 @@ public partial class MainWindow : Window
     private readonly HeldButtonRepeater _libraryIndexVerticalRepeater =
         new(GamepadButton.DPadUp | GamepadButton.DPadDown);
     private FileSystemWatcher? _watcher;
+    private GitHubUpdateService? _updateService;
     private EmulatorWindow? _emulatorWindow;
     private DashboardNavigationRegion _navigationRegion = DashboardNavigationRegion.PageContent;
     private bool _dashboardSoundsEnabled;
@@ -55,7 +58,28 @@ public partial class MainWindow : Window
             return;
         }
 
-        await viewModel.RefreshAsync();
+        // The splash is already on screen at this point, so the update check
+        // starts against a visible window rather than a frozen-looking one.
+        _updateService = new GitHubUpdateService();
+        var startup = await viewModel.RunStartupAsync(_updateService, CancellationToken.None);
+
+        if (startup.Outcome == StartupOutcome.UpdateStaged && startup.StagedUpdate is { } staged)
+        {
+            // An approved update owns the rest of the session: the dashboard
+            // must not come up behind it. Hand the verified package to the
+            // external installer and close so it can replace these files.
+            viewModel.StatusText = "RESTARTING PIXELDECK...";
+            if (UpdateHandoff.TryStart(staged, MainViewModel.ProductVersion))
+            {
+                Close();
+                return;
+            }
+
+            // The installer could not start, so nothing was replaced. Carry on
+            // into the version that is already here.
+            viewModel.UpdateFailureMessage = "The update could not be started. PixelDeck will continue.";
+        }
+
         ConfigureWatcher(viewModel.GamesFolder);
         UpdateControllerConnections(viewModel);
         _clockTimer.Start();
@@ -70,6 +94,7 @@ public partial class MainWindow : Window
         _gamepadTimer.Stop();
         _libraryRefreshTimer.Stop();
         _watcher?.Dispose();
+        _updateService?.Dispose();
         _dashboardSoundsEnabled = false;
         _dashboardSounds.Dispose();
         (DataContext as MainViewModel)?.Dispose();

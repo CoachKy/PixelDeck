@@ -68,6 +68,18 @@ internal sealed class SuperFx
 
     internal List<(string Location, long Instruction)> ProgramCounterSamples { get; } = [];
 
+    /// <summary>
+    /// How often each program address ran. A routine that never reaches STOP
+    /// shows up as a handful of very hot addresses, which pins the loop down
+    /// far better than periodic sampling.
+    /// </summary>
+    internal long[] ProgramCounterHistogram { get; } = new long[0x10000];
+
+    /// <summary>Captures registers the first few times a chosen address runs.</summary>
+    internal static int WatchProgramCounter { get; set; } = -1;
+
+    internal List<string> WatchSamples { get; } = [];
+
     // The plot hardware buffers two 8-pixel columns before flushing them to the
     // frame buffer in Game Pak RAM.
     private readonly byte[] _pixelCacheColours = new byte[8];
@@ -237,6 +249,8 @@ internal sealed class SuperFx
     /// into bank $72 and took 134 BRKs with strict arbitration, and neither
     /// happens without it. Reporting no contention is the less accurate but
     /// far more robust choice until the timing model is trustworthy.
+    /// When it is re-enabled, note that RAN is SCMR bit 3 and RON bit 4 — the
+    /// two height bits sit either side of them at bits 2 and 5.
     /// </remarks>
     public bool OwnsRom => false;
 
@@ -379,6 +393,17 @@ internal sealed class SuperFx
         if ((value & 0x8000) != 0) _sfr |= FlagSign;
     }
 
+    /// <summary>
+    /// Flags for instructions whose result is a byte. Their sign comes from bit
+    /// 7, not bit 15, so testing the word would report every byte as positive.
+    /// </summary>
+    private void SetByteZeroSign(ushort value)
+    {
+        _sfr &= ~(FlagZero | FlagSign);
+        if (value == 0) _sfr |= FlagZero;
+        if ((value & 0x80) != 0) _sfr |= FlagSign;
+    }
+
     private void EndInstruction()
     {
         _sourceRegister = 0;
@@ -403,6 +428,15 @@ internal sealed class SuperFx
         if (++_instructionsSinceStart % 250_000 == 0 && ProgramCounterSamples.Count < 24)
         {
             ProgramCounterSamples.Add(($"{_programBank:X2}:{_r[15]:X4}", _instructionsSinceStart));
+        }
+
+        ProgramCounterHistogram[_r[15]]++;
+
+        if (_r[15] == WatchProgramCounter && WatchSamples.Count < 12)
+        {
+            WatchSamples.Add(
+                $"R0={_r[0]:X4} R1={_r[1]:X4} R4={_r[4]:X4} R7={_r[7]:X4} R9={_r[9]:X4} " +
+                $"R12={_r[12]:X4} R14={_r[14]:X4} rombr={_romBank:X2} buf={_romBuffer:X2} sfr={_sfr:X4}");
         }
 
         var cycles = Execute();
@@ -494,6 +528,7 @@ internal sealed class SuperFx
             case >= 0x30 and <= 0x3B: // STW/STB (Rn)
             {
                 var address = (ushort)_r[opcode & 0x0F];
+                SetLastRamAddress(address);
                 var value = (ushort)SourceValue;
                 if (alt1)
                 {
@@ -538,6 +573,7 @@ internal sealed class SuperFx
             case >= 0x40 and <= 0x4B: // LDW/LDB (Rn)
             {
                 var address = (ushort)_r[opcode & 0x0F];
+                SetLastRamAddress(address);
                 ushort value;
                 if (alt1)
                 {
@@ -666,9 +702,13 @@ internal sealed class SuperFx
 
             case 0x90: // SBK
             {
+                // The high byte lands at the address with its low bit flipped,
+                // not simply one higher: for an odd last-address that is one
+                // byte *below*, which is how the hardware keeps a word write
+                // inside its aligned pair.
                 var value = (ushort)SourceValue;
                 WriteRamByte(_lastRamAddress, (byte)value);
-                WriteRamByte((ushort)(_lastRamAddress + 1), (byte)(value >> 8));
+                WriteRamByte((ushort)(_lastRamAddress ^ 1), (byte)(value >> 8));
                 EndInstruction();
                 return 2;
             }
@@ -730,7 +770,7 @@ internal sealed class SuperFx
             {
                 var result = (ushort)(SourceValue & 0x00FF);
                 SetRegister(_destinationRegister, result);
-                SetZeroSign(result);
+                SetByteZeroSign(result);
                 EndInstruction();
                 return 1;
             }
@@ -758,11 +798,15 @@ internal sealed class SuperFx
                 if (alt1)
                 {
                     var address = (ushort)(immediate << 1);
-                    _r[index] = (ushort)(ReadRamByte(address) | (ReadRamByte((ushort)(address + 1)) << 8));
+                    SetLastRamAddress(address);
+                    SetRegister(
+                        index,
+                        (ushort)(ReadRamByte(address) | (ReadRamByte((ushort)(address + 1)) << 8)));
                 }
                 else if (alt2)
                 {
                     var address = (ushort)(immediate << 1);
+                    SetLastRamAddress(address);
                     WriteRamByte(address, (byte)_r[index]);
                     WriteRamByte((ushort)(address + 1), (byte)(_r[index] >> 8));
                 }
@@ -799,7 +843,7 @@ internal sealed class SuperFx
             {
                 var result = (ushort)(SourceValue >> 8);
                 SetRegister(_destinationRegister, result);
-                SetZeroSign(result);
+                SetByteZeroSign(result);
                 EndInstruction();
                 return 1;
             }
@@ -818,7 +862,10 @@ internal sealed class SuperFx
             {
                 var index = opcode & 0x0F;
                 var result = (ushort)(_r[index] + 1);
-                _r[index] = result;
+                // Through SetRegister so that stepping R14 re-arms the ROM
+                // buffer that GETB reads; walking ROM with INC R14 / GETB is a
+                // standard idiom and would otherwise return a stale byte.
+                SetRegister(index, result);
                 SetZeroSign(result);
                 EndInstruction();
                 return 1;
@@ -845,7 +892,7 @@ internal sealed class SuperFx
             {
                 var index = opcode & 0x0F;
                 var result = (ushort)(_r[index] - 1);
-                _r[index] = result;
+                SetRegister(index, result);
                 SetZeroSign(result);
                 EndInstruction();
                 return 1;
@@ -884,10 +931,14 @@ internal sealed class SuperFx
                 var immediate = (ushort)(low | (high << 8));
                 if (alt1)
                 {
-                    _r[index] = (ushort)(ReadRamByte(immediate) | (ReadRamByte((ushort)(immediate + 1)) << 8));
+                    SetLastRamAddress(immediate);
+                    SetRegister(
+                        index,
+                        (ushort)(ReadRamByte(immediate) | (ReadRamByte((ushort)(immediate + 1)) << 8)));
                 }
                 else if (alt2)
                 {
+                    SetLastRamAddress(immediate);
                     WriteRamByte(immediate, (byte)_r[index]);
                     WriteRamByte((ushort)(immediate + 1), (byte)(_r[index] >> 8));
                 }
@@ -965,17 +1016,35 @@ internal sealed class SuperFx
 
     // --- Game Pak RAM ------------------------------------------------------
 
-    private byte ReadRamByte(ushort address)
-    {
-        _lastRamAddress = address;
-        return _ram[(((_ramBank & 1) << 16) | address) % GamePakRamSize];
-    }
+    /// <summary>
+    /// Plot-buffer access. The screen base is <c>SCBR &lt;&lt; 10</c>, which reaches
+    /// past 64 KiB, so these index Game Pak RAM directly rather than going
+    /// through the 16-bit address and RAM bank register the load/store
+    /// instructions use — the plot hardware is not banked.
+    /// </summary>
+    private byte ReadPlotByte(int offset) => _ram[offset % GamePakRamSize];
 
-    private void WriteRamByte(ushort address, byte value)
-    {
-        _lastRamAddress = address;
+    private void WritePlotByte(int offset, byte value) => _ram[offset % GamePakRamSize] = value;
+
+    private byte ReadRamByte(ushort address) =>
+        _ram[(((_ramBank & 1) << 16) | address) % GamePakRamSize];
+
+    private void WriteRamByte(ushort address, byte value) =>
         _ram[(((_ramBank & 1) << 16) | address) % GamePakRamSize] = value;
-    }
+
+    /// <summary>
+    /// Records the address a memory instruction worked from, which is what SBK
+    /// later stores back to.
+    /// </summary>
+    /// <remarks>
+    /// This is the <em>base</em> address of the access, so it must be set once
+    /// per instruction rather than per byte: a word access touches base and
+    /// base+1, and letting the second byte win leaves SBK writing one byte too
+    /// high. Star Fox keeps its polygon loop counter in RAM and decrements it
+    /// with LMS/DEC/SBK, so an off-by-one there meant the counter was never
+    /// updated and the routine never terminated.
+    /// </remarks>
+    private void SetLastRamAddress(ushort address) => _lastRamAddress = address;
 
     // --- Plot hardware -----------------------------------------------------
 
@@ -987,24 +1056,58 @@ internal sealed class SuperFx
     };
 
     /// <summary>
-    /// CMODE bit 0 selects whether the high nibble of COLR is preserved, and
-    /// bit 4 whether a colour of zero is treated as transparent.
+    /// Loads COLR from a source byte, applying the two plot options that
+    /// rewrite it: bit 2 swaps the nibbles, and bit 3 keeps the existing high
+    /// nibble so only the low one is replaced.
     /// </summary>
-    private byte TranslateColour(byte value) =>
-        (_plotOptions & 0x04) != 0
+    private byte TranslateColour(byte value)
+    {
+        if ((_plotOptions & 0x04) != 0)
+        {
+            value = (byte)((value >> 4) | (value << 4));
+        }
+
+        return (_plotOptions & 0x08) != 0
             ? (byte)((_colour & 0xF0) | (value & 0x0F))
             : value;
+    }
+
+    /// <summary>
+    /// Decides whether a colour counts as transparent and so is not drawn.
+    /// Plot option bit 0 disables the test entirely; what "zero" means depends
+    /// on the colour depth, and in eight-bit mode on whether the chip is in
+    /// object mode and whether only the low nibble is being written.
+    /// </summary>
+    private bool IsTransparent(byte colour)
+    {
+        if ((_plotOptions & 0x01) != 0)
+        {
+            return false;
+        }
+
+        if (ColourDepth != 8)
+        {
+            return (colour & 0x0F) == 0;
+        }
+
+        if ((_plotOptions & 0x10) != 0)
+        {
+            return colour == 0;
+        }
+
+        return colour == 0 || ((_plotOptions & 0x08) != 0 && (colour & 0x0F) == 0);
+    }
 
     private void PlotPixel(ushort x, ushort y)
     {
-        // Transparent pixels are skipped unless the plot options say otherwise.
-        if ((_plotOptions & 0x08) == 0)
+        // Dithering alternates between the two nibbles of COLR on a checkerboard.
+        var colour = (_plotOptions & 0x02) != 0 && ((x ^ y) & 1) != 0
+            ? (byte)(_colour >> 4)
+            : _colour;
+
+        if (IsTransparent(colour))
         {
-            var mask = ColourDepth == 8 ? 0xFF : 0x0F;
-            if ((_colour & mask) == 0)
-            {
-                return;
-            }
+            return;
         }
 
         var offset = PixelOffset(x, y);
@@ -1014,7 +1117,7 @@ internal sealed class SuperFx
             _pixelCacheOffset = offset;
         }
 
-        _pixelCacheColours[x & 7] = _colour;
+        _pixelCacheColours[x & 7] = colour;
         _pixelCacheValidBits |= (byte)(1 << (x & 7));
     }
 
@@ -1026,8 +1129,7 @@ internal sealed class SuperFx
         var result = 0;
         for (var plane = 0; plane < depth; plane++)
         {
-            var planeOffset = offset + ((plane & ~1) * 8) + (plane & 1);
-            var b = ReadRamByte((ushort)planeOffset);
+            var b = ReadPlotByte(offset + ((plane & ~1) * 8) + (plane & 1));
             result |= ((b >> (7 - (x & 7))) & 1) << plane;
         }
 
@@ -1041,19 +1143,31 @@ internal sealed class SuperFx
     /// </summary>
     private int PixelOffset(ushort x, ushort y)
     {
-        var height = (_screenMode & 0x0C) switch
-        {
-            0x00 => 128,
-            0x04 => 160,
-            0x08 => 192,
-            _ => 256
-        };
-
         var characterX = x >> 3;
         var characterY = y >> 3;
-        var character = (characterX * (height >> 3)) + characterY;
-        return (_screenBase << 10) + (character * 8 * ColourDepth) + (y & 7);
+        var character = (characterX * (PlotBufferHeight >> 3)) + characterY;
+
+        // Each row of a plane pair occupies two bytes, so the row term is
+        // doubled; the plane pairs themselves are sixteen bytes apart and that
+        // offset is added when the cache is flushed.
+        return (_screenBase << 10) + (character * 8 * ColourDepth) + ((y & 7) * 2);
     }
+
+    /// <summary>
+    /// Plot buffer height from SCMR. The two height bits are deliberately not
+    /// adjacent: HT0 is bit 2 and HT1 is bit 5, with the RAM and ROM access
+    /// bits sitting between them.
+    /// </summary>
+    private int PlotBufferHeight =>
+        (_plotOptions & 0x10) != 0
+            ? 256 // object mode always uses the full height
+            : (((_screenMode >> 4) & 0x02) | ((_screenMode >> 2) & 0x01)) switch
+            {
+                0 => 128,
+                1 => 160,
+                2 => 192,
+                _ => 256
+            };
 
     private void FlushPixelCache()
     {
@@ -1067,7 +1181,7 @@ internal sealed class SuperFx
         for (var plane = 0; plane < depth; plane++)
         {
             var planeOffset = _pixelCacheOffset + ((plane & ~1) * 8) + (plane & 1);
-            var existing = ReadRamByte((ushort)planeOffset);
+            var existing = ReadPlotByte(planeOffset);
             for (var bit = 0; bit < 8; bit++)
             {
                 if ((_pixelCacheValidBits & (1 << bit)) == 0)
@@ -1081,7 +1195,7 @@ internal sealed class SuperFx
                     : existing & ~mask);
             }
 
-            WriteRamByte((ushort)planeOffset, existing);
+            WritePlotByte(planeOffset, existing);
         }
 
         _pixelCacheValidBits = 0;

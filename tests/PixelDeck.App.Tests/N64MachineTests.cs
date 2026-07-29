@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Numerics;
 using PixelDeck.Emulation.N64;
 using Xunit.Abstractions;
@@ -54,6 +55,176 @@ public sealed class N64MachineTests(ITestOutputHelper output)
 
         Assert.Same(machine.Renderer, machine.GraphicsBackend);
         Assert.Equal("Pixel64 Fast3D software renderer", machine.GraphicsBackend.Name);
+    }
+
+    [Fact]
+    public void GraphicsCaptureRoundTripsCompressedRdramAndTaskExactly()
+    {
+        var rdram = new byte[N64Memory.RdramSize];
+        rdram[0x1234] = 0x56;
+        rdram[^1] = 0x78;
+        var task = new N64RspTask(
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 0x1234, 14, 15, 16);
+        var capture = N64GraphicsTaskCapture.Create(task, rdram);
+        using var stream = new MemoryStream();
+
+        capture.Write(stream);
+        Assert.True(stream.Length < 128 * 1024);
+        stream.Position = 0;
+        var restored = N64GraphicsTaskCapture.Read(stream);
+
+        Assert.Equal(task, restored.Task);
+        Assert.Equal(capture.RdramSha256, restored.RdramSha256);
+        Assert.True(capture.Rdram.Span.SequenceEqual(restored.Rdram.Span));
+    }
+
+    [Fact]
+    public void GraphicsCaptureRejectsAValidPayloadWithATamperedChecksum()
+    {
+        var task = new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 8, 0, 0);
+        var capture = N64GraphicsTaskCapture.Create(task, new byte[N64Memory.RdramSize]);
+        using var stream = new MemoryStream();
+        capture.Write(stream);
+        var bytes = stream.ToArray();
+        const int checksumOffset = 8 + 4 + (16 * 4) + 4 + 4;
+        bytes[checksumOffset] ^= 0x80;
+
+        Assert.Throws<InvalidDataException>(
+            () => N64GraphicsTaskCapture.Read(new MemoryStream(bytes, writable: false)));
+    }
+
+    [Fact]
+    public void GraphicsCaptureReplaysTheSameTaskDeterministically()
+    {
+        var memory = new N64Memory(
+            N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x400, 0x0000FFFF);
+        memory.WriteUInt32(0x200, 0xFF180003);
+        memory.WriteUInt32(0x204, 0x00000400);
+        memory.WriteUInt32(0x208, 0xEF000000);
+        memory.WriteUInt32(0x20C, 0x00404000);
+        memory.WriteUInt32(0x210, 0xFC000000);
+        memory.WriteUInt32(0x214, 0x00018600);
+        memory.WriteUInt32(0x218, 0xFA000000);
+        memory.WriteUInt32(0x21C, 0xFF000080);
+        memory.WriteUInt32(0x220, 0xF6000000);
+        memory.WriteUInt32(0x224, 0);
+        memory.WriteUInt32(0x228, 0xB8000000);
+        memory.WriteUInt32(0x22C, 0);
+        var task = new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 48, 0, 0);
+        var capture = N64GraphicsTaskCapture.Create(task, memory.Rdram);
+
+        var first = N64GraphicsReplay.Replay(capture);
+        var second = N64GraphicsReplay.Replay(capture);
+
+        Assert.Equal(first.RdramSha256, second.RdramSha256);
+        Assert.Equal(
+            0x80007FFFu,
+            BinaryPrimitives.ReadUInt32BigEndian(first.Rdram.Span.Slice(0x400, 4)));
+        Assert.Equal(1, first.RdpState?.FramebufferPixelsBlended);
+        Assert.Equal("Pixel64 Fast3D software renderer", first.BackendName);
+    }
+
+    [Fact]
+    public void RdpTraceRoundTripsAndReplaysDirectPacketsDeterministically()
+    {
+        var memory = new N64Memory(
+            N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x400, 0x0000FFFF);
+        memory.WriteUInt32(0x200, 0xFF180003);
+        memory.WriteUInt32(0x204, 0x00000400);
+        memory.WriteUInt32(0x208, 0xEF000000);
+        memory.WriteUInt32(0x20C, 0x00404000);
+        memory.WriteUInt32(0x210, 0xFC000000);
+        memory.WriteUInt32(0x214, 0x00018600);
+        memory.WriteUInt32(0x218, 0xFA000000);
+        memory.WriteUInt32(0x21C, 0xFF000080);
+        memory.WriteUInt32(0x220, 0xF6000000);
+        memory.WriteUInt32(0x224, 0);
+        memory.WriteUInt32(0x228, 0xB8000000);
+        memory.WriteUInt32(0x22C, 0);
+        var task = new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 48, 0, 0);
+        var graphicsCapture = N64GraphicsTaskCapture.Create(task, memory.Rdram);
+
+        var trace = N64RdpTrace.Capture(graphicsCapture);
+        Assert.True(trace.IsComplete);
+        Assert.Equal(5, trace.Commands.Count);
+        Assert.Equal([0xFF, 0xEF, 0xFC, 0xFA, 0xF6], trace.Commands.Select(x => x.Opcode));
+        Assert.Equal(0x00000400u, trace.Commands[0].Words.Span[1]);
+
+        using var stream = new MemoryStream();
+        trace.Write(stream);
+        stream.Position = 0;
+        var restored = N64RdpTrace.Read(stream);
+        var first = N64RdpReplay.Replay(restored);
+        var second = N64RdpReplay.Replay(restored);
+
+        Assert.Equal(trace.TraceSha256, restored.TraceSha256);
+        Assert.Equal(first.RdramSha256, second.RdramSha256);
+        Assert.Equal(
+            0x80007FFFu,
+            BinaryPrimitives.ReadUInt32BigEndian(first.Rdram.Span.Slice(0x400, 4)));
+        Assert.Equal(1, first.RdpState.FramebufferPixelsBlended);
+        Assert.True(first.SourceTraceComplete);
+    }
+
+    [Fact]
+    public void RdpTraceRejectsTamperingAndMarksHleGeometryIncomplete()
+    {
+        var memory = new N64Memory(
+            N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x200, 0xBF000000);
+        memory.WriteUInt32(0x204, 0x00000000);
+        memory.WriteUInt32(0x208, 0xAA000000);
+        memory.WriteUInt32(0x20C, 0);
+        memory.WriteUInt32(0x210, 0xB8000000);
+        memory.WriteUInt32(0x214, 0);
+        var task = new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 24, 0, 0);
+        var trace = N64RdpTrace.Capture(
+            N64GraphicsTaskCapture.Create(task, memory.Rdram));
+        Assert.False(trace.IsComplete);
+        Assert.Equal(1, trace.OmittedHlePrimitiveCommands);
+        Assert.Equal(1, trace.UnsupportedSourceCommands);
+
+        using var stream = new MemoryStream();
+        trace.Write(stream);
+        var bytes = stream.ToArray();
+        const int checksumOffset = 8 + (7 * 4);
+        bytes[checksumOffset] ^= 0x40;
+
+        Assert.Throws<InvalidDataException>(
+            () => N64RdpTrace.Read(new MemoryStream(bytes, writable: false)));
+
+        using var validStream = new MemoryStream();
+        trace.Write(validStream);
+        var truncated = validStream.ToArray()[..^1];
+        Assert.Throws<InvalidDataException>(
+            () => N64RdpTrace.Read(new MemoryStream(truncated, writable: false)));
+    }
+
+    [Fact]
+    public void MachineCapturesOnlyTheNextGraphicsTaskWhenRequested()
+    {
+        var machine = N64Machine.Create(
+            N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        machine.Memory.WriteUInt32(0x80001000, 0xB8000000);
+        machine.Memory.WriteUInt32(0x80001004, 0);
+        machine.Memory.WriteUInt32(0xA4000FC0, 1);
+        machine.Memory.WriteUInt32(0xA4000FF0, 0x00001000);
+        machine.Memory.WriteUInt32(0xA4000FF4, 8);
+        machine.RequestGraphicsTaskCapture();
+        machine.Memory.WriteUInt32(0xA4040010, 1);
+
+        machine.RunInstructions(1);
+
+        Assert.NotNull(machine.LastGraphicsCapture);
+        Assert.Equal(0x1000u, machine.LastGraphicsCapture.Task.DataPointer);
+        Assert.Equal(0xB8000000u, BinaryPrimitives.ReadUInt32BigEndian(
+            machine.LastGraphicsCapture.Rdram.Span.Slice(0x1000, 4)));
     }
 
     [Fact]

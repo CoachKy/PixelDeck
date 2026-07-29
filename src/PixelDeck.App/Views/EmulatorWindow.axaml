@@ -72,6 +72,7 @@
                             <Button Name="ResumeButton" Classes="guide-item" Content="Resume" Click="OnResumeClick" />
                             <Button Name="SaveStateButton" Classes="guide-item" Content="Save state" Click="OnSaveStateClick" />
                             <Button Name="LoadStateButton" Classes="guide-item" Content="Load state" Click="OnLoadStateClick" />
+                            <Button Name="LibraryImageButton" Classes="guide-item" Content="Take library image" Click="OnLibraryImageClick" />
                             <Button Name="ResetGameButton" Classes="guide-item" Content="Reset game" Click="OnResetGameClick" />
                             <Button Name="QuitGameButton" Classes="guide-item danger" Content="Quit game" Click="OnQuitGameClick" />
                         </StackPanel>

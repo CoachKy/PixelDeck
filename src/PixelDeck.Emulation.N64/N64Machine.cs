@@ -28,8 +28,14 @@ public sealed class N64Machine
         "CA1859:Use concrete types when possible for improved performance",
         Justification = "This is the intentional graphics-backend boundary for future conformant RDP implementations.")]
     private readonly IN64GraphicsBackend _graphicsBackend;
+    [SuppressMessage(
+        "Performance",
+        "CA1859:Use concrete types when possible for improved performance",
+        Justification = "This is the intentional audio-backend boundary for interchangeable RSP audio implementations.")]
+    private readonly IN64AudioBackend _audioBackend;
     private readonly N64AudioProcessor _audioProcessor;
     private bool _executeGraphicsTasks = true;
+    private bool _captureNextGraphicsTask;
 
     private N64Machine(N64Cartridge cartridge, string? savePath)
     {
@@ -38,6 +44,7 @@ public sealed class N64Machine
         _renderer = new Fast3dRenderer(Memory);
         _graphicsBackend = _renderer;
         _audioProcessor = new N64AudioProcessor(Memory);
+        _audioBackend = _audioProcessor;
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);
         _cartridgeIdentity = SHA256.HashData(cartridge.Rom);
         _savePath = savePath;
@@ -84,7 +91,11 @@ public sealed class N64Machine
 
     public Fast3dRenderer Renderer => _renderer;
 
+    public N64GraphicsTaskCapture? LastGraphicsCapture { get; private set; }
+
     public N64AudioProcessor AudioProcessor => _audioProcessor;
+
+    public IN64AudioBackend AudioBackend => _audioBackend;
 
     public int BufferedAudioSampleCount => Memory.BufferedAudioSampleCount;
 
@@ -93,6 +104,17 @@ public sealed class N64Machine
     public int ReadAudioSamples(Span<float> destination) => Memory.ReadAudioSamples(destination);
 
     public void ClearAudioSamples() => Memory.ClearAudioSamples();
+
+    /// <summary>
+    /// Captures the next submitted graphics task and its pre-execution RDRAM
+    /// image. Capture is explicitly one-shot because cloning 8 MiB every task
+    /// would disrupt real-time emulation.
+    /// </summary>
+    public void RequestGraphicsTaskCapture()
+    {
+        LastGraphicsCapture = null;
+        _captureNextGraphicsTask = true;
+    }
 
     public static N64Machine Load(string path, string? savePath = null)
     {
@@ -203,7 +225,7 @@ public sealed class N64Machine
             writer.Write(AudioTasksSubmitted);
             Cpu.SaveState(writer);
             Memory.SaveState(writer);
-            _audioProcessor.SaveState(writer);
+            _audioBackend.SaveState(writer);
             foreach (var pixel in _frame) writer.Write(pixel);
         }
 
@@ -262,7 +284,7 @@ public sealed class N64Machine
         AudioTasksSubmitted = payloadReader.ReadInt64();
         Cpu.LoadState(payloadReader);
         Memory.LoadState(payloadReader);
-        _audioProcessor.LoadState(payloadReader);
+        _audioBackend.LoadState(payloadReader);
         Memory.ClearAudioSamples();
         for (var index = 0; index < _frame.Length; index++) _frame[index] = payloadReader.ReadUInt32();
         if (payloadStream.Position != payloadStream.Length)
@@ -438,6 +460,12 @@ public sealed class N64Machine
             case 1:
                 GraphicsTasksSubmitted++;
                 LastGraphicsTask = task;
+                if (_captureNextGraphicsTask)
+                {
+                    LastGraphicsCapture = N64GraphicsTaskCapture.Create(task, Memory.Rdram);
+                    _captureNextGraphicsTask = false;
+                }
+
                 if (_executeGraphicsTasks)
                 {
                     _graphicsBackend.Execute(task);
@@ -448,7 +476,7 @@ public sealed class N64Machine
                 break;
             case 2:
                 AudioTasksSubmitted++;
-                _audioProcessor.Execute(task);
+                _audioBackend.Execute(task);
                 Memory.CompleteRspTask();
                 break;
             default:

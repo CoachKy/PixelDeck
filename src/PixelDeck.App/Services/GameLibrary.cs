@@ -40,6 +40,7 @@ public sealed class GameLibrary
 
     private readonly RomTitleResolver _titleResolver;
     private readonly GameSaveStorage _saveStorage;
+    private readonly GameLibraryImageStorage _libraryImageStorage;
 
     public GameLibrary(string? gamesFolder = null)
     {
@@ -50,6 +51,10 @@ public sealed class GameLibrary
         SuperNintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, SuperNintendoFolderName)).FullName;
         _titleResolver = new RomTitleResolver(GamesFolder);
         _saveStorage = new GameSaveStorage(GamesFolder);
+        _libraryImageStorage = new GameLibraryImageStorage(GamesFolder);
+        _libraryImageStorage.EnsurePlatformFolder(NintendoFolderName);
+        _libraryImageStorage.EnsurePlatformFolder(Nintendo64FolderName);
+        _libraryImageStorage.EnsurePlatformFolder(SuperNintendoFolderName);
         NintendoSavesFolder = _saveStorage.EnsurePlatformFolder(NintendoFolderName);
         Nintendo64SavesFolder = _saveStorage.EnsurePlatformFolder(Nintendo64FolderName);
         SuperNintendoSavesFolder = _saveStorage.EnsurePlatformFolder(SuperNintendoFolderName);
@@ -64,6 +69,9 @@ public sealed class GameLibrary
     public string SuperNintendoFolder { get; }
 
     public string SavesFolder => _saveStorage.RootFolder;
+
+    /// <summary>Visible folder holding library images the player captured.</summary>
+    public string LibraryImagesFolder => _libraryImageStorage.RootFolder;
 
     public string NintendoSavesFolder { get; }
 
@@ -104,7 +112,20 @@ public sealed class GameLibrary
                 var relativePath = Path.GetRelativePath(GamesFolder, file.FullName);
                 var cacheKey = GetCacheKey(relativePath);
                 var screenshotCachePath = GetCachePath("screenshots", cacheKey, ".png");
-                var screenshotPath = FindScreenshot(file, screenshotCachePath);
+                var libraryImagePath = platform.SaveFolderName is null
+                    ? string.Empty
+                    : _libraryImageStorage.GetImagePath(relativePath, platform.SaveFolderName);
+                if (libraryImagePath.Length > 0)
+                {
+                    GameLibraryImageStorage.MigrateLegacyImage(
+                        GetCachePath("library", cacheKey, ".png"),
+                        libraryImagePath);
+                }
+
+                var screenshotPath = FindScreenshot(file, libraryImagePath, screenshotCachePath);
+                var hasChosenLibraryImage =
+                    HasSidecarImage(file) ||
+                    (libraryImagePath.Length > 0 && File.Exists(libraryImagePath));
                 var compatibility = InspectCompatibility(file.FullName, extension);
                 var fallbackTitle = CleanTitle(Path.GetFileNameWithoutExtension(file.Name));
                 var title = _titleResolver.Resolve(
@@ -134,6 +155,8 @@ public sealed class GameLibrary
                 {
                     ScreenshotPath = screenshotPath,
                     ScreenshotCachePath = screenshotCachePath,
+                    LibraryImagePath = libraryImagePath,
+                    HasChosenLibraryImage = hasChosenLibraryImage,
                     SaveRamPath = savePaths?.BatteryPath ?? string.Empty,
                     SaveStatePath = savePaths?.StatePath ?? string.Empty,
                     MapperNumber = compatibility.MapperNumber,
@@ -249,7 +272,7 @@ public sealed class GameLibrary
                     cartridge.IsSupported,
                     cartridge.CompatibilityMessage,
                     mapText,
-                    false,
+                    cartridge.IsLimitedCompatibility,
                     cartridge.Title);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
@@ -318,15 +341,41 @@ public sealed class GameLibrary
     private string GetCachePath(string category, string key, string extension) =>
         Path.Combine(GamesFolder, ".pixeldeck", category, $"{key}{extension}");
 
-    private static string? FindScreenshot(FileInfo gameFile, string screenshotCachePath)
+    /// <summary>
+    /// Picks the picture shown on a game's library card, most deliberate
+    /// choice first: an image the player dropped next to the ROM, then one
+    /// they captured from the pause menu, and only failing both the automatic
+    /// boot screenshot.
+    /// </summary>
+    private static string? FindScreenshot(
+        FileInfo gameFile,
+        string libraryImagePath,
+        string screenshotCachePath)
     {
-        var basePath = Path.Combine(gameFile.DirectoryName!, Path.GetFileNameWithoutExtension(gameFile.Name));
-        var sidecarScreenshot = ScreenshotExtensions
+        if (FindSidecarImage(gameFile) is { } sidecar)
+        {
+            return sidecar;
+        }
+
+        if (libraryImagePath.Length > 0 && File.Exists(libraryImagePath))
+        {
+            return libraryImagePath;
+        }
+
+        return File.Exists(screenshotCachePath) ? screenshotCachePath : null;
+    }
+
+    private static string? FindSidecarImage(FileInfo gameFile)
+    {
+        var basePath = Path.Combine(
+            gameFile.DirectoryName!,
+            Path.GetFileNameWithoutExtension(gameFile.Name));
+        return ScreenshotExtensions
             .Select(extension => basePath + extension)
             .FirstOrDefault(File.Exists);
-
-        return sidecarScreenshot ?? (File.Exists(screenshotCachePath) ? screenshotCachePath : null);
     }
+
+    private static bool HasSidecarImage(FileInfo gameFile) => FindSidecarImage(gameFile) is not null;
 
     private sealed record PlatformDefinition(
         string Name,

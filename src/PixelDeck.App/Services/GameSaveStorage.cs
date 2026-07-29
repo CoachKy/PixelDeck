@@ -98,28 +98,11 @@ internal sealed class GameSaveStorage
         }
     }
 
-    private static string RemovePlatformFolder(string relativeGamePath, string platformFolderName)
-    {
-        var normalized = relativeGamePath.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar);
-        var prefix = platformFolderName + Path.DirectorySeparatorChar;
-        return normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-            ? normalized[prefix.Length..]
-            : normalized;
-    }
+    private static string RemovePlatformFolder(string relativeGamePath, string platformFolderName) =>
+        GameContentPaths.RemovePlatformFolder(relativeGamePath, platformFolderName);
 
-    private static string GetContainedPath(string rootFolder, string relativePath)
-    {
-        var rootPrefix = Path.GetFullPath(rootFolder)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) +
-            Path.DirectorySeparatorChar;
-        var candidate = Path.GetFullPath(Path.Combine(rootPrefix, relativePath));
-        if (!candidate.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException("The game path resolves outside its save folder.");
-        }
-
-        return candidate;
-    }
+    private static string GetContainedPath(string rootFolder, string relativePath) =>
+        GameContentPaths.GetContained(rootFolder, relativePath, "save folder");
 
     private static string NormalizeExtension(string extension) =>
         extension.StartsWith('.') ? extension : "." + extension;

@@ -13,7 +13,8 @@ internal sealed record CompatibilityConfiguration(
     int FieldsPerGame,
     int Parallelism,
     string? Filter,
-    bool CaptureFlaggedFrames);
+    bool CaptureFlaggedFrames,
+    bool CaptureGraphicsTasks);
 
 internal sealed record CompatibilitySummary(
     int Total,
@@ -131,6 +132,8 @@ internal sealed record GameCompatibilityResult
     public bool SaveStateDeterministic { get; init; }
 
     public string? CapturePath { get; init; }
+
+    public string? GraphicsCapturePath { get; init; }
 
     public IReadOnlyList<string> Findings { get; init; } = [];
 }

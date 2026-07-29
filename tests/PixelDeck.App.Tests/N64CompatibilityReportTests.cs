@@ -31,6 +31,7 @@ public sealed class N64CompatibilityReportTests
             Parallelism: 4,
             Filter: null,
             CaptureFlaggedFrames: true,
+            CaptureGraphicsTasks: false,
             Strict: false);
         var games = new[]
         {
@@ -57,6 +58,7 @@ public sealed class N64CompatibilityReportTests
         Assert.Contains("\"Mario, 64.z64\"", csv);
         Assert.Contains("rdpOtherModeLow", csv);
         Assert.Contains("framebufferBlended", csv);
+        Assert.Contains("graphicsCapture", csv);
         Assert.Contains("Hardware profile coverage", markdown);
         Assert.Contains("First blockers", markdown);
     }
@@ -78,6 +80,7 @@ public sealed class N64CompatibilityReportTests
                 1,
                 null,
                 true,
+                false,
                 false);
             var report = N64CompatibilityRunner.CreateReport(
                 options,

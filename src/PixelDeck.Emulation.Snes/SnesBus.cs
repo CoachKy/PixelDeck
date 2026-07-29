@@ -190,6 +190,8 @@ internal sealed class SnesBus : I65816Bus
 
     internal ushort SuperFxProgramCounter => _superFx?.ProgramCounter ?? 0;
 
+    internal IReadOnlyList<string> SuperFxWatchSamples => _superFx?.WatchSamples ?? [];
+
     internal string SuperFxDiagnostics
     {
         get
@@ -210,7 +212,13 @@ internal sealed class SnesBus : I65816Bus
                    $"lastStop={_superFx.LastStopProgramBank:X2}:{_superFx.LastStopProgramCounter:X4} " +
                    $"byHost={_superFx.LastStopWasHostRequested} | top opcodes {string.Join(" ", top)}\n" +
                    $"                {_superFx.RegisterDump}\n" +
-                   $"                pc samples: {string.Join(" ", _superFx.ProgramCounterSamples.Select(s => s.Location))}";
+                   $"                hot pcs: {string.Join(" ", _superFx.ProgramCounterHistogram
+                       .Select((count, address) => (address, count))
+                       .Where(entry => entry.count > 0)
+                       .OrderByDescending(entry => entry.count)
+                       .Take(200)
+                       .OrderBy(entry => entry.address)
+                       .Select(entry => $"{entry.address:X4}={entry.count / 1000}k"))}";
         }
     }
 

@@ -31,6 +31,16 @@
 /Saves/SuperNintendo/*
 !/Saves/SuperNintendo/README.md
 
+# Library card pictures are local user data, like saves.
+/Library/*
+!/Library/README.md
+!/Library/Nintendo/
+!/Library/Nintendo64/
+!/Library/SuperNintendo/
+/Library/Nintendo/*
+/Library/Nintendo64/*
+/Library/SuperNintendo/*
+
 # Accuracy-test ROMs are installed locally because their redistribution terms vary.
 /tests/PixelDeck.App.Tests/TestRoms/*
 !/tests/PixelDeck.App.Tests/TestRoms/README.md
@@ -48,3 +58,4 @@
 
 # Per-ROM compatibility reports and captures contain local collection details.
 /artifacts/nes-compatibility/*
+/artifacts/n64-compatibility/*
