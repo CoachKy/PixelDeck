@@ -45,8 +45,8 @@ public sealed class UpdateInstaller(Action<string> log)
                 Directory.Delete(backupFolder, recursive: true);
             }
 
-            log($"Backing up {request.InstallFolder} to {backupFolder}.");
-            CopyDirectory(request.InstallFolder, backupFolder);
+            var backedUp = BackupReplacedFiles(request.StagingFolder, request.InstallFolder, backupFolder);
+            log($"Backed up {backedUp} replaced file(s) to {backupFolder}.");
 
             log($"Installing {request.TargetVersion} from {request.StagingFolder}.");
             CopyDirectory(request.StagingFolder, request.InstallFolder);
@@ -144,6 +144,39 @@ public sealed class UpdateInstaller(Action<string> log)
             log($"Relaunch failed: {exception}");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Copies aside only the files the staged build is about to overwrite.
+    /// </summary>
+    /// <remarks>
+    /// Backing up the whole install folder would copy the player's ROM library
+    /// and save files as well, which can be tens of gigabytes and is pointless:
+    /// the update never touches them, because a file absent from the staged
+    /// package is never written. Only what gets replaced needs restoring.
+    /// </remarks>
+    /// <returns>How many files were copied aside.</returns>
+    private static int BackupReplacedFiles(string staging, string installFolder, string backupFolder)
+    {
+        Directory.CreateDirectory(backupFolder);
+        var count = 0;
+
+        foreach (var staged in Directory.GetFiles(staging, "*", SearchOption.AllDirectories))
+        {
+            var relative = Path.GetRelativePath(staging, staged);
+            var existing = Path.Combine(installFolder, relative);
+            if (!File.Exists(existing))
+            {
+                continue;
+            }
+
+            var target = Path.Combine(backupFolder, relative);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(existing, target, overwrite: true);
+            count++;
+        }
+
+        return count;
     }
 
     private static void CopyDirectory(string source, string destination)

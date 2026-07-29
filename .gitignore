@@ -53,8 +53,11 @@
 # Local cross-platform publish output used for release validation.
 /artifacts/validation/*
 
-# Local tester packages and their expanded staging directories.
+# Local tester packages and their expanded staging directories. Release notes
+# are kept, though: they are the text pasted into each GitHub release, and
+# losing them means losing the record of what shipped in a version.
 /artifacts/releases/*
+!/artifacts/releases/RELEASE-NOTES-*.md
 
 # Per-ROM compatibility reports and captures contain local collection details.
 /artifacts/nes-compatibility/*

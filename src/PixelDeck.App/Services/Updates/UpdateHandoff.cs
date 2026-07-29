@@ -22,6 +22,46 @@ public static class UpdateHandoff
         OperatingSystem.IsWindows() ? "PixelDeck.Updater.exe" : "PixelDeck.Updater");
 
     /// <summary>
+    /// Copies the updater out of the install folder and returns the copy, or
+    /// null if it could not be staged.
+    /// </summary>
+    /// <remarks>
+    /// The updater must not run from the folder it is about to replace.
+    /// Windows refuses to overwrite the image of a running process, so an
+    /// updater started in place fails as soon as the copy reaches its own
+    /// executable — and because that failure is indistinguishable from any
+    /// other, it rolls the whole update back. Running from a temporary copy
+    /// leaves every file in the install folder replaceable, including the
+    /// updater itself.
+    /// </remarks>
+    public static string? StageUpdater(string updaterPath)
+    {
+        try
+        {
+            var folder = Path.Combine(Path.GetTempPath(), $"PixelDeck-updater-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(folder);
+
+            var destination = Path.Combine(folder, Path.GetFileName(updaterPath));
+            File.Copy(updaterPath, destination, overwrite: true);
+
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(
+                    destination,
+                    File.GetUnixFileMode(destination) |
+                    UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+            }
+
+            return destination;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            UpdateDiagnostics.Write("The updater could not be staged for launch.", exception);
+            return null;
+        }
+    }
+
+    /// <summary>
     /// Starts the installer. Returns false when it could not be launched, in
     /// which case the caller should carry on into the current version.
     /// </summary>
@@ -35,6 +75,11 @@ public static class UpdateHandoff
             return false;
         }
 
+        if (StageUpdater(UpdaterPath) is not { } updaterToRun)
+        {
+            return false;
+        }
+
         UpdateStateStore.Write(new PendingUpdateState
         {
             TargetVersion = staged.Release.Version.ToString(),
@@ -43,7 +88,7 @@ public static class UpdateHandoff
 
         try
         {
-            var start = new ProcessStartInfo(UpdaterPath)
+            var start = new ProcessStartInfo(updaterToRun)
             {
                 WorkingDirectory = InstallFolder,
                 UseShellExecute = false
