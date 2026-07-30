@@ -25,6 +25,19 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         Assert.True(canonical.AsSpan().SequenceEqual(cartridge.Rom));
     }
 
+    [Theory]
+    [InlineData(N64Cic.Cic6102, 0x80125C00u)]
+    [InlineData(N64Cic.Cic6103, 0x80025C00u)]
+    [InlineData(N64Cic.Cic6106, 0x7FF25C00u)]
+    public void CartridgeEntryPointReflectsCicIpl3Relocation(
+        N64Cic cic,
+        uint expected)
+    {
+        Assert.Equal(
+            expected,
+            N64Cartridge.AdjustEntryPointForCic(0x80125C00, cic));
+    }
+
     [Fact]
     public void MachineLoadAllowsAnUnverifiedRecognizedCartridgeToAttemptBoot()
     {
@@ -172,7 +185,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
-    public void RdpTraceRejectsTamperingAndMarksHleGeometryIncomplete()
+    public void RdpTraceRejectsTamperingAndTracksUnsupportedSourceCommands()
     {
         var memory = new N64Memory(
             N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
@@ -187,7 +200,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         var trace = N64RdpTrace.Capture(
             N64GraphicsTaskCapture.Create(task, memory.Rdram));
         Assert.False(trace.IsComplete);
-        Assert.Equal(1, trace.OmittedHlePrimitiveCommands);
+        Assert.Equal(0, trace.OmittedHlePrimitiveCommands);
         Assert.Equal(1, trace.UnsupportedSourceCommands);
 
         using var stream = new MemoryStream();
@@ -341,6 +354,32 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         memory.WriteUInt32(0xA460000C, 16);
 
         Assert.NotEqual(0u, memory.MiInterrupt & (1u << 4));
+    }
+
+    [Fact]
+    public void Cic6105RawRspBootTaskPerformsItsHandshakeDmas()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        // The x105 program submitted by IPL3 is identified by the sum of its
+        // first 44 bytes. This synthetic signature exercises the dispatch
+        // contract without embedding Nintendo's resident microcode.
+        memory.SpImem.AsSpan(0, 44).Clear();
+        memory.SpImem.AsSpan(0, 9).Fill(0xFF);
+        memory.SpImem[9] = 0xEB;
+
+        for (var index = 0; index < 0x1F0; index++)
+        {
+            memory.Rdram[0x1E8 + index] = (byte)(index ^ 0xA5);
+        }
+
+        BinaryPrimitives.WriteUInt32BigEndian(
+            memory.Rdram.AsSpan(0x200, sizeof(uint)),
+            0xAD170014);
+
+        Assert.True(memory.TryExecuteCic6105BootTask());
+        Assert.True(memory.Rdram.AsSpan(0x1E8, 0x1F0).SequenceEqual(
+            memory.SpImem.AsSpan(0x120, 0x1F0)));
+        Assert.Equal(0xAD170014u, memory.ReadUInt32(0xA02FE1C0));
     }
 
     [Fact]
@@ -757,6 +796,42 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void Fast3dLineRasterizesTheLegacyLineCommand()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt16(0x100, 0);
+        memory.WriteUInt16(0x102, 0);
+        memory.WriteUInt16(0x104, 0);
+        memory.WriteByte(0x10C, 0xFF);
+        memory.WriteByte(0x10D, 0);
+        memory.WriteByte(0x10E, 0);
+        memory.WriteByte(0x10F, 0xFF);
+        memory.WriteUInt16(0x110, 1);
+        memory.WriteUInt16(0x112, 0);
+        memory.WriteUInt16(0x114, 0);
+        memory.WriteByte(0x11C, 0xFF);
+        memory.WriteByte(0x11D, 0);
+        memory.WriteByte(0x11E, 0);
+        memory.WriteByte(0x11F, 0xFF);
+        memory.WriteUInt32(0x200, 0xFF18013F);
+        memory.WriteUInt32(0x204, 0x00010000);
+        memory.WriteUInt32(0x208, 0x04100000);
+        memory.WriteUInt32(0x20C, 0x00000100);
+        memory.WriteUInt32(0x210, 0xB5000000);
+        memory.WriteUInt32(0x214, 0x00000A00);
+        memory.WriteUInt32(0x218, 0xB8000000);
+        memory.WriteUInt32(0x21C, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 32, 0, 0));
+
+        Assert.Equal(1, renderer.LinesDrawn);
+        Assert.Equal(0, renderer.UnsupportedCommands);
+        Assert.NotEqual(0u, memory.ReadUInt32(0x10000 + ((120 * 320 + 200) * 4)));
+    }
+
+    [Fact]
     public void Fast3dRdpStateTracksBlendAndFogColorsForCompatibilityTraces()
     {
         var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
@@ -780,6 +855,36 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         Assert.Equal(new Vector4(16 / 255f, 32 / 255f, 48 / 255f, 64 / 255f), state.FogColor);
         Assert.Equal(new Vector4(80 / 255f, 96 / 255f, 112 / 255f, 128 / 255f), state.BlendColor);
         Assert.True(state.CombinerConfigured);
+    }
+
+    [Fact]
+    public void Fast3dTracksKeyConvertAndPrimitiveDepthRdpState()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        memory.WriteUInt32(0x200, 0xEA123456);
+        memory.WriteUInt32(0x204, 0x789ABCDE);
+        memory.WriteUInt32(0x208, 0xEB000000);
+        memory.WriteUInt32(0x20C, 0x10203040);
+        memory.WriteUInt32(0x210, 0xECABCDEF);
+        memory.WriteUInt32(0x214, 0x55667788);
+        memory.WriteUInt32(0x218, 0xEE000000);
+        memory.WriteUInt32(0x21C, 0x43211234);
+        memory.WriteUInt32(0x220, 0xB8000000);
+        memory.WriteUInt32(0x224, 0);
+        var renderer = new Fast3dRenderer(memory);
+
+        renderer.Execute(new N64RspTask(
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x200, 40, 0, 0));
+
+        var state = renderer.RdpState;
+        Assert.Equal(0, renderer.UnsupportedCommands);
+        Assert.Equal(0xEA123456u, state.KeyGreenBlueWord0);
+        Assert.Equal(0x789ABCDEu, state.KeyGreenBlueWord1);
+        Assert.Equal(0x10203040u, state.KeyRedWord1);
+        Assert.Equal(0xECABCDEFu, state.ConvertWord0);
+        Assert.Equal(0x55667788u, state.ConvertWord1);
+        Assert.Equal(0x4321, state.PrimitiveDepth);
+        Assert.Equal(0x1234, state.PrimitiveDeltaDepth);
     }
 
     [Fact]
@@ -987,6 +1092,76 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void Fast3dStrictMicrocodeCrcRecognizesFactor5RogueSquadron()
+    {
+        Assert.Equal(
+            0xCBF43926u,
+            Fast3dRenderer.ComputeStrictCrc32("123456789"u8));
+        Assert.Equal(
+            Fast3dRenderer.ComputeStrictCrc32([4, 3, 2, 1, 8, 7, 6, 5]),
+            Fast3dRenderer.ComputeStrictWordSwappedCrc32([1, 2, 3, 4, 5, 6, 7, 8]));
+        Assert.Equal(
+            Fast3dRenderer.N64Microcode.F5Rogue,
+            Fast3dRenderer.ClassifyMicrocode(banner: null, 0xDA51CCDB));
+        Assert.Equal(
+            Fast3dRenderer.N64Microcode.Fast3d,
+            Fast3dRenderer.ClassifyMicrocode(banner: null, 0xDA51CCDA));
+    }
+
+    [Fact]
+    public void LocalRogueSquadronUsesItsDedicatedFactor5CommandStreamWhenPresent()
+    {
+        var path = N64TestSupport.FindCartridges()
+            .FirstOrDefault(candidate =>
+                Path.GetFileName(candidate).Contains(
+                    "Rogue",
+                    StringComparison.OrdinalIgnoreCase));
+        if (path is null)
+        {
+            output.WriteLine("Local Rogue Squadron target is not installed; optional Factor 5 gate skipped.");
+            return;
+        }
+
+        var machine = N64Machine.Load(path);
+        for (var field = 0; field < 120; field++)
+        {
+            machine.RunFrame();
+        }
+
+        Assert.Equal("F5Rogue", machine.Renderer.DetectedMicrocodeName);
+        Assert.Equal(0xDA51CCDBu, machine.Renderer.MicrocodeCrc32);
+        Assert.False(machine.Renderer.UnsupportedCommandCounts.ContainsKey(0x80));
+        Assert.False(machine.Renderer.UnsupportedCommandCounts.ContainsKey(0x02));
+        Assert.InRange(machine.Renderer.CommandsProcessed, 1, 100_000);
+    }
+
+    [Fact]
+    public void Fast3dCullDisplayListDecodesSdkVertexRanges()
+    {
+        Assert.Equal(
+            (2, 7),
+            Fast3dRenderer.DecodeCullVertexRange(
+                Fast3dRenderer.N64Microcode.F3dex,
+                0xBE000004,
+                0x0000000E));
+        Assert.Equal(
+            (1, 15),
+            Fast3dRenderer.DecodeCullVertexRange(
+                Fast3dRenderer.N64Microcode.Fast3d,
+                0xBE000028,
+                0));
+    }
+
+    [Fact]
+    public void Fast3dCullDisplayListRejectsOnlyACommonOutsidePlane()
+    {
+        Assert.True(Fast3dRenderer.AllVerticesShareClipPlane([1, 1 | 4, 1 | 16]));
+        Assert.False(Fast3dRenderer.AllVerticesShareClipPlane([1, 2, 4]));
+        Assert.False(Fast3dRenderer.AllVerticesShareClipPlane([1, 0, 1]));
+        Assert.False(Fast3dRenderer.AllVerticesShareClipPlane([]));
+    }
+
+    [Fact]
     public void Fast3dViewportMapsPositiveClipYTowardTheTopOfTheFramebuffer()
     {
         var scale = new Vector4(160, 120, 511, 0);
@@ -1168,6 +1343,51 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         Assert.True(machine.ReachedCartridgeEntryPoint);
         Assert.True(machine.Memory.VerticalInterruptsRaised >= 100);
         Assert.True(machine.AudioTasksSubmitted >= 1);
+    }
+
+    [Fact]
+    public void LocalSuperMario64TriangleTaskLowersToCompleteNativePacketsWhenPresent()
+    {
+        var path = N64TestSupport.FindSuperMario64();
+        if (path is null)
+        {
+            output.WriteLine(
+                "Local Super Mario 64 target is not installed; optional RDP lowering gate skipped.");
+            return;
+        }
+
+        var machine = N64Machine.Load(path);
+        N64RdpTrace? triangleTrace = null;
+        for (var field = 0; field < 360 && triangleTrace is null; field++)
+        {
+            var trianglesBefore = machine.Renderer.TrianglesDrawn;
+            machine.RequestGraphicsTaskCapture();
+            machine.RunFrame();
+            var capture = machine.LastGraphicsCapture;
+            if (capture is null ||
+                machine.Renderer.TrianglesDrawn == trianglesBefore)
+            {
+                continue;
+            }
+
+            var candidate = N64RdpTrace.Capture(capture);
+            if (candidate.Commands.Any(command => command.Opcode == 0x0F))
+            {
+                triangleTrace = candidate;
+            }
+        }
+
+        Assert.NotNull(triangleTrace);
+        Assert.True(triangleTrace.IsComplete);
+        Assert.Equal(0, triangleTrace.OmittedHlePrimitiveCommands);
+        Assert.Equal(0, triangleTrace.UnsupportedSourceCommands);
+        Assert.Contains(
+            triangleTrace.Commands,
+            command => command.Opcode == 0x0F &&
+                       command.Words.Length == 44);
+        output.WriteLine(
+            $"Lowered {triangleTrace.Commands.Count(command => command.Opcode == 0x0F):N0} " +
+            $"native triangle packet(s) in a complete {triangleTrace.Commands.Count:N0}-packet task.");
     }
 
     [Fact]

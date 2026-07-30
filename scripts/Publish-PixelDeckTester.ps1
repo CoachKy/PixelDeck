@@ -61,6 +61,34 @@ if ($LASTEXITCODE -ne 0)
     throw "PixelDeck publish failed."
 }
 
+$nativeRuntimeRoot = Join-Path $repositoryRoot "artifacts/native/$Runtime"
+$nativeLibraryName = if ($Runtime -like 'win-*') {
+    'PixelDeck.ParallelRdp.dll'
+} else {
+    'libPixelDeck.ParallelRdp.so'
+}
+$nativeLibrary = Get-ChildItem -LiteralPath $nativeRuntimeRoot -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -eq $nativeLibraryName } |
+    Select-Object -First 1
+if ($nativeLibrary)
+{
+    $nativeTarget = Join-Path $packageDirectory "Native/$Runtime"
+    New-Item -ItemType Directory -Path $nativeTarget -Force | Out-Null
+    Copy-Item -LiteralPath $nativeLibrary.FullName -Destination $nativeTarget
+
+    $nativeLicense = Get-ChildItem -LiteralPath $nativeRuntimeRoot -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq 'paraLLEl-RDP-LICENSE.txt' } |
+        Select-Object -First 1
+    if ($nativeLicense)
+    {
+        Copy-Item -LiteralPath $nativeLicense.FullName -Destination $nativeTarget
+    }
+}
+else
+{
+    Write-Warning "No tested paraLLEl-RDP bridge was staged for $Runtime; Pixel64 will use its software renderer."
+}
+
 # NuGet native-runtime packages can contribute large vendor PDBs even when
 # project symbols are disabled. Tester builds do not need those symbols.
 Get-ChildItem -LiteralPath $packageDirectory -Recurse -File -Filter "*.pdb" |

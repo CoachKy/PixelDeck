@@ -71,6 +71,7 @@ public sealed class N64Cartridge
             0xACC8580A => N64Cic.Cic6106,
             _ => N64Cic.Unknown
         };
+        EffectiveEntryPoint = AdjustEntryPointForCic(EntryPoint, Cic);
     }
 
     public byte[] Rom { get; }
@@ -80,6 +81,12 @@ public sealed class N64Cartridge
     public uint ClockRate { get; }
 
     public uint EntryPoint { get; }
+
+    /// <summary>
+    /// Address to which the cartridge's IPL3 actually transfers control.
+    /// CIC-6103/6106 boot code relocates the header value before jumping.
+    /// </summary>
+    public uint EffectiveEntryPoint { get; }
 
     public uint ReleaseAddress { get; }
 
@@ -137,6 +144,14 @@ public sealed class N64Cartridge
         N64SaveType.FlashRam1Mbit => 128 * 1024,
         _ => 512
     };
+
+    internal static uint AdjustEntryPointForCic(uint headerEntryPoint, N64Cic cic) =>
+        cic switch
+        {
+            N64Cic.Cic6103 => headerEntryPoint - 0x00100000,
+            N64Cic.Cic6106 => headerEntryPoint - 0x00200000,
+            _ => headerEntryPoint
+        };
 
     /// <summary>
     /// The conventional file extension for this save type, so a library never

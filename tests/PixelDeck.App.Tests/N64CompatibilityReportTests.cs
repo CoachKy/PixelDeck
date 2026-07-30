@@ -58,6 +58,7 @@ public sealed class N64CompatibilityReportTests
         Assert.Contains("\"Mario, 64.z64\"", csv);
         Assert.Contains("rdpOtherModeLow", csv);
         Assert.Contains("framebufferBlended", csv);
+        Assert.Contains("microcodeCrc32", csv);
         Assert.Contains("graphicsCapture", csv);
         Assert.Contains("Hardware profile coverage", markdown);
         Assert.Contains("First blockers", markdown);

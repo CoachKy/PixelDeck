@@ -128,51 +128,86 @@ SNES keyboard additions are A/S for X/Y and Q/W for L/R. All eight SNES buttons 
 
 ## Nintendo 64 core status
 
-Pixel64 0.9.014 opens the cartridge-attempt envelope of PixelDeck's
-in-repository Nintendo 64 core. Every structurally valid big-endian `.z64`,
-byte-swapped `.v64`, and little-endian `.n64` image discovered in
-`Games/Nintendo64` can now be launched without modifying the source file.
-Super Mario 64 (USA) revision 0 (`NSME`, CIC-6102) remains the verified route;
-launching another title is an attempt, not a compatibility claim.
+Pixel64 0.15.020 adds multi-task native framebuffer, depth-buffer, and
+hidden-coverage validation to the compiled-renderer integration boundary in
+PixelDeck's in-repository Nintendo 64 core. A pinned, MIT-licensed
+paraLLEl-RDP standalone revision now sits behind a small versioned C ABI. The
+managed core can load it without a static native dependency, transfer
+canonical RDRAM and the RDP's hidden-coverage memory in both directions,
+submit variable-length native RDP packets, apply every VI register, and read
+back RGBA scanout. A missing library, Vulkan loader, required GPU feature, or
+incompatible ABI returns cleanly to the existing software renderer.
 
-The core reaches the real cartridge scheduler, handles the target's paired
-64 KiB TLB mapping and FR=0 floating-point register mode, services SP/DP and AI
-tasks, walks segmented Fast3D display lists, transforms and rasterizes
-triangles, copies texture loads into persistent 4 KiB TMEM with row and
-word-half swizzling, clips polygons in homogeneous coordinates, and honors the
-RDP render mode when comparing or updating depth. Its software renderer applies
-the programmed color combiner to textured and untextured spans, tracks the RDP
-blend/fog colors, performs alpha comparison, and reads the framebuffer for
-programmed blender cycles. Fast3D clip-space Y maps into the framebuffer's
-top-left coordinate system with matching front/back winding, so the title and
-castle grounds render upright. Timed SI DMA re-runs the resident PIF controller
-command on every read. A state-driven local trace presses Start after the title
-becomes interactive, selects Mario A, clears the opening dialog, reaches castle
-area 1, leaves the intro action, and proves that holding the analog stick moves
-Mario for 120 additional fields without an unknown CPU or Fast3D opcode.
+Fast3D, F3DEX, and F3DEX2 clipped triangles can now be lowered into native
+44-word RDP shade/texture/depth edge packets. The live bridge remains opt-in
+with `PIXELDECK_N64_VIDEO_BACKEND=parallel-rdp`: it runs the software renderer
+first, commits native RDRAM only after a complete successful task, and disables
+itself after unlowered work or a native failure. The existing Fast3D renderer
+remains the default until captured-image, depth, coverage, and multi-task state
+comparisons pass.
+
+Native replay now detects the active framebuffer and depth-image ranges,
+reports before/after hashes and exact changed-byte counts, and includes the
+real 4 MiB hidden-coverage output. The Linux native workflow uses a CPU Vulkan
+driver and must prove that a deterministic shaded triangle changes color,
+depth, and coverage identically across repeated runs. The same C++ ABI is
+compiled and smoke-tested on Windows.
+
+Sequence replay supplies each graphics task with its exact captured pre-task
+RDRAM while preserving hidden coverage in one native context. The opt-in local
+Mario certification captures consecutive complete triangle tasks in memory,
+requires deterministic framebuffer/depth/coverage activity, and verifies the
+hidden-output-to-hidden-input chain without writing game-derived evidence into
+the repository. Run `scripts/Test-Pixel64ParallelRdp.ps1` with an ABI-2 native
+library to exercise that pre-refactor gate.
+
+Every structurally valid big-endian `.z64`, byte-swapped `.v64`, and
+little-endian `.n64` image discovered in `Games/Nintendo64` can still be
+launched without modifying the source file. Super Mario 64 (USA) revision 0
+(`NSME`, CIC-6102) remains the verified gameplay route; launching another title
+is an attempt, not a compatibility claim.
+
+The core reaches the real cartridge scheduler, handles paired 64 KiB TLB
+mapping and FR=0 floating-point register mode, services SP/DP and AI tasks,
+walks segmented Fast3D/F3DEX2 display lists, transforms and rasterizes
+triangles, maintains TMEM, clips polygons in homogeneous coordinates, and
+honors the RDP render mode when comparing or updating depth. Its software
+renderer applies the programmed color combiner to textured and untextured
+spans, tracks blend/fog colors, performs alpha comparison, and reads the
+framebuffer for programmed blender cycles. Timed SI DMA reruns the resident PIF
+controller command on every read.
+
+Pixel64 now performs the CIC-6105 IPL2 RSP DMA handshake used by Donkey Kong 64
+and applies CIC-6103/6106 IPL3 entry-point relocation. It detects Rogue
+Squadron's Factor 5 microcode by its strict CRC and runs it through a dedicated
+parser instead of treating inline payloads as Fast3D commands. Factor 5's
+custom triangle and texture-rectangle generators remain incomplete.
+
+Audio tasks are dispatched through the `IN64AudioBackend` boundary. The
+bundled HLE now executes ABI-1, the GoldenEye/Blast Corps ABI-1 variant, NAudio,
+the Mario Kart and Ocarina NEAD variants, and MusyX v1. The Mario 64 route uses
+the fixed N64 resampler coefficient table, corrected ADPCM history and scale,
+exact envelope continuation, aligned DMA, and the task-selected AI sample rate.
+MusyX v2 and additional family variants remain future work.
 
 Pixel64 is not yet graphics-accurate or generally game-compatible. An
-unverified game may stop on CPU, RSP, RDP, or platform behavior the core does
-not implement yet; PixelDeck reports that error in the emulator overlay instead
-of rejecting the cartridge from the library. The upright
-castle grounds execute and accept controller input, but exact RDP coverage,
-dithering, two-cycle blending, lighting, and VI presentation remain incomplete;
-additional visual errors are expected. The library therefore continues to mark
-the target `PARTIAL`. The machine now submits graphics work through an
-`IN64GraphicsBackend` boundary, allowing a conformant renderer to be added
-without replacing the scheduler. Audio RSP tasks have a corresponding
-`IN64AudioBackend` boundary. The bundled audio HLE preserves the ABI
-resampler's four-sample cursor across task boundaries, while host playback
-fully re-buffers after an underrun instead of repeatedly restarting from
-partial fragments. A one-shot `.p64gfx` capture records the
-graphics task plus its exact pre-execution RDRAM. That capture can now be
-lowered into a versioned `.p64rdp` packet trace and replayed independently of
-the Fast3D display-list decoder. Traces explicitly report any HLE triangles
-that could not yet be represented as native RDP packets. The standalone replay
-tool executes either input repeatedly without booting the game. PixelDeck's existing
-gallery, alphabetical sections, title count, play history, version footer,
-fullscreen pause menu, state slots, and assigned Player 1/Player 2 controller
-ports are reused unchanged.
+unverified game may stop on CPU, RSP, RDP, audio, or platform behavior the core
+does not implement yet. PixelDeck reports that error in the emulator overlay
+instead of rejecting the cartridge from the library. Exact RDP coverage,
+dithering, two-cycle blending, lighting, coverage, and VI presentation remain
+incomplete; visual errors are expected. The library therefore continues to
+mark Nintendo 64 titles `PARTIAL`.
+
+The machine submits graphics work through an `IN64GraphicsBackend` boundary. A
+one-shot `.p64gfx` capture records the graphics task plus its exact
+pre-execution RDRAM. It can be lowered into a versioned `.p64rdp` trace and
+replayed independently of the display-list decoder through either the managed
+software RDP path or, for complete traces, the optional paraLLEl-RDP bridge.
+Pinned Windows and Linux native builds run in CI; full packages automatically
+include a tested runtime staged under `artifacts/native/<rid>`. PixelDeck's
+existing gallery, alphabetical sections, title count, play history, version
+footer, fullscreen pause menu, state slots, and assigned Player 1/Player 2
+controller ports are reused unchanged.
 
 The shared SDL/XInput controller snapshot preserves raw left-stick magnitude
 for the N64 analog stick and maps the right stick to the four C-buttons. A,
@@ -183,6 +218,14 @@ available. Run the read-only
 the local cartridge collection and produce per-title CPU, graphics, texture,
 audio, performance, and save-state evidence. The earlier release envelope is
 recorded in [Pixel64 0.4 certification](docs/PIXEL64-0.4-CERTIFICATION.md).
+The native-triangle lowering milestone is recorded in
+[Pixel64 0.13 certification](docs/PIXEL64-0.13-CERTIFICATION.md). The initial
+native-renderer bridge milestone remains in
+[Pixel64 0.12 certification](docs/PIXEL64-0.12-CERTIFICATION.md). The
+audio, CIC, Factor 5, and 13-cartridge audit milestone is recorded in
+[Pixel64 0.11 certification](docs/PIXEL64-0.11-CERTIFICATION.md). The
+previous audio-discovery milestone remains in
+[Pixel64 0.10 certification](docs/PIXEL64-0.10-CERTIFICATION.md).
 The component and conformance plan is tracked in the
 [RMG-aligned Pixel64 roadmap](docs/PIXEL64-RMG-ROADMAP.md).
 

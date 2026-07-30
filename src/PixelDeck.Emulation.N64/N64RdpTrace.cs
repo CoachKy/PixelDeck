@@ -6,8 +6,9 @@ namespace PixelDeck.Emulation.N64;
 
 /// <summary>
 /// A backend-neutral sequence of native RDP commands and the RDRAM visible
-/// when command capture began. Current Fast3D capture marks a trace incomplete
-/// when HLE geometry has not yet been lowered to native RDP triangle packets.
+/// when command capture began. Ordinary Fast3D triangles are lowered to native
+/// packets; a trace is incomplete when lines, custom generators, or unsupported
+/// source commands remain.
 /// RDRAM can contain game-derived assets and must be treated as local
 /// diagnostic evidence.
 /// </summary>

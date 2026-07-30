@@ -92,6 +92,10 @@ public sealed class N64Memory
             ? NtscCpuTicksPerField
             : PalCpuTicksPerField;
         Array.Copy(cartridge.Rom, 0x40, SpDmem, 0x40, 0xFC0);
+        if (cartridge.Cic == N64Cic.Cic6105)
+        {
+            InitializeCic6105BootStub();
+        }
     }
 
     public byte[] Rdram { get; } = new byte[RdramSize];
@@ -114,6 +118,33 @@ public sealed class N64Memory
 
     public bool SramDirty { get; private set; }
 
+    /// <summary>
+    /// IPL2 leaves this short routine in RSP IMEM for the x105 IPL3. Games
+    /// using CIC-6105 call it while authenticating their boot code; zero-filled
+    /// IMEM lets execution reach the cartridge but leaves its handshake word
+    /// unset, producing a permanent wait loop before the first VI or RSP task.
+    /// </summary>
+    private void InitializeCic6105BootStub()
+    {
+        ReadOnlySpan<uint> instructions =
+        [
+            0x3C0DBFC0,
+            0x8DA807FC,
+            0x25AD07C0,
+            0x31080080,
+            0x5500FFFC,
+            0x3C0DBFC0,
+            0x8DA80024,
+            0x3C0BB000
+        ];
+        for (var index = 0; index < instructions.Length; index++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(
+                SpImem.AsSpan(index * sizeof(uint), sizeof(uint)),
+                instructions[index]);
+        }
+    }
+
     public void MarkSramFlushed() => SramDirty = false;
 
     public void LoadSram(ReadOnlySpan<byte> data)
@@ -133,11 +164,23 @@ public sealed class N64Memory
 
     public uint ViWidth => _viWidth;
 
+    public uint ViVerticalInterrupt => _viVerticalInterrupt;
+
     public uint ViCurrent => _viCurrent;
+
+    public uint ViBurst => _viBurst;
+
+    public uint ViVerticalSync => _viVerticalSync;
+
+    public uint ViHorizontalSync => _viHorizontalSync;
+
+    public uint ViHorizontalSyncLeap => _viHorizontalSyncLeap;
 
     public uint ViHorizontalVideo => _viHorizontalVideo;
 
     public uint ViVerticalVideo => _viVerticalVideo;
+
+    public uint ViVerticalBurst => _viVerticalBurst;
 
     public uint ViXScale => _viXScale;
 
@@ -567,6 +610,34 @@ public sealed class N64Memory
             ReadSpUInt32(0xFF4),
             ReadSpUInt32(0xFF8),
             ReadSpUInt32(0xFFC));
+        return true;
+    }
+
+    /// <summary>
+    /// Executes the two DMA operations performed by the CIC x105 boot
+    /// microcode. This is a raw RSP program, not an <c>OSTask</c>, so the
+    /// normal task descriptor at DMEM 0xFC0 is intentionally meaningless.
+    /// </summary>
+    public bool TryExecuteCic6105BootTask()
+    {
+        var signature = 0;
+        for (var index = 0; index < 44; index++)
+        {
+            signature += SpImem[index];
+        }
+
+        if (signature != 0x9E2)
+        {
+            return false;
+        }
+
+        Rdram.AsSpan(0x1E8, 0x1F0).CopyTo(SpImem.AsSpan(0x120, 0x1F0));
+        for (var block = 0; block < 24; block++)
+        {
+            SpImem.AsSpan(0x120 + (block * 8), 8).CopyTo(
+                Rdram.AsSpan(0x2FB1F0 + (block * 0xFF0), 8));
+        }
+
         return true;
     }
 
@@ -1438,13 +1509,21 @@ public sealed class N64Memory
         }
     }
 
+    public int CurrentAudioSampleRate
+    {
+        get
+        {
+            var videoClock = _cartridge.VideoRegion == N64VideoRegion.Ntsc
+                ? 48_681_812L
+                : 49_656_530L;
+            return (int)Math.Max(1L, videoClock / (_aiDacRate + 1L));
+        }
+    }
+
     private long CalculateAudioDmaTicks(uint length)
     {
         const int bytesPerStereoSample = 4;
-        var videoClock = _cartridge.VideoRegion == N64VideoRegion.Ntsc
-            ? 48_681_812L
-            : 49_656_530L;
-        var sampleRate = Math.Max(1L, videoClock / (_aiDacRate + 1L));
+        var sampleRate = CurrentAudioSampleRate;
         var samples = Math.Max(1L, length / bytesPerStereoSample);
         return Math.Max(1L, ((samples * CpuTicksPerSecond) + sampleRate - 1) / sampleRate);
     }

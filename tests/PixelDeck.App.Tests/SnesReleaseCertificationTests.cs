@@ -168,19 +168,25 @@ public sealed class SnesReleaseCertificationTests
     }
 
     [Fact]
-    public void UnsupportedHardwareIsExcludedFromTheStableEnvelope()
+    public void SuperFxIsOfferedAsLimitedCompatibilityRatherThanRejected()
     {
-        using var enhancement = CertificationSnesImage.Create(
+        // This deliberately reverses an earlier expectation. Super FX cartridges
+        // used to be refused outright; the GSU core now runs them, so they load
+        // and the library marks them Partial instead. No verified GSU-drawn
+        // output exists yet, which is what "limited" records - so the cartridge
+        // must be loadable and flagged, never advertised as playable.
+        using var superFx = CertificationSnesImage.Create(
             SnesMapMode.LoRom,
             mapModeByte: 0x20,
             cartridgeType: 0x13,
             destinationCode: 0x01);
 
-        var enhancementInfo = SnesCartridge.Inspect(enhancement.Path);
+        var info = SnesCartridge.Inspect(superFx.Path);
 
-        Assert.False(enhancementInfo.IsSupported);
-        Assert.Contains("enhancement-chip", enhancementInfo.CompatibilityMessage);
-        Assert.Throws<NotSupportedException>(() => SnesMachine.Load(enhancement.Path));
+        Assert.True(info.IsSupported);
+        Assert.True(info.IsLimitedCompatibility);
+        Assert.Contains("Super FX", info.CompatibilityMessage, StringComparison.Ordinal);
+        Assert.Contains("in progress", info.CompatibilityMessage, StringComparison.Ordinal);
     }
 
     [Fact]

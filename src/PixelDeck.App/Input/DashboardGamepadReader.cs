@@ -44,5 +44,17 @@ internal sealed class DashboardGamepadReader
         return presses;
     }
 
-    public void Reset() => Array.Clear(_previousButtons);
+    /// <summary>
+    /// Drops the press history, treating everything as though it were already
+    /// held so a button has to be released before it counts again.
+    /// </summary>
+    /// <remarks>
+    /// Called when the dashboard takes back control after a game exits. Clearing
+    /// the history looked equivalent and was not: the next poll compares against
+    /// "nothing was pressed", so a button still physically down registered as a
+    /// fresh press. The button holding it down is usually the one that just left
+    /// the game, and a fresh A on the dashboard launches a game - so holding the
+    /// button a moment too long relaunched the game the player had just quit.
+    /// </remarks>
+    public void Reset() => Array.Fill(_previousButtons, ~GamepadButton.None);
 }

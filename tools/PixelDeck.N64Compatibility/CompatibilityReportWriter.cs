@@ -35,7 +35,7 @@ internal static class CompatibilityReportWriter
         output.AppendLine(
             "status,path,title,gameCode,sha256,region,cic,saveType,byteOrder,verified," +
             "entryPoint,fields,coreFieldsPerSecond,p99Ms,instructions,pc,graphicsTasks," +
-            "audioTasks,graphicsCommands,unsupportedGraphics,graphicsOpcodes,microcode," +
+            "audioTasks,graphicsCommands,unsupportedGraphics,graphicsOpcodes,microcode,microcodeCrc32,audioMicrocode," +
             "graphicsBackend,rdpOtherModeHigh,rdpOtherModeLow,rdpCycleType,alphaRejected," +
             "framebufferBlended,unsupportedTextures,audioCommands,unsupportedAudio,audioOpcodes,viInterrupts," +
             "audioDmas,controllerPolls,maxColors,distinctFrames,audioSamples,audioPeak," +
@@ -66,6 +66,8 @@ internal static class CompatibilityReportWriter
                 game.UnsupportedGraphicsCommands.ToString(CultureInfo.InvariantCulture),
                 game.UnsupportedGraphicsOpcodes,
                 game.DetectedMicrocode,
+                $"0x{game.GraphicsMicrocodeCrc32:X8}",
+                game.DetectedAudioMicrocode,
                 game.GraphicsBackend,
                 $"0x{game.RdpOtherModeHigh:X8}",
                 $"0x{game.RdpOtherModeLow:X8}",

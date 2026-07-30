@@ -73,26 +73,40 @@ dotnet run --project tools/PixelDeck.N64GraphicsReplay -- `
 dotnet run --project tools/PixelDeck.N64GraphicsReplay -- `
   'artifacts/n64-compatibility/<run>/graphics-tasks/<capture>.p64rdp' `
   --repeat 3
+
+# Complete native-packet traces can also use the optional Vulkan backend.
+dotnet run --project tools/PixelDeck.N64GraphicsReplay -- `
+  'artifacts/n64-compatibility/<run>/graphics-tasks/<capture>.p64rdp' `
+  --repeat 3 --parallel-rdp
 ```
 
 The `.p64rdp` format has a versioned header, compressed 8 MiB pre-task RDRAM,
 ordered variable-length native packets, microcode metadata, and a SHA-256
 checksum over the logical contents. It rejects truncation, oversized records,
-checksum mismatches, and trailing data. It also records the exact number of
-HLE primitive commands omitted because Pixel64 does not yet lower transformed
-Fast3D triangles back into native RDP edge packets. Only a trace with zero
-omissions and zero unsupported source commands is reported as complete.
+checksum mismatches, and trailing data. Ordinary clipped Fast3D/F3DEX/F3DEX2
+triangles are lowered into 44-word native shade/texture/depth packets. The
+format still records exact omissions for HLE lines or incomplete custom
+generators. Only a trace with zero omissions and zero unsupported source
+commands is reported as complete.
 
 The replay utility reports input and output memory hashes, backend identity,
 command coverage, render-target state, and whether repeated executions were
-deterministic.
+deterministic. ABI-2 native replay additionally identifies framebuffer and
+depth regions and prints their exact changed-byte counts and hashes alongside
+the 4 MiB hidden-coverage result.
 
 The report records cartridge identity, CIC, video region, save type, source
 byte order, CPU progress, exact program counter, graphics and audio task
-counts, unsupported HLE opcodes, unsupported texture formats, VI/AI activity,
-controller polling, visual liveness, audio output, dropped samples,
+counts, detected graphics and audio microcode families, strict graphics
+microcode CRC, unsupported HLE opcodes, unsupported texture formats, VI/AI
+activity, controller polling, visual liveness, audio output, dropped samples,
 performance, exact next-field save-state determinism, and the final RDP
 other-mode/cycle state with alpha-rejection and framebuffer-blend counters.
+
+The current HLE family set includes Fast3D, F3DEX2, and the Factor 5 Rogue
+Squadron command stream on graphics tasks, plus ABI-1, NAudio, NEAD, and MusyX
+v1 on audio tasks. A detected family is evidence that its dispatcher ran, not
+proof that every title or every command variant is correct.
 
 ## Graphics backend and replay roadmap
 
@@ -108,13 +122,19 @@ full-screen shade family used by Super Mario 64's pause UI. Coverage, dithering,
 and two-cycle behavior remain approximations.
 
 Graphics-task capture/replay is the first conformance layer around that
-boundary. Direct native RDP packet capture/replay is now the second. Native
-triangle-edge lowering, hidden RDRAM, and image assertions are the remaining
-capture work before a Vulkan capability probe and separate paraLLEl-RDP adapter
-can be evaluated on identical renderer inputs. A new backend must remain
-optional, preserve the software fallback, and pass the same scheduler,
-save-state, controller, replay, and compatibility-lab routes before it can
-become the preferred renderer.
+boundary. Direct native RDP packet capture/replay is now the second. The Vulkan
+capability probe and pinned paraLLEl-RDP native adapter are available for
+complete-trace evaluation on identical renderer inputs. The adapter transfers
+canonical RDRAM and hidden coverage, queues native packets, applies VI state,
+and can return RGBA scanout. Ordinary native triangle-edge lowering, native
+output-region hashing, a ROM-free color/depth/coverage CI gate, and a fail-safe
+live opt-in are now present. Set
+`PIXELDECK_N64_VIDEO_BACKEND=parallel-rdp` only with a tested native runtime:
+Pixel64 executes software first and retains it after any incomplete or failed
+native task. Selected real-game image assertions and multi-task hidden-state
+continuity remain the gate before the native path becomes a dashboard setting
+or preferred renderer. `scripts/Test-Pixel64ParallelRdp.ps1` now performs that
+owned-local sequence check without persisting cartridge-derived captures.
 
 ## Reading the status
 

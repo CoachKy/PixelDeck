@@ -96,7 +96,7 @@ internal sealed class N64CompatibilityRunner
             .ToArray();
 
         return new(
-            SchemaVersion: 2,
+            SchemaVersion: 3,
             Pixel64Version: FormatVersion(typeof(N64Machine).Assembly.GetName().Version),
             StartedAtUtc: startedAt,
             CompletedAtUtc: completedAt,
@@ -336,7 +336,7 @@ internal sealed class N64CompatibilityRunner
         if (machine.Renderer.UnsupportedTextureFormatCounts.Count > 0)
         {
             warnings.Add(
-                "Unsupported texture formats were configured: " +
+                "Unsupported texture formats were sampled: " +
                 FormatStringCounts(machine.Renderer.UnsupportedTextureFormatCounts));
         }
 
@@ -426,6 +426,8 @@ internal sealed class N64CompatibilityRunner
                 ? string.Empty
                 : FormatByteCounts(machine.Renderer.UnsupportedCommandCounts),
             DetectedMicrocode = machine?.Renderer.DetectedMicrocodeName ?? string.Empty,
+            GraphicsMicrocodeCrc32 = machine?.Renderer.MicrocodeCrc32 ?? 0,
+            DetectedAudioMicrocode = machine?.AudioProcessor.DetectedMicrocodeName ?? string.Empty,
             GraphicsBackend = machine?.Renderer.Name ?? string.Empty,
             RdpOtherModeHigh = machine?.Renderer.RdpState.OtherModeHigh ?? 0,
             RdpOtherModeLow = machine?.Renderer.RdpState.OtherModeLow ?? 0,

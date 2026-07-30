@@ -17,5 +17,12 @@ public readonly record struct N64RdpStateSnapshot(
     Vector4 BlendColor,
     bool CombinerConfigured,
     bool CombinerUsesTexture,
+    uint KeyGreenBlueWord0,
+    uint KeyGreenBlueWord1,
+    uint KeyRedWord1,
+    uint ConvertWord0,
+    uint ConvertWord1,
+    ushort PrimitiveDepth,
+    ushort PrimitiveDeltaDepth,
     long AlphaPixelsRejected,
     long FramebufferPixelsBlended);

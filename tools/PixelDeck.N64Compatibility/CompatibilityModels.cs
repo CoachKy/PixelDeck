@@ -93,6 +93,10 @@ internal sealed record GameCompatibilityResult
 
     public string DetectedMicrocode { get; init; } = string.Empty;
 
+    public uint GraphicsMicrocodeCrc32 { get; init; }
+
+    public string DetectedAudioMicrocode { get; init; } = string.Empty;
+
     public string GraphicsBackend { get; init; } = string.Empty;
 
     public uint RdpOtherModeHigh { get; init; }

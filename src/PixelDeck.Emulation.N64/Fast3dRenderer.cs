@@ -43,6 +43,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private uint _geometryMode;
     private bool _textureEnabled;
     private int _textureTile;
+    private int _textureMaximumMipLevel;
     private float _textureScaleS = 1;
     private float _textureScaleT = 1;
     private uint _textureImageAddress;
@@ -59,6 +60,13 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private CombinerCycle _combinerCycle1;
     private uint _otherModeLow;
     private uint _otherModeHigh;
+    private uint _keyGreenBlueWord0;
+    private uint _keyGreenBlueWord1;
+    private uint _keyRedWord1;
+    private uint _convertWord0;
+    private uint _convertWord1;
+    private ushort _primitiveDepth;
+    private ushort _primitiveDeltaDepth;
 
     public Fast3dRenderer(N64Memory memory)
     {
@@ -72,6 +80,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     public long FillRectanglesDrawn { get; private set; }
 
     public long TrianglesDrawn { get; private set; }
+
+    public long LinesDrawn { get; private set; }
 
     public long VerticesTransformed { get; private set; }
 
@@ -120,6 +130,13 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         _blendColor,
         _combinerConfigured,
         _combinerUsesTexture,
+        _keyGreenBlueWord0,
+        _keyGreenBlueWord1,
+        _keyRedWord1,
+        _convertWord0,
+        _convertWord1,
+        _primitiveDepth,
+        _primitiveDeltaDepth,
         AlphaPixelsRejected,
         FramebufferPixelsBlended);
 
@@ -129,6 +146,12 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     public long UnsupportedCommands { get; private set; }
 
     public IReadOnlyDictionary<byte, long> UnsupportedCommandCounts => _unsupportedCommandCounts;
+
+    public uint? FirstUnsupportedCommandAddress { get; private set; }
+
+    public string? FirstUnsupportedCommandContext { get; private set; }
+
+    public uint? FirstUnsupportedListHeaderAddress { get; private set; }
 
     public void Execute(N64RspTask task)
     {
@@ -142,6 +165,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         _geometryMode = 0;
         _textureEnabled = false;
         _textureTile = 0;
+        _textureMaximumMipLevel = 0;
         _textureScaleS = 1;
         _textureScaleT = 1;
         _textureImageAddress = 0;
@@ -150,9 +174,21 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         _textureImageWidth = 1;
         _primitiveColor = Vector4.One;
         MicrocodeBanner = ReadMicrocodeBanner(task);
-        _microcode = ClassifyMicrocode(MicrocodeBanner);
+        MicrocodeCrc32 = CalculateMicrocodeCrc32(task);
+        _microcode = ClassifyMicrocode(MicrocodeBanner, MicrocodeCrc32);
         DetectedMicrocode = _microcode;
         var remainingBudget = MaximumCommandsPerTask;
+        if (_microcode == N64Microcode.F5Rogue)
+        {
+            ResetF5RogueState();
+            ExecuteF5RogueDisplayList(
+                ResolveAddress(task.DataPointer),
+                task.DataSize == 0 ? null : task.DataSize / 8,
+                depth: 0,
+                ref remainingBudget);
+            return;
+        }
+
         ExecuteDisplayList(
             ResolveAddress(task.DataPointer),
             task.DataSize == 0 ? null : task.DataSize / 8,
@@ -206,9 +242,11 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     {
                         MoveMemory(word0, word1);
                     }
+                    else if (ShouldCullDisplayList(word0, word1))
+                    {
+                        return;
+                    }
 
-                    // G_CULLDL rejects a display list whose bounding volume is
-                    // off screen. Drawing it anyway is always visually correct.
                     break;
                 case 0x04: // F3D G_VTX / F3DEX2 G_BRANCH_Z
                     if (_microcode == N64Microcode.F3dex)
@@ -226,7 +264,6 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 case 0x05: // F3DEX2 G_TRI1
                     if (_microcode == N64Microcode.F3dex2)
                     {
-                        RecordOmittedHlePrimitives(1);
                         DrawTriangleF3dex2(word0);
                     }
 
@@ -234,7 +271,6 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 case 0x07: // F3DEX2 G_QUAD
                     if (_microcode == N64Microcode.F3dex2)
                     {
-                        RecordOmittedHlePrimitives(2);
                         DrawTriangleF3dex2(word0);
                         DrawTriangleF3dex2(word1);
                     }
@@ -263,7 +299,6 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     MoveMemoryF3dex2(word0, word1);
                     break;
                 case 0x06 when _microcode == N64Microcode.F3dex2: // F3DEX2 G_TRI2
-                    RecordOmittedHlePrimitives(2);
                     DrawTriangleF3dex2(word0);
                     DrawTriangleF3dex2(word1);
                     break;
@@ -297,9 +332,15 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     }
 
                     break;
+                case 0xBE: // F3D/F3DEX G_CULLDL
+                    if (ShouldCullDisplayList(word0, word1))
+                    {
+                        return;
+                    }
+
+                    break;
                 case 0xBF: // F3D G_TRI1
                     // Fast3D stores indices multiplied by 10; F3DEX by 2.
-                    RecordOmittedHlePrimitives(1);
                     if (_microcode == N64Microcode.F3dex)
                     {
                         DrawTriangleF3dex2(word1);
@@ -311,7 +352,6 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
                     break;
                 case 0xB1 when _microcode == N64Microcode.F3dex: // F3DEX G_TRI2
-                    RecordOmittedHlePrimitives(2);
                     DrawTriangleF3dex2(word0);
                     DrawTriangleF3dex2(word1);
                     break;
@@ -326,8 +366,19 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                             continue; // unused slot padding
                         }
 
-                        RecordOmittedHlePrimitives(1);
                         DrawTriangleIndices(first, second, third);
+                    }
+
+                    break;
+                case 0xB5: // F3D/F3DEX G_LINE3D
+                    RecordOmittedHlePrimitives(1);
+                    if (_microcode == N64Microcode.F3dex)
+                    {
+                        DrawLineF3dex(word0);
+                    }
+                    else
+                    {
+                        DrawLine(word1);
                     }
 
                     break;
@@ -374,10 +425,16 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 case 0xE6: // G_RDPLOADSYNC
                 case 0xE8: // G_RDPTILESYNC
                 case 0xE9: // G_RDPFULLSYNC
+                case 0xEA: // G_SETKEYGB
+                case 0xEB: // G_SETKEYR
+                case 0xEC: // G_SETCONVERT
+                case 0xEE: // G_SETPRIMDEPTH
                 case 0xF8: // G_SETFOGCOLOR
                 case 0xF9: // G_SETBLENDCOLOR
                 case 0xFA: // G_SETPRIMCOLOR
                     CaptureAndExecuteRdpCommand(word0, word1);
+                    break;
+                case 0xC0: // G_NOOP / G_NOOP_TAG
                     break;
                 case 0xB9: // G_SETOTHERMODE_L
                     SetOtherModeLow(word0, word1);
@@ -419,6 +476,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     break;
                 }
                 default:
+                    FirstUnsupportedCommandAddress ??= address - 8;
                     UnsupportedCommands++;
                     _unsupportedCommandCounts[opcode] =
                         _unsupportedCommandCounts.GetValueOrDefault(opcode) + 1;
@@ -445,8 +503,22 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     internal string? MicrocodeBanner { get; private set; }
 
-    private static N64Microcode ClassifyMicrocode(string? banner)
+    /// <summary>
+    /// Strict CRC-32 of the 4 KiB graphics microcode text image. Some custom
+    /// microcodes contain no libultra version banner, so compatibility tooling
+    /// needs the same stable identity that graphics plugins use.
+    /// </summary>
+    public uint MicrocodeCrc32 { get; private set; }
+
+    internal static N64Microcode ClassifyMicrocode(string? banner, uint crc32)
     {
+        // Factor 5's Rogue Squadron microcode has no ordinary Fast3D banner
+        // and changes both opcode meanings and command lengths.
+        if (crc32 == 0xDA51CCDB)
+        {
+            return N64Microcode.F5Rogue;
+        }
+
         if (banner is null)
         {
             return N64Microcode.Fast3d;
@@ -462,6 +534,73 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         return banner.Contains("F3DEX", StringComparison.Ordinal)
             ? N64Microcode.F3dex
             : N64Microcode.Fast3d;
+    }
+
+    private uint CalculateMicrocodeCrc32(N64RspTask task)
+    {
+        const int microcodeTextLength = 4096;
+        var address = task.MicrocodePointer & 0x7FFFFF;
+        if (address + microcodeTextLength > N64Memory.RdramSize)
+        {
+            return 0;
+        }
+
+        // Published graphics-microcode CRCs are computed from the traditional
+        // N64 plugin memory layout, where bytes inside each 32-bit RDRAM word
+        // are host-order reversed. Pixel64 keeps canonical big-endian RDRAM,
+        // so feed each word to the CRC in that historical byte order.
+        return ComputeStrictWordSwappedCrc32(
+            _memory.Rdram.AsSpan((int)address, microcodeTextLength));
+    }
+
+    internal static uint ComputeStrictCrc32(ReadOnlySpan<byte> data)
+    {
+        var crc = uint.MaxValue;
+        foreach (var value in data)
+        {
+            crc ^= value;
+            for (var bit = 0; bit < 8; bit++)
+            {
+                crc = (crc & 1) != 0
+                    ? (crc >> 1) ^ 0xEDB88320
+                    : crc >> 1;
+            }
+        }
+
+        return ~crc;
+    }
+
+    internal static uint ComputeStrictWordSwappedCrc32(ReadOnlySpan<byte> data)
+    {
+        var crc = uint.MaxValue;
+        var offset = 0;
+        for (; offset + 4 <= data.Length; offset += 4)
+        {
+            for (var byteInWord = 3; byteInWord >= 0; byteInWord--)
+            {
+                crc = AccumulateCrc32(crc, data[offset + byteInWord]);
+            }
+        }
+
+        for (; offset < data.Length; offset++)
+        {
+            crc = AccumulateCrc32(crc, data[offset]);
+        }
+
+        return ~crc;
+    }
+
+    private static uint AccumulateCrc32(uint crc, byte value)
+    {
+        crc ^= value;
+        for (var bit = 0; bit < 8; bit++)
+        {
+            crc = (crc & 1) != 0
+                ? (crc >> 1) ^ 0xEDB88320
+                : crc >> 1;
+        }
+
+        return crc;
     }
 
     private string? ReadMicrocodeBanner(N64RspTask task)
@@ -495,6 +634,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     {
         _textureEnabled = (word0 & 0xFF) != 0;
         _textureTile = (int)((word0 >> 8) & 7);
+        _textureMaximumMipLevel = (int)((word0 >> 11) & 7);
         _textureScaleS = ((word1 >> 16) & 0xFFFF) / 65536f;
         _textureScaleT = (word1 & 0xFFFF) / 65536f;
     }
@@ -589,7 +729,6 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             MaskS = (int)((word1 >> 4) & 0xF),
             ShiftS = (int)(word1 & 0xF)
         };
-        RecordTileFormatSupport((int)((word0 >> 21) & 7), (int)((word0 >> 19) & 3));
     }
 
     private void SetTileSize(uint word0, uint word1)
@@ -1224,6 +1363,135 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             (int)((word1 >> 8) & 0xFF) / 10,
             (int)(word1 & 0xFF) / 10);
 
+    private void DrawLine(uint word1) =>
+        DrawLineIndices(
+            (int)((word1 >> 16) & 0xFF) / 10,
+            (int)((word1 >> 8) & 0xFF) / 10,
+            (byte)word1);
+
+    private void DrawLineF3dex(uint word0) =>
+        DrawLineIndices(
+            (int)((word0 >> 16) & 0xFF) / 2,
+            (int)((word0 >> 8) & 0xFF) / 2,
+            (byte)word0);
+
+    private void DrawLineIndices(int first, int second, int encodedWidth)
+    {
+        if (!RasterizationEnabled ||
+            first < 0 ||
+            second < 0 ||
+            first >= _vertices.Length ||
+            second >= _vertices.Length ||
+            _colorImageAddress >= N64Memory.RdramSize ||
+            _colorImageWidth <= 0 ||
+            _colorImageSize is not (2 or 3))
+        {
+            return;
+        }
+
+        var a = _vertices[first];
+        var b = _vertices[second];
+        if (!a.Valid || !b.Valid || (a.ClipFlags & b.ClipFlags) != 0)
+        {
+            return;
+        }
+
+        // The line microcode guarantees a minimum 1.5-pixel footprint and
+        // encodes additional width in half-pixel units.
+        var lineWidth = 1.5f + (encodedWidth * 0.5f);
+        var radius = lineWidth * 0.5f;
+        var delta = b.Position - a.Position;
+        var lengthSquared = (delta.X * delta.X) + (delta.Y * delta.Y);
+        if (lengthSquared < 0.000001f)
+        {
+            return;
+        }
+
+        var bytesPerPixel = _colorImageSize == 2 ? 2 : 4;
+        var remainingBytes = N64Memory.RdramSize - (int)_colorImageAddress;
+        var maximumHeight = Math.Clamp(
+            remainingBytes / (_colorImageWidth * bytesPerPixel),
+            1,
+            480);
+        var minX = Math.Clamp(
+            Math.Max((int)MathF.Floor(MathF.Min(a.Position.X, b.Position.X) - radius), _scissorLeft),
+            0,
+            _colorImageWidth - 1);
+        var maxX = Math.Clamp(
+            Math.Min((int)MathF.Ceiling(MathF.Max(a.Position.X, b.Position.X) + radius), _scissorRight - 1),
+            0,
+            _colorImageWidth - 1);
+        var minY = Math.Clamp(
+            Math.Max((int)MathF.Floor(MathF.Min(a.Position.Y, b.Position.Y) - radius), _scissorTop),
+            0,
+            maximumHeight - 1);
+        var maxY = Math.Clamp(
+            Math.Min((int)MathF.Ceiling(MathF.Max(a.Position.Y, b.Position.Y) + radius), _scissorBottom - 1),
+            0,
+            maximumHeight - 1);
+        if (maxX < minX || maxY < minY)
+        {
+            return;
+        }
+
+        const uint zCompare = 0x10;
+        const uint zUpdate = 0x20;
+        const uint zSourcePrimitive = 0x4;
+        var hasDepth =
+            (_geometryMode & 1) != 0 &&
+            _depthImageAddress < N64Memory.RdramSize;
+        var compareDepth = hasDepth && (_otherModeLow & zCompare) != 0;
+        var updateDepth = hasDepth && (_otherModeLow & zUpdate) != 0;
+        var usePrimitiveDepth = (_otherModeLow & zSourcePrimitive) != 0;
+        if (compareDepth || updateDepth)
+        {
+            EnsureDepthBuffer(_colorImageWidth, maximumHeight);
+        }
+
+        var radiusSquared = radius * radius;
+        for (var y = minY; y <= maxY; y++)
+        {
+            for (var x = minX; x <= maxX; x++)
+            {
+                var px = x + 0.5f - a.Position.X;
+                var py = y + 0.5f - a.Position.Y;
+                var amount = Math.Clamp(
+                    ((px * delta.X) + (py * delta.Y)) / lengthSquared,
+                    0,
+                    1);
+                var nearestX = a.Position.X + (delta.X * amount);
+                var nearestY = a.Position.Y + (delta.Y * amount);
+                var distanceX = x + 0.5f - nearestX;
+                var distanceY = y + 0.5f - nearestY;
+                if ((distanceX * distanceX) + (distanceY * distanceY) > radiusSquared)
+                {
+                    continue;
+                }
+
+                var depthIndex = (y * _colorImageWidth) + x;
+                var depth = usePrimitiveDepth
+                    ? (_primitiveDepth & 0x7FFF) / 32f
+                    : a.Position.Z + ((b.Position.Z - a.Position.Z) * amount);
+                if (compareDepth && depth > _depthBuffer[depthIndex])
+                {
+                    DepthPixelsRejected++;
+                    continue;
+                }
+
+                var shade = Vector4.Lerp(a.Color, b.Color, amount);
+                var color = _combinerConfigured
+                    ? EvaluateCombiner(shade, Vector4.Zero)
+                    : shade;
+                if (WriteColorPixel(x, y, color, shade) && updateDepth)
+                {
+                    _depthBuffer[depthIndex] = depth;
+                }
+            }
+        }
+
+        LinesDrawn++;
+    }
+
     private void DrawTriangleIndices(int first, int second, int third)
     {
         if (first >= _vertices.Length || second >= _vertices.Length || third >= _vertices.Length)
@@ -1375,7 +1643,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     private void RasterizeTriangle(Fast3dVertex a, Fast3dVertex b, Fast3dVertex c)
     {
-        if (!RasterizationEnabled)
+        if (!RasterizationEnabled && _capturedRdpCommands is null)
         {
             return;
         }
@@ -1394,6 +1662,12 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         }
 
         if (ShouldCullTriangle(_geometryMode, area))
+        {
+            return;
+        }
+
+        CaptureHleTriangle(a, b, c);
+        if (!RasterizationEnabled)
         {
             return;
         }
@@ -1425,11 +1699,13 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         var inverseArea = 1f / area;
         const uint zCompare = 0x10;
         const uint zUpdate = 0x20;
+        const uint zSourcePrimitive = 0x4;
         var hasDepth =
             (_geometryMode & 1) != 0 &&
             _depthImageAddress < N64Memory.RdramSize;
         var compareDepth = hasDepth && (_otherModeLow & zCompare) != 0;
         var updateDepth = hasDepth && (_otherModeLow & zUpdate) != 0;
+        var usePrimitiveDepth = (_otherModeLow & zSourcePrimitive) != 0;
         if (compareDepth || updateDepth)
         {
             EnsureDepthBuffer(_colorImageWidth, maximumHeight);
@@ -1465,10 +1741,14 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 }
 
                 var depthIndex = (y * _colorImageWidth) + x;
-                var depth =
-                    (a.Position.Z * weightA) +
-                    (b.Position.Z * weightB) +
-                    (c.Position.Z * weightC);
+                // Primitive Z is a 15-bit screen-space value. Fast3D's
+                // viewport depth convention spans approximately 0..1024,
+                // so the RDP's 0..0x7fff range maps directly at 1/32 scale.
+                var depth = usePrimitiveDepth
+                    ? (_primitiveDepth & 0x7FFF) / 32f
+                    : (a.Position.Z * weightA) +
+                      (b.Position.Z * weightB) +
+                      (c.Position.Z * weightC);
                 if (compareDepth && depth > _depthBuffer[depthIndex])
                 {
                     DepthPixelsRejected++;
@@ -1567,6 +1847,66 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         return flags;
     }
 
+    private bool ShouldCullDisplayList(uint word0, uint word1)
+    {
+        var (start, end) = DecodeCullVertexRange(_microcode, word0, word1);
+        if (start < 0 || end < start || end >= _vertices.Length)
+        {
+            return false;
+        }
+
+        Span<byte> clipFlags = stackalloc byte[end - start + 1];
+        for (var index = start; index <= end; index++)
+        {
+            if (!_vertices[index].Valid)
+            {
+                // A malformed or partially populated range is safer to draw
+                // than to discard. Real display lists populate every vertex
+                // referenced by G_CULLDL.
+                return false;
+            }
+
+            clipFlags[index - start] = _vertices[index].ClipFlags;
+        }
+
+        return AllVerticesShareClipPlane(clipFlags);
+    }
+
+    internal static (int Start, int End) DecodeCullVertexRange(
+        N64Microcode microcode,
+        uint word0,
+        uint word1)
+    {
+        if (microcode is N64Microcode.F3dex or N64Microcode.F3dex2)
+        {
+            return ((int)(word0 & 0xFFFF) / 2, (int)(word1 & 0xFFFF) / 2);
+        }
+
+        // Original Fast3D stores vertex byte offsets (40 bytes per vertex).
+        // The SDK masks (vend + 1) to four bits, so an encoded zero denotes
+        // the inclusive final slot 15 rather than an empty range.
+        var start = ((int)(word0 & 0xFFFF) / 40) & 0xF;
+        var encodedEnd = ((int)(word1 & 0xFFFF) / 40) & 0xF;
+        var end = (encodedEnd + 15) & 0xF;
+        return (start, end);
+    }
+
+    internal static bool AllVerticesShareClipPlane(ReadOnlySpan<byte> clipFlags)
+    {
+        if (clipFlags.IsEmpty)
+        {
+            return false;
+        }
+
+        byte sharedPlanes = 0x3F;
+        foreach (var flags in clipFlags)
+        {
+            sharedPlanes &= flags;
+        }
+
+        return sharedPlanes != 0;
+    }
+
     private void DrawTextureRectangle(
         uint word0,
         uint word1,
@@ -1655,6 +1995,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         var rowStrideBits = tile.Line > 0
             ? tile.Line * 64
             : width * bitsPerTexel;
+        RecordSampledTextureFormatSupport(tile.Format, tile.Size);
         return new TextureSampleState(
             tile.Format,
             tile.Size,
@@ -1727,9 +2068,10 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     }
 
     /// <summary>
-    /// Counts tile configurations whose texel format the sampler cannot
-    /// decode. Recorded when a tile is configured rather than per texel, so
-    /// an unsupported format costs nothing in the pixel loop.
+    /// Counts sampled tile configurations whose texel format the software
+    /// renderer cannot decode. Load-only tiles intentionally use otherwise
+    /// invalid format/size pairs as transfer widths, so recording every
+    /// G_SETTILE produces false compatibility warnings.
     /// </summary>
     private readonly long[] _unsupportedTextureFormats = new long[32];
 
@@ -1741,8 +2083,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     /// <summary>
     /// Unsupported texture formats observed by the renderer, keyed by an
-    /// N64 format/size pair. Counts are per configured tile rather than per
-    /// sampled pixel.
+    /// N64 format/size pair. Counts are per primitive that attempted to sample
+    /// the format rather than per pixel.
     /// </summary>
     public IReadOnlyDictionary<string, long> UnsupportedTextureFormatCounts =>
         UnsupportedTextureFormats.ToDictionary(
@@ -1750,7 +2092,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             entry => entry.Count,
             StringComparer.Ordinal);
 
-    private void RecordTileFormatSupport(int format, int size)
+    private void RecordSampledTextureFormatSupport(int format, int size)
     {
         var supported = (format, size) switch
         {
@@ -2349,7 +2691,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     {
         Fast3d,
         F3dex,
-        F3dex2
+        F3dex2,
+        F5Rogue
     }
 
     private readonly record struct LoadedTexture(

@@ -4,6 +4,7 @@ public sealed partial class Fast3dRenderer
 {
     private List<N64RdpCommand>? _capturedRdpCommands;
     private int _omittedHlePrimitiveCommands;
+    private long _unsupportedCommandsAtCaptureStart;
 
     internal void BeginRdpTraceCapture()
     {
@@ -14,19 +15,29 @@ public sealed partial class Fast3dRenderer
 
         _capturedRdpCommands = [];
         _omittedHlePrimitiveCommands = 0;
+        _unsupportedCommandsAtCaptureStart = UnsupportedCommands;
     }
 
     internal N64RdpTrace EndRdpTraceCapture(ReadOnlySpan<byte> initialRdram)
     {
+        var batch = EndRdpCommandBatchCapture();
+        return new N64RdpTrace(
+            initialRdram,
+            batch.Commands,
+            DetectedMicrocodeName,
+            batch.OmittedHlePrimitiveCommands,
+            batch.UnsupportedSourceCommands);
+    }
+
+    internal N64RdpCommandBatch EndRdpCommandBatchCapture()
+    {
         var commands = _capturedRdpCommands ??
             throw new InvalidOperationException("RDP trace capture is not active.");
         _capturedRdpCommands = null;
-        return new N64RdpTrace(
-            initialRdram,
+        return new N64RdpCommandBatch(
             commands,
-            DetectedMicrocodeName,
             _omittedHlePrimitiveCommands,
-            UnsupportedCommands);
+            UnsupportedCommands - _unsupportedCommandsAtCaptureStart);
     }
 
     internal void ReplayRdpCommands(IReadOnlyList<N64RdpCommand> commands)
@@ -51,6 +62,64 @@ public sealed partial class Fast3dRenderer
         {
             _omittedHlePrimitiveCommands = checked(_omittedHlePrimitiveCommands + count);
         }
+    }
+
+    private void CaptureHleTriangle(
+        Fast3dVertex first,
+        Fast3dVertex second,
+        Fast3dVertex third)
+    {
+        if (_capturedRdpCommands is null)
+        {
+            return;
+        }
+
+        // Match paraLLEl-RDP's converter: scale reciprocal W so the largest
+        // value remains just below 0.5 and fits the RDP's signed fixed-point
+        // interpolation range.
+        var minimumW = MathF.Min(
+            first.ClipPosition.W,
+            MathF.Min(second.ClipPosition.W, third.ClipPosition.W));
+        if (!float.IsFinite(minimumW) || minimumW <= 0.000001f)
+        {
+            RecordOmittedHlePrimitives(1);
+            return;
+        }
+
+        var reciprocalScale = minimumW * 0.49f;
+        if (N64RdpTriangleEncoder.TryEncode(
+                CreateRdpVertex(first, reciprocalScale),
+                CreateRdpVertex(second, reciprocalScale),
+                CreateRdpVertex(third, reciprocalScale),
+                _textureTile,
+                _textureMaximumMipLevel,
+                out var command) &&
+            command is not null)
+        {
+            _capturedRdpCommands.Add(command);
+            return;
+        }
+
+        // Degenerate triangles are discarded by both the HLE rasterizer and
+        // native RDP setup, so they do not make a trace incomplete.
+    }
+
+    private N64RdpHleVertex CreateRdpVertex(
+        Fast3dVertex vertex,
+        float reciprocalScale)
+    {
+        var scaledReciprocalW = vertex.ReciprocalW * reciprocalScale;
+        var normalizedDepth = Math.Abs(_viewportScale.Z) > 0.000001f
+            ? (vertex.Position.Z - _viewportTranslate.Z) / _viewportScale.Z
+            : 0;
+        return new N64RdpHleVertex(
+            vertex.Position.X,
+            vertex.Position.Y,
+            Math.Clamp(normalizedDepth, 0, 1),
+            vertex.TextureCoordinate.X * scaledReciprocalW,
+            vertex.TextureCoordinate.Y * scaledReciprocalW,
+            scaledReciprocalW,
+            vertex.Color);
     }
 
     private void CaptureCanonicalOtherMode()
@@ -156,6 +225,21 @@ public sealed partial class Fast3dRenderer
             case 0xE8: // G_RDPTILESYNC
             case 0xE9: // G_RDPFULLSYNC
                 break;
+            case 0xEA: // G_SETKEYGB
+                _keyGreenBlueWord0 = word0;
+                _keyGreenBlueWord1 = word1;
+                break;
+            case 0xEB: // G_SETKEYR
+                _keyRedWord1 = word1;
+                break;
+            case 0xEC: // G_SETCONVERT
+                _convertWord0 = word0;
+                _convertWord1 = word1;
+                break;
+            case 0xEE: // G_SETPRIMDEPTH
+                _primitiveDepth = (ushort)(word1 >> 16);
+                _primitiveDeltaDepth = (ushort)word1;
+                break;
             default:
                 UnsupportedCommands++;
                 _unsupportedCommandCounts[command.Opcode] =
@@ -163,4 +247,14 @@ public sealed partial class Fast3dRenderer
                 break;
         }
     }
+}
+
+internal sealed record N64RdpCommandBatch(
+    IReadOnlyList<N64RdpCommand> Commands,
+    int OmittedHlePrimitiveCommands,
+    long UnsupportedSourceCommands)
+{
+    internal bool IsComplete =>
+        OmittedHlePrimitiveCommands == 0 &&
+        UnsupportedSourceCommands == 0;
 }

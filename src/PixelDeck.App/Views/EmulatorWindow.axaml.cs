@@ -92,10 +92,24 @@ public partial class EmulatorWindow : Window
             }
 
             var settings = PixelDeckSettingsStore.Current;
-            _gamepad.UserIndex = settings.ControllerIndex;
-            _playerTwoGamepad.UserIndex = settings.PlayerTwoControllerIndex;
-            _playerThreeGamepad.UserIndex = settings.PlayerThreeControllerIndex;
-            _playerFourGamepad.UserIndex = settings.PlayerFourControllerIndex;
+
+            // Configured slots are preferences; a player pinned to a slot with no
+            // controller in it would simply have no input, with nothing in the game
+            // to say why. Resolving against what is plugged in means one pad drives
+            // player one whichever slot it enumerated into.
+            Span<int> assigned = stackalloc int[]
+            {
+                settings.ControllerIndex,
+                settings.PlayerTwoControllerIndex,
+                settings.PlayerThreeControllerIndex,
+                settings.PlayerFourControllerIndex
+            };
+            ControllerAssignment.Resolve(assigned, GamepadManager.Shared.ReadConnections());
+
+            _gamepad.UserIndex = assigned[0];
+            _playerTwoGamepad.UserIndex = assigned[1];
+            _playerThreeGamepad.UserIndex = assigned[2];
+            _playerFourGamepad.UserIndex = assigned[3];
             LoadMachine();
             _frameBitmap = new WriteableBitmap(
                 new PixelSize(MachineWidth, MachineHeight),

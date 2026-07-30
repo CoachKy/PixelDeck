@@ -42,7 +42,21 @@ public sealed class N64Machine
         Cartridge = cartridge;
         Memory = new N64Memory(cartridge);
         _renderer = new Fast3dRenderer(Memory);
-        _graphicsBackend = _renderer;
+        if (ParallelRdpGraphicsBackend.TryCreate(
+                Memory,
+                _renderer,
+                out var parallelBackend,
+                out var graphicsBackendStatus) &&
+            parallelBackend is not null)
+        {
+            _graphicsBackend = parallelBackend;
+        }
+        else
+        {
+            _graphicsBackend = _renderer;
+        }
+
+        GraphicsBackendStatus = graphicsBackendStatus;
         _audioProcessor = new N64AudioProcessor(Memory);
         _audioBackend = _audioProcessor;
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);
@@ -87,7 +101,11 @@ public sealed class N64Machine
 
     public N64RspTask? LastGraphicsTask { get; private set; }
 
+    public N64RspTask? LastAudioTask { get; private set; }
+
     public IN64GraphicsBackend GraphicsBackend => _graphicsBackend;
+
+    public string GraphicsBackendStatus { get; }
 
     public Fast3dRenderer Renderer => _renderer;
 
@@ -166,7 +184,8 @@ public sealed class N64Machine
         {
             Cpu.Step();
             ServiceRspTask();
-            if (Cpu.ProgramCounter == Cartridge.EntryPoint && !ReachedCartridgeEntryPoint)
+            if (Cpu.ProgramCounter == Cartridge.EffectiveEntryPoint &&
+                !ReachedCartridgeEntryPoint)
             {
                 ReachedCartridgeEntryPoint = true;
                 PatchBootMemorySize();
@@ -476,10 +495,12 @@ public sealed class N64Machine
                 break;
             case 2:
                 AudioTasksSubmitted++;
+                LastAudioTask = task;
                 _audioBackend.Execute(task);
                 Memory.CompleteRspTask();
                 break;
             default:
+                Memory.TryExecuteCic6105BootTask();
                 Memory.CompleteRspTask();
                 break;
         }

@@ -33,4 +33,36 @@
   -->
   <Import Project="..\PixelDeck.Dependencies.props" />
 
+  <!--
+    Build-order only. ReferenceOutputAssembly="false" is what keeps this from
+    becoming a real reference: the application must not be linked into this
+    executable, or replacing it separately stops being possible. This entry
+    exists so the components are built and copied beside the launcher, which is
+    what lets this project be run directly from the CLI or an IDE.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\PixelDeck.App\PixelDeck.App.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
+  </ItemGroup>
+
+  <!--
+    Puts the components where the launcher looks for them during development.
+    Without this, running from the IDE or the CLI reports that part of the
+    installation is missing. That is correct behaviour for a broken install, but
+    a confusing way to find out a debug build has no Components folder.
+    Release packaging does the same job in the publish script.
+  -->
+  <Target Name="CopyComponentsForDevelopment" AfterTargets="Build">
+    <ItemGroup>
+      <DevelopmentComponent
+        Include="$(MSBuildThisFileDirectory)..\PixelDeck.App\bin\$(Configuration)\$(TargetFramework)\PixelDeck.*.dll"
+        Exclude="$(MSBuildThisFileDirectory)..\PixelDeck.App\bin\$(Configuration)\$(TargetFramework)\PixelDeck.Launcher.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DevelopmentComponent)"
+          DestinationFolder="$(OutDir)Components"
+          SkipUnchangedFiles="true"
+          Condition="'@(DevelopmentComponent)' != ''" />
+  </Target>
+
 </Project>
