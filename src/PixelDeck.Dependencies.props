@@ -1,0 +1,25 @@
+<Project>
+
+  <!--
+    Third-party packages shared by the launcher and the application.
+
+    The launcher publishes self-contained and single-file, so these assemblies
+    end up inside PixelDeck.exe. The application ships as a loose component and
+    resolves them from that bundle when the launcher loads it. Both projects
+    must therefore reference the same versions, which is why the list lives here
+    rather than in either .csproj: a version that drifts between the two would
+    fail at load time rather than at build time.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.0" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="SDL3-CS" Version="3.4.12.3" />
+    <PackageReference Include="SDL3-CS.Linux" Version="3.4.12.1" />
+    <PackageReference Include="SDL3-CS.Windows" Version="3.4.12.1" />
+  </ItemGroup>
+
+</Project>

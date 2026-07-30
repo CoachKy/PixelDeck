@@ -140,6 +140,12 @@ public sealed class GitHubUpdateService : IUpdateService, IDisposable
         var bestRank = int.MaxValue;
         var checksums = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        // A component archive, when the release built one against this launcher.
+        // Preferred over the full package because it is a couple of megabytes
+        // rather than tens, and replaces only the assemblies that changed.
+        string? componentName = null, componentUrl = null;
+        long componentSize = 0;
+
         foreach (var asset in assets.EnumerateArray())
         {
             var name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
@@ -152,6 +158,20 @@ public sealed class GitHubUpdateService : IUpdateService, IDisposable
             if (name.EndsWith(".sha256", StringComparison.OrdinalIgnoreCase))
             {
                 checksums[name[..^".sha256".Length]] = url;
+                continue;
+            }
+
+            // Checked before the runtime-identifier match: component archives are
+            // platform-independent, so Matches would reject them.
+            if (ComponentArchive.TryMatch(name, out _))
+            {
+                if (ComponentArchive.IsUsableHere(name))
+                {
+                    componentName = name;
+                    componentUrl = url;
+                    componentSize = asset.TryGetProperty("size", out var cs) && cs.TryGetInt64(out var cv) ? cv : 0;
+                }
+
                 continue;
             }
 
@@ -172,9 +192,20 @@ public sealed class GitHubUpdateService : IUpdateService, IDisposable
             assetSize = asset.TryGetProperty("size", out var s) && s.TryGetInt64(out var size) ? size : 0;
         }
 
+        // The full package is still required: it is the fallback whenever the
+        // launcher itself changed, and the only option for a first install.
         if (assetName is null || assetUrl is null)
         {
             return null;
+        }
+
+        if (componentName is not null && componentUrl is not null)
+        {
+            UpdateDiagnostics.Write(
+                $"Component-only update available ({componentName}); skipping the full package.");
+            assetName = componentName;
+            assetUrl = componentUrl;
+            assetSize = componentSize;
         }
 
         var checksumUrl = checksums.GetValueOrDefault(assetName);
@@ -367,18 +398,30 @@ public sealed class GitHubUpdateService : IUpdateService, IDisposable
             ExtractZip(packagePath);
         }
 
-        var executable = Path.Combine(_stagingFolder, _platform.ExecutableName);
-        if (!File.Exists(executable))
+        // Every valid payload replaces the application component, whether it is a
+        // full package or a component archive. That, rather than the executable,
+        // is what makes a staged folder usable: a component-only update contains
+        // no executable at all and must not be rejected for it.
+        if (!File.Exists(Path.Combine(_stagingFolder, "Components", "PixelDeck.App.dll")))
         {
-            UpdateDiagnostics.Write($"Staged package has no {_platform.ExecutableName} at its root.");
+            UpdateDiagnostics.Write("Staged package has no Components/PixelDeck.App.dll.");
             throw new UpdatePreparationException(
                 "The update package was not valid and was discarded.",
                 isRetryable: false);
         }
 
-        // Zip carries no Unix permissions, and a tarball's may not survive every
-        // toolchain, so the launcher bit is set explicitly either way.
-        _platform.EnsureExecutable(executable);
+        var executable = Path.Combine(_stagingFolder, _platform.ExecutableName);
+        if (File.Exists(executable))
+        {
+            // A full package, so the launcher is being replaced too. Zip carries
+            // no Unix permissions and a tarball's may not survive every
+            // toolchain, so the launcher bit is set explicitly either way.
+            _platform.EnsureExecutable(executable);
+        }
+        else
+        {
+            UpdateDiagnostics.Write("Component-only payload staged; the launcher is unchanged.");
+        }
 
         UpdateDiagnostics.Write(
             $"Staged {release.Version} for {_platform.RuntimeIdentifier} at {_stagingFolder}.");

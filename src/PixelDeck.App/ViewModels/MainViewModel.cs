@@ -1841,3 +1841,4 @@ public sealed record Mmc3IrqRevisionOption(Mmc3IrqRevision Revision, string Labe
 public sealed record NesPpuRevisionOption(NesPpuRevision Revision, string Label);
 
 public sealed record NesOamCorruptionModeOption(NesOamCorruptionMode Mode, string Label);
+

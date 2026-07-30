@@ -1,128 +1,164 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace PixelDeck.App.Services.Updates;
 
 /// <summary>
-/// Hands a verified, staged update over to PixelDeck.Updater and reports
-/// whether PixelDeck should now shut down.
+/// Records a staged update for the launcher to install, then reports whether
+/// PixelDeck should shut down so it can.
 /// </summary>
 /// <remarks>
-/// The installer has to run outside PixelDeck because it overwrites the files
-/// PixelDeck is executing from. Pending state is written first, so that even if
-/// the updater dies mid-way the next launch can tell the update did not apply.
+/// No helper executable is involved. The launcher installs the update during its
+/// own startup, before it loads any replaceable assembly, so nothing being
+/// replaced is in use at that moment. That is why PixelDeck.Updater.exe no
+/// longer exists: its entire purpose was working around a file lock this
+/// ordering avoids.
+///
+/// The record's shape is fixed by the launcher, which parses it defensively.
+/// Fields may be added but not renamed.
 /// </remarks>
 public static class UpdateHandoff
 {
-    /// <summary>Where PixelDeck is installed, i.e. the folder to be replaced.</summary>
+    /// <summary>Where PixelDeck is installed.</summary>
     public static string InstallFolder => AppContext.BaseDirectory.TrimEnd(
         Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-    public static string UpdaterPath => Path.Combine(
+    /// <summary>The launcher, which is also the process that installs updates.</summary>
+    public static string LauncherPath => Path.Combine(
         InstallFolder,
-        OperatingSystem.IsWindows() ? "PixelDeck.Updater.exe" : "PixelDeck.Updater");
+        OperatingSystem.IsWindows() ? "PixelDeck.exe" : "PixelDeck");
+
+    private static readonly JsonSerializerOptions RecordOptions =
+        new(JsonSerializerDefaults.Web) { WriteIndented = true };
+
+    private static string PendingUpdatePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "PixelDeck",
+        "pending-components.json");
 
     /// <summary>
-    /// Copies the updater out of the install folder and returns the copy, or
-    /// null if it could not be staged.
+    /// Describes the staged payload for the launcher: every file, with the hash
+    /// it must still have when the launcher gets to it.
     /// </summary>
     /// <remarks>
-    /// The updater must not run from the folder it is about to replace.
-    /// Windows refuses to overwrite the image of a running process, so an
-    /// updater started in place fails as soon as the copy reaches its own
-    /// executable — and because that failure is indistinguishable from any
-    /// other, it rolls the whole update back. Running from a temporary copy
-    /// leaves every file in the install folder replaceable, including the
-    /// updater itself.
+    /// Hashing here as well as at download time is deliberate. The staged copy
+    /// sits on disk across a process restart, and the launcher verifies against
+    /// this record rather than trusting that nothing touched it in between.
     /// </remarks>
-    public static string? StageUpdater(string updaterPath)
+    public static object BuildPendingRecord(
+        string stagingFolder,
+        string targetRelease,
+        string previousRelease,
+        int? waitForProcessId)
     {
-        try
+        var files = new List<object>();
+        var launcherIncluded = false;
+        var launcherName = Path.GetFileName(LauncherPath);
+
+        foreach (var staged in Directory.GetFiles(stagingFolder, "*", SearchOption.AllDirectories))
         {
-            var folder = Path.Combine(Path.GetTempPath(), $"PixelDeck-updater-{Guid.NewGuid():N}");
-            Directory.CreateDirectory(folder);
+            var relative = Path.GetRelativePath(stagingFolder, staged).Replace('\\', '/');
 
-            var destination = Path.Combine(folder, Path.GetFileName(updaterPath));
-            File.Copy(updaterPath, destination, overwrite: true);
-
-            if (!OperatingSystem.IsWindows())
+            if (string.Equals(relative, launcherName, StringComparison.OrdinalIgnoreCase))
             {
-                File.SetUnixFileMode(
-                    destination,
-                    File.GetUnixFileMode(destination) |
-                    UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute);
+                launcherIncluded = true;
             }
 
-            return destination;
+            using var stream = File.OpenRead(staged);
+            files.Add(new
+            {
+                relativePath = relative,
+                sha256 = Convert.ToHexStringLower(SHA256.HashData(stream)),
+                length = new FileInfo(staged).Length
+            });
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+
+        return new
         {
-            UpdateDiagnostics.Write("The updater could not be staged for launch.", exception);
-            return null;
-        }
+            stagingFolder,
+            targetRelease,
+            previousRelease,
+            launcherIncluded,
+            waitForProcessId,
+            files
+        };
     }
 
     /// <summary>
-    /// Starts the installer. Returns false when it could not be launched, in
-    /// which case the caller should carry on into the current version.
+    /// Hands the staged update to the launcher and starts it. Returns false when
+    /// that could not be arranged, in which case the caller carries on into the
+    /// current version.
     /// </summary>
-    public static bool TryStart(StagedUpdate staged, Version runningVersion, UpdatePlatform? platform = null)
+    public static bool TryStart(StagedUpdate staged, Version runningVersion)
     {
-        var resolved = platform ?? UpdatePlatform.Current;
-
-        if (!File.Exists(UpdaterPath))
+        if (!File.Exists(LauncherPath))
         {
-            UpdateDiagnostics.Write($"Updater not found at {UpdaterPath}; staying on the current version.");
+            UpdateDiagnostics.Write($"Launcher not found at {LauncherPath}; staying on the current version.");
             return false;
         }
 
-        if (StageUpdater(UpdaterPath) is not { } updaterToRun)
+        if (!Directory.Exists(staged.StagingFolder))
         {
+            UpdateDiagnostics.Write("Staging folder is missing; staying on the current version.");
             return false;
         }
-
-        UpdateStateStore.Write(new PendingUpdateState
-        {
-            TargetVersion = staged.Release.Version.ToString(),
-            PreviousVersion = runningVersion.ToString()
-        });
 
         try
         {
-            var start = new ProcessStartInfo(updaterToRun)
+            var record = BuildPendingRecord(
+                staged.StagingFolder,
+                staged.Release.Version.ToString(),
+                runningVersion.ToString(),
+                Environment.ProcessId);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(PendingUpdatePath)!);
+            File.WriteAllText(
+                PendingUpdatePath,
+                JsonSerializer.Serialize(record, RecordOptions));
+
+            // A second PixelDeck starts, waits for this one to exit, installs the
+            // update and carries on. Both processes run the same executable,
+            // which Windows permits.
+            var start = new ProcessStartInfo(LauncherPath)
             {
                 WorkingDirectory = InstallFolder,
                 UseShellExecute = false
             };
-            start.ArgumentList.Add("--staging");
-            start.ArgumentList.Add(staged.StagingFolder);
-            start.ArgumentList.Add("--install");
-            start.ArgumentList.Add(InstallFolder);
-            start.ArgumentList.Add("--executable");
-            start.ArgumentList.Add(resolved.ExecutableName);
-            start.ArgumentList.Add("--from");
+            start.ArgumentList.Add("--updated-from");
             start.ArgumentList.Add(runningVersion.ToString());
-            start.ArgumentList.Add("--to");
-            start.ArgumentList.Add(staged.Release.Version.ToString());
-            start.ArgumentList.Add("--wait-for");
-            start.ArgumentList.Add(Environment.ProcessId.ToString());
 
             Process.Start(start);
-            UpdateDiagnostics.Write($"Handed {staged.Release.Version} to the updater; shutting down.");
+            UpdateDiagnostics.Write($"Staged {staged.Release.Version} for the launcher; shutting down.");
             return true;
         }
         catch (Exception exception)
         {
-            UpdateDiagnostics.Write("The updater could not be started.", exception);
-            // Nothing was replaced, so clear the pending record rather than
-            // leaving the next launch reporting a phantom failure.
-            UpdateStateStore.Clear();
+            UpdateDiagnostics.Write("The update could not be handed to the launcher.", exception);
+            TryClear();
             return false;
+        }
+    }
+
+    private static void TryClear()
+    {
+        try
+        {
+            if (File.Exists(PendingUpdatePath))
+            {
+                File.Delete(PendingUpdatePath);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Nothing was replaced, so a stale record is the worst case and the
+            // launcher rejects one it cannot use.
         }
     }
 
     /// <summary>
     /// Reads the version this build was told it upgraded from, when relaunched
-    /// by the updater as <c>--updated-from &lt;version&gt;</c>.
+    /// as <c>--updated-from &lt;version&gt;</c>.
     /// </summary>
     public static string? ReadUpdatedFromArgument(string[] arguments)
     {

@@ -37,7 +37,7 @@ public sealed record UpdatePlatform(
         {
             return new UpdatePlatform(
                 $"win-{architecture}",
-                "PixelDeck.App.exe",
+                "PixelDeck.exe",
                 [".zip"],
                 RequiresExecutableBit: false);
         }
@@ -46,7 +46,7 @@ public sealed record UpdatePlatform(
         {
             return new UpdatePlatform(
                 $"osx-{architecture}",
-                "PixelDeck.App",
+                "PixelDeck",
                 [".tar.gz", ".zip"],
                 RequiresExecutableBit: true);
         }
@@ -54,7 +54,7 @@ public sealed record UpdatePlatform(
         // Linux, which is what a Raspberry Pi build reports.
         return new UpdatePlatform(
             $"linux-{architecture}",
-            "PixelDeck.App",
+            "PixelDeck",
             [".tar.gz", ".zip"],
             RequiresExecutableBit: true);
     }

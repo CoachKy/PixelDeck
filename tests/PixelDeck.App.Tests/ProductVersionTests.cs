@@ -10,10 +10,22 @@ public sealed class ProductVersionTests
     [Fact]
     public void Assemblies_HaveIndependentProductVersions()
     {
-        Assert.Equal(new Version(1, 22, 72, 0), typeof(MainViewModel).Assembly.GetName().Version);
+        Assert.Equal(new Version(1, 22, 73, 0), typeof(MainViewModel).Assembly.GetName().Version);
         Assert.Equal(new Version(1, 15, 23, 0), typeof(NesMachine).Assembly.GetName().Version);
         Assert.Equal(new Version(1, 16, 23, 0), typeof(SnesMachine).Assembly.GetName().Version);
         Assert.Equal(new Version(0, 9, 14, 0), typeof(N64Machine).Assembly.GetName().Version);
+    }
+
+    [Fact]
+    public void Launcher_IsVersionedIndependentlyOfTheRelease()
+    {
+        // The launcher's version is what decides whether an update has to replace
+        // PixelDeck.exe. Tying it to the release number would mean every release
+        // looked like a launcher change, which is the opposite of the intent.
+        var launcher = typeof(PixelDeck.Launcher.UpdateApplier).Assembly.GetName().Version;
+
+        Assert.Equal(new Version(1, 0, 0, 0), launcher);
+        Assert.NotEqual(typeof(MainViewModel).Assembly.GetName().Version, launcher);
     }
 
     [Fact]
@@ -21,7 +33,7 @@ public sealed class ProductVersionTests
     {
         using var viewModel = new MainViewModel();
 
-        Assert.Equal("PixelDeck v1.22.072", viewModel.PixelDeckVersionText);
+        Assert.Equal("PixelDeck v1.22.073", viewModel.PixelDeckVersionText);
         Assert.Equal("PixelNES v1.15.023", viewModel.LibraryEmulatorVersionText);
 
         viewModel.SelectedLibrarySystem = LibrarySystem.SuperNintendo;

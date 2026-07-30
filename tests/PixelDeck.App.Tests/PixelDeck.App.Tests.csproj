@@ -22,7 +22,7 @@
     <ProjectReference Include="..\..\src\PixelDeck.Emulation.Snes\PixelDeck.Emulation.Snes.csproj" />
     <ProjectReference Include="..\..\tools\PixelDeck.NesCompatibility\PixelDeck.NesCompatibility.csproj" />
     <ProjectReference Include="..\..\tools\PixelDeck.N64Compatibility\PixelDeck.N64Compatibility.csproj" />
-    <ProjectReference Include="..\..\src\PixelDeck.Updater\PixelDeck.Updater.csproj" />
+    <ProjectReference Include="..\..\src\PixelDeck.Launcher\PixelDeck.Launcher.csproj" />
   </ItemGroup>
 
 </Project>

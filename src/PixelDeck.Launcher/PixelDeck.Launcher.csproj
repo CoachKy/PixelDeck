@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>PixelDeck</AssemblyName>
+    <RootNamespace>PixelDeck.Launcher</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!--
+      The launcher carries its own version, independent of the release. It is
+      the number that decides whether an update has to replace PixelDeck.exe at
+      all, so it changes only when this project changes - not when the dashboard
+      or an emulation core does.
+    -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InformationalVersion>1.0.0</InformationalVersion>
+
+    <!--
+      The SDK appends the Git commit to InformationalVersion by default, which
+      rewrites this binary on every commit even when none of its own code
+      changed. That would defeat the point of a stable launcher, so it is off.
+    -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <!--
+    Deliberately no ProjectReference to PixelDeck.App or the emulation cores.
+    Referencing them would link them into this executable, which is exactly what
+    keeping them replaceable requires it not to do. The packages come in so the
+    application can resolve them from this bundle at load time.
+  -->
+  <Import Project="..\PixelDeck.Dependencies.props" />
+
+</Project>
