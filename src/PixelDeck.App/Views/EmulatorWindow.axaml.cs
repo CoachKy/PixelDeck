@@ -1113,6 +1113,15 @@ public partial class EmulatorWindow : Window
             string.Equals(extension, ".n64", StringComparison.OrdinalIgnoreCase))
         {
             _n64Machine = N64Machine.Load(path, _game.SaveRamPath);
+
+            // The backend choice is made silently inside N64Machine, which falls
+            // back to the software renderer whenever paraLLEl-RDP cannot be
+            // loaded or the Vulkan device fails preflight. Surfacing the reason
+            // is the difference between knowing which renderer is running and
+            // inferring it from the frame rate.
+            EmulatorDiagnostics.Write(
+                $"N64 graphics backend: {_n64Machine.GraphicsBackendStatus}");
+            Title = $"{Title} - {_n64Machine.GraphicsBackendStatus}";
             return;
         }
 

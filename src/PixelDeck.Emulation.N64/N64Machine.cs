@@ -42,21 +42,14 @@ public sealed class N64Machine
         Cartridge = cartridge;
         Memory = new N64Memory(cartridge);
         _renderer = new Fast3dRenderer(Memory);
-        if (ParallelRdpGraphicsBackend.TryCreate(
-                Memory,
-                _renderer,
-                out var parallelBackend,
-                out var graphicsBackendStatus) &&
-            parallelBackend is not null)
-        {
-            _graphicsBackend = parallelBackend;
-        }
-        else
-        {
-            _graphicsBackend = _renderer;
-        }
 
-        GraphicsBackendStatus = graphicsBackendStatus;
+        // Pixel64 renders through its own Fast3D pipeline. An earlier build
+        // could mirror each task into a native paraLLEl-RDP bridge, but that
+        // ran this renderer first and used its lowered command batch as input,
+        // so it was a validation harness that cost a second pass rather than a
+        // faster path. It was removed in favour of improving this renderer.
+        _graphicsBackend = _renderer;
+        GraphicsBackendStatus = _renderer.Name;
         _audioProcessor = new N64AudioProcessor(Memory);
         _audioBackend = _audioProcessor;
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);

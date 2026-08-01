@@ -1,4 +1,4 @@
-using PixelDeck.Emulation.N64;
+﻿using PixelDeck.Emulation.N64;
 
 if (args.Length == 0 || args[0] is "--help" or "-h")
 {
@@ -8,7 +8,6 @@ if (args.Length == 0 || args[0] is "--help" or "-h")
 
 var inputPath = Path.GetFullPath(args[0]);
 var repeats = 2;
-var useParallelRdp = false;
 string? exportRdpPath = null;
 for (var index = 1; index < args.Length; index++)
 {
@@ -21,9 +20,6 @@ for (var index = 1; index < args.Length; index++)
             break;
         case "--export-rdp" when index + 1 < args.Length:
             exportRdpPath = Path.GetFullPath(args[++index]);
-            break;
-        case "--parallel-rdp":
-            useParallelRdp = true;
             break;
         default:
             Console.Error.WriteLine($"Unknown or invalid option: {args[index]}");
@@ -42,15 +38,7 @@ try
             return 1;
         }
 
-        return useParallelRdp
-            ? ReplayParallelRdpTrace(inputPath, repeats)
-            : ReplayRdpTrace(inputPath, repeats);
-    }
-
-    if (useParallelRdp)
-    {
-        Console.Error.WriteLine("--parallel-rdp requires a .p64rdp input.");
-        return 1;
+        return ReplayRdpTrace(inputPath, repeats);
     }
 
     var capture = N64GraphicsTaskCapture.Load(inputPath);
@@ -156,68 +144,6 @@ static int ReplayRdpTrace(string tracePath, int repeats)
     return deterministic ? 0 : 2;
 }
 
-static int ReplayParallelRdpTrace(string tracePath, int repeats)
-{
-    var trace = N64RdpTrace.Load(tracePath);
-    ParallelRdpNativeReplayResult? first = null;
-    var deterministic = true;
-    for (var iteration = 0; iteration < repeats; iteration++)
-    {
-        if (!ParallelRdpTraceReplay.TryReplay(
-                trace,
-                viState: null,
-                out var result,
-                out var summary) ||
-            result is null)
-        {
-            Console.Error.WriteLine(summary);
-            return 3;
-        }
-
-        first ??= result;
-        deterministic &=
-            result.RdramSha256 == first.RdramSha256 &&
-            result.HiddenRdramSha256 == first.HiddenRdramSha256 &&
-            result.Framebuffer?.OutputSha256 ==
-            first.Framebuffer?.OutputSha256 &&
-            result.DepthBuffer?.OutputSha256 ==
-            first.DepthBuffer?.OutputSha256;
-    }
-
-    Console.WriteLine($"RDP trace: {tracePath}");
-    Console.WriteLine($"Trace SHA-256: {trace.TraceSha256}");
-    Console.WriteLine($"Input RDRAM SHA-256: {trace.RdramSha256}");
-    Console.WriteLine($"Microcode: {trace.Microcode}");
-    Console.WriteLine($"RDP packets: {trace.Commands.Count:N0}");
-    Console.WriteLine($"Backend: paraLLEl-RDP ({first!.UpstreamRevision})");
-    Console.WriteLine($"Output RDRAM SHA-256: {first.RdramSha256}");
-    Console.WriteLine(
-        $"RDRAM bytes changed: {first.RdramDelta.ChangedBytes:N0}");
-    Console.WriteLine(
-        $"Hidden coverage SHA-256: {first.HiddenRdramSha256}");
-    Console.WriteLine(
-        $"Hidden coverage bytes changed: " +
-        $"{first.HiddenCoverage.ChangedBytes:N0}");
-    if (first.Framebuffer is { } framebuffer)
-    {
-        Console.WriteLine(
-            $"Framebuffer: 0x{framebuffer.Address:X8}, " +
-            $"{framebuffer.Length:N0} bytes, " +
-            $"{framebuffer.ChangedBytes:N0} changed, " +
-            $"SHA-256 {framebuffer.OutputSha256}");
-    }
-    if (first.DepthBuffer is { } depthBuffer)
-    {
-        Console.WriteLine(
-            $"Depth buffer: 0x{depthBuffer.Address:X8}, " +
-            $"{depthBuffer.Length:N0} bytes, " +
-            $"{depthBuffer.ChangedBytes:N0} changed, " +
-            $"SHA-256 {depthBuffer.OutputSha256}");
-    }
-    Console.WriteLine($"Deterministic across {repeats} replay(s): {deterministic}");
-    return deterministic ? 0 : 2;
-}
-
 static void PrintUsage()
 {
     Console.WriteLine(
@@ -228,6 +154,6 @@ static void PrintUsage()
               [--repeat <1-100>] [--export-rdp <trace.p64rdp>]
 
           dotnet run --project tools/PixelDeck.N64GraphicsReplay -- <trace.p64rdp>
-              [--repeat <1-100>] [--parallel-rdp]
+              [--repeat <1-100>]
         """);
 }

@@ -125,39 +125,6 @@ foreach ($rid in $Runtime) {
         --nologo -v quiet
     if ($LASTEXITCODE -ne 0) { throw "launcher publish failed for $rid" }
 
-    # paraLLEl-RDP is optional and platform-specific, so it belongs in the full
-    # runtime package rather than the architecture-neutral component update.
-    # The native CI workflow and Build-ParallelRdp.ps1 both stage this layout.
-    $nativeRuntimeRoot = [System.IO.Path]::Combine(
-        $repositoryRoot, 'artifacts', 'native', $rid)
-    $nativeLibraryName = if ($rid -like 'win-*') {
-        'PixelDeck.ParallelRdp.dll'
-    } elseif ($rid -like 'linux-*') {
-        'libPixelDeck.ParallelRdp.so'
-    } else {
-        'libPixelDeck.ParallelRdp.dylib'
-    }
-    $nativeLibrary = Get-ChildItem $nativeRuntimeRoot -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -eq $nativeLibraryName } |
-        Select-Object -First 1
-    if ($nativeLibrary) {
-        $nativeTarget = [System.IO.Path]::Combine($stage, 'Native', $rid)
-        New-Item -ItemType Directory -Force -Path $nativeTarget | Out-Null
-        Copy-Item $nativeLibrary.FullName -Destination $nativeTarget -Force
-
-        $nativeLicense = Get-ChildItem $nativeRuntimeRoot -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq 'paraLLEl-RDP-LICENSE.txt' } |
-            Select-Object -First 1
-        if ($nativeLicense) {
-            Copy-Item $nativeLicense.FullName -Destination $nativeTarget -Force
-        }
-        Write-Host "  included $nativeLibraryName" -ForegroundColor Green
-    }
-    else {
-        Write-Host "  no paraLLEl-RDP bridge staged for $rid; software fallback remains" `
-            -ForegroundColor DarkYellow
-    }
-
     # SkiaSharp and HarfBuzzSharp ship native .pdb symbols in their runtime
     # packs - about 100 MB of debug information that DebugType=None does not
     # touch, because it is package content rather than something this build
