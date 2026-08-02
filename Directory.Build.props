@@ -25,4 +25,20 @@
     <AnalysisMode>Recommended</AnalysisMode>
   </PropertyGroup>
 
+  <!--
+    Zstandard, for reading RVZ disc images. Pinned here rather than in each
+    .csproj because two projects have to reference it for different reasons and
+    the versions must not drift: PixelCube uses the API, and the launcher has
+    to reference it so the assembly lands in its single-file bundle, which is
+    where the dashboard resolves it from at run time. The publish script copies
+    only PixelDeck.*.dll into Components, so a package referenced by the core
+    alone would simply be missing from a release.
+
+    ZstdSharp.Port is a managed port with no native binaries, which is what
+    keeps the self-contained single-file publish working.
+  -->
+  <PropertyGroup>
+    <ZstdSharpVersion>0.8.8</ZstdSharpVersion>
+  </PropertyGroup>
+
 </Project>

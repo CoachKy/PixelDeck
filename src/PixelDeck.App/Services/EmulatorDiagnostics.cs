@@ -44,10 +44,17 @@ public static class EmulatorDiagnostics
 
         _ = Writer.Value;
 
-        // Never block the caller. A full queue means the writer is wedged or
-        // the disk has stalled, and dropping diagnostics is always preferable
-        // to stalling emulation for them.
-        Pending.TryAdd(line);
+        try
+        {
+            // Never block the caller. A full queue means the writer is wedged
+            // or the disk has stalled, and dropping diagnostics is always
+            // preferable to stalling emulation for them.
+            Pending.TryAdd(line);
+        }
+        catch (InvalidOperationException)
+        {
+            // The queue was closed during shutdown. Nothing left to write to.
+        }
     }
 
     /// <summary>
@@ -61,14 +68,13 @@ public static class EmulatorDiagnostics
             return;
         }
 
-        Pending.CompleteAdding();
-        try
+        // Wait for the queue to drain rather than closing it. Closing would
+        // make every later Write throw, so a flush anywhere but the very last
+        // moment of shutdown would silently end logging for the session.
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        while (Pending.Count > 0 && DateTime.UtcNow < deadline)
         {
-            Writer.Value.Wait(TimeSpan.FromSeconds(2));
-        }
-        catch (AggregateException)
-        {
-            // A diagnostics failure must never propagate into shutdown.
+            Thread.Sleep(10);
         }
     }
 
@@ -80,6 +86,28 @@ public static class EmulatorDiagnostics
             TaskScheduler.Default);
 
     private static void DrainPendingLines()
+    {
+        // Trimming has to happen with the log closed, so the writer runs as a
+        // loop: each pass owns the file until it fills, then releases it,
+        // trims, and reopens. Trimming while the stream was still open threw,
+        // which killed this thread and stopped logging for the whole session.
+        while (!Pending.IsCompleted)
+        {
+            if (!WriteUntilLogIsFull())
+            {
+                return;
+            }
+
+            TrimOldestLines();
+        }
+    }
+
+    /// <summary>
+    /// Writes queued lines until the queue completes or the log outgrows its
+    /// budget. Returns true when the log needs trimming before writing can
+    /// continue, false when there is nothing further to write.
+    /// </summary>
+    private static bool WriteUntilLogIsFull()
     {
         try
         {
@@ -106,16 +134,17 @@ public static class EmulatorDiagnostics
                 if (stream.Length > MaximumBytes)
                 {
                     writer.Flush();
-                    TrimOldestLines();
-                    return;
+                    return true;
                 }
             }
 
             writer.Flush();
+            return false;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             // Diagnostics must never be the reason a game fails to start.
+            return false;
         }
     }
 
@@ -134,12 +163,8 @@ public static class EmulatorDiagnostics
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return;
-        }
-
-        if (!Pending.IsAddingCompleted)
-        {
-            DrainPendingLines();
+            // If the log cannot be trimmed it simply keeps growing, which is a
+            // far better outcome than the writer giving up on the session.
         }
     }
 }

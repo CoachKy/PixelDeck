@@ -20,6 +20,14 @@
     <PackageReference Include="SDL3-CS" Version="3.4.12.3" />
     <PackageReference Include="SDL3-CS.Linux" Version="3.4.12.1" />
     <PackageReference Include="SDL3-CS.Windows" Version="3.4.12.1" />
+
+    <!--
+      Used by PixelCube to read RVZ disc images. It appears here, rather than
+      only in the emulation core that calls it, because the launcher's bundle
+      is where the dashboard resolves third-party assemblies from - the publish
+      script copies only PixelDeck.*.dll into Components.
+    -->
+    <PackageReference Include="ZstdSharp.Port" Version="$(ZstdSharpVersion)" />
   </ItemGroup>
 
 </Project>

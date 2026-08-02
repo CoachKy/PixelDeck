@@ -161,6 +161,7 @@ public sealed class N64Cartridge
         "KT" => new(N64SaveType.Eeprom4Kbit, true, true),              // Mario Kart 64
         "M8" => new(N64SaveType.Eeprom16Kbit, UsesTransferPak: true),  // Mario Tennis
         "G5" => new(N64SaveType.None, true, true),                    // Mystical Ninja Starring Goemon
+        "GM" => new(N64SaveType.None, true, true),                    // Goemon's Great Adventure
         "PW" => new(N64SaveType.Eeprom4Kbit),                          // Pilotwings 64
         "ET" => new(N64SaveType.None, true, true),                    // Quest 64
         "FX" => new(N64SaveType.Eeprom4Kbit),                          // Star Fox 64

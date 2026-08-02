@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\src\PixelDeck.Emulation.Nes\PixelDeck.Emulation.Nes.csproj" />
     <ProjectReference Include="..\..\src\PixelDeck.Emulation.N64\PixelDeck.Emulation.N64.csproj" />
     <ProjectReference Include="..\..\src\PixelDeck.Emulation.Snes\PixelDeck.Emulation.Snes.csproj" />
+    <ProjectReference Include="..\..\src\PixelDeck.Emulation.GameCube\PixelDeck.Emulation.GameCube.csproj" />
     <ProjectReference Include="..\..\tools\PixelDeck.NesCompatibility\PixelDeck.NesCompatibility.csproj" />
     <ProjectReference Include="..\..\tools\PixelDeck.N64Compatibility\PixelDeck.N64Compatibility.csproj" />
     <ProjectReference Include="..\..\src\PixelDeck.Launcher\PixelDeck.Launcher.csproj" />

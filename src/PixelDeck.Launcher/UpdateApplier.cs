@@ -90,7 +90,12 @@ public sealed class UpdateApplier(string installFolder, Action<string> log)
             return ApplyOutcome.Nothing;
         }
 
-        WaitForExit(pending.WaitForProcessId);
+        if (!WaitForExit(pending.WaitForProcessId))
+        {
+            // Reported as "nothing done" rather than a failure: the payload is
+            // still staged and still valid, so the next launch installs it.
+            return ApplyOutcome.Nothing;
+        }
 
         // Validate the whole payload before touching the install folder, so a
         // bad manifest cannot leave it half-updated.
@@ -239,25 +244,40 @@ public sealed class UpdateApplier(string installFolder, Action<string> log)
         }
     }
 
-    private void WaitForExit(int? processId)
+    /// <summary>
+    /// Waits for the process being replaced to exit. Returns false when it is
+    /// still running, in which case the caller must not install.
+    /// </summary>
+    /// <remarks>
+    /// Installing over a live process cannot work: Windows refuses to replace a
+    /// loaded assembly, so the copy fails partway and the rollback then fails
+    /// on the same locked file, leaving the installation half-written. Leaving
+    /// the update staged costs the player one more launch; proceeding costs
+    /// them the installation.
+    /// </remarks>
+    private bool WaitForExit(int? processId)
     {
         if (processId is not { } id || id == Environment.ProcessId)
         {
-            return;
+            return true;
         }
 
         try
         {
             using var process = Process.GetProcessById(id);
             log($"Waiting for the previous PixelDeck (pid {id}) to exit.");
-            if (!process.WaitForExit(TimeSpan.FromSeconds(30)))
+            if (process.WaitForExit(TimeSpan.FromSeconds(30)))
             {
-                log("It did not exit within 30 seconds; continuing anyway.");
+                return true;
             }
+
+            log($"It did not exit within 30 seconds; leaving the update staged for the next launch.");
+            return false;
         }
         catch (ArgumentException)
         {
             // Already gone, which is the normal case.
+            return true;
         }
     }
 

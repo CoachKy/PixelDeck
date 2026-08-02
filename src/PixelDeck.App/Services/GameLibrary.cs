@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Avalonia.Media;
 using PixelDeck.App.Models;
+using PixelDeck.Emulation.GameCube;
 using PixelDeck.Emulation.Nes;
 using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
@@ -13,6 +14,7 @@ public sealed class GameLibrary
     public const string NintendoFolderName = "Nintendo";
     public const string Nintendo64FolderName = "Nintendo64";
     public const string SuperNintendoFolderName = "SuperNintendo";
+    public const string GameCubeFolderName = "GameCube";
 
     private static readonly string[] ScreenshotExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
 
@@ -31,12 +33,35 @@ public sealed class GameLibrary
             [".v64"] = new("Nintendo 64", "N64", Color.Parse("#38B7A5"), Nintendo64FolderName),
             [".nds"] = new("Nintendo DS", "NDS", Color.Parse("#5A9CF8")),
             [".gcm"] = new("Nintendo GameCube", "GC", Color.Parse("#6D72E8")),
+            [".ciso"] = new("Nintendo GameCube", "GC", Color.Parse("#6D72E8")),
             [".rvz"] = new("Nintendo GameCube / Wii", "GC/WII", Color.Parse("#4CB4D8")),
             [".wbfs"] = new("Nintendo Wii", "WII", Color.Parse("#68C5D6")),
             [".iso"] = new("Disc Image", "DISC", Color.Parse("#5E83A8")),
             [".dol"] = new("Nintendo Homebrew", "DOL", Color.Parse("#F28B42")),
             [".elf"] = new("Homebrew", "ELF", Color.Parse("#E4B63E"))
         };
+
+    /// <summary>
+    /// The GameCube platform as it appears once a disc is filed under
+    /// <c>Games/GameCube</c>: named, badged, and given somewhere to keep its
+    /// saves and library image.
+    /// </summary>
+    private static readonly PlatformDefinition GameCubePlatform =
+        new("Nintendo GameCube", "GC", Color.Parse("#6D72E8"), GameCubeFolderName);
+
+    /// <summary>
+    /// Disc containers that mean GameCube when they are filed under the
+    /// GameCube folder.
+    /// </summary>
+    /// <remarks>
+    /// <c>.iso</c> is the reason this is folder-aware rather than another row
+    /// in the extension table. It is the ordinary extension for a GameCube
+    /// disc and also the ordinary extension for a disc image of anything
+    /// else, so where the player put it is the only evidence of what it is —
+    /// and it is evidence the player supplied deliberately.
+    /// </remarks>
+    private static readonly HashSet<string> GameCubeDiscExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".iso", ".gcm", ".ciso", ".gcz", ".rvz" };
 
     private readonly RomTitleResolver _titleResolver;
     private readonly GameSaveStorage _saveStorage;
@@ -49,15 +74,18 @@ public sealed class GameLibrary
         NintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, NintendoFolderName)).FullName;
         Nintendo64Folder = Directory.CreateDirectory(Path.Combine(GamesFolder, Nintendo64FolderName)).FullName;
         SuperNintendoFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, SuperNintendoFolderName)).FullName;
+        GameCubeFolder = Directory.CreateDirectory(Path.Combine(GamesFolder, GameCubeFolderName)).FullName;
         _titleResolver = new RomTitleResolver(GamesFolder);
         _saveStorage = new GameSaveStorage(GamesFolder);
         _libraryImageStorage = new GameLibraryImageStorage(GamesFolder);
         _libraryImageStorage.EnsurePlatformFolder(NintendoFolderName);
         _libraryImageStorage.EnsurePlatformFolder(Nintendo64FolderName);
         _libraryImageStorage.EnsurePlatformFolder(SuperNintendoFolderName);
+        _libraryImageStorage.EnsurePlatformFolder(GameCubeFolderName);
         NintendoSavesFolder = _saveStorage.EnsurePlatformFolder(NintendoFolderName);
         Nintendo64SavesFolder = _saveStorage.EnsurePlatformFolder(Nintendo64FolderName);
         SuperNintendoSavesFolder = _saveStorage.EnsurePlatformFolder(SuperNintendoFolderName);
+        GameCubeSavesFolder = _saveStorage.EnsurePlatformFolder(GameCubeFolderName);
     }
 
     public string GamesFolder { get; }
@@ -67,6 +95,8 @@ public sealed class GameLibrary
     public string Nintendo64Folder { get; }
 
     public string SuperNintendoFolder { get; }
+
+    public string GameCubeFolder { get; }
 
     public string SavesFolder => _saveStorage.RootFolder;
 
@@ -78,6 +108,8 @@ public sealed class GameLibrary
     public string Nintendo64SavesFolder { get; }
 
     public string SuperNintendoSavesFolder { get; }
+
+    public string GameCubeSavesFolder { get; }
 
     public string MetadataFolder => _titleResolver.CatalogFolder;
 
@@ -101,7 +133,8 @@ public sealed class GameLibrary
             cancellationToken.ThrowIfCancellationRequested();
 
             var extension = Path.GetExtension(filePath);
-            if (!Platforms.TryGetValue(extension, out var platform))
+            var relativeFilePath = Path.GetRelativePath(GamesFolder, filePath);
+            if (!TryResolvePlatform(extension, relativeFilePath, out var platform))
             {
                 continue;
             }
@@ -126,7 +159,7 @@ public sealed class GameLibrary
                 var hasChosenLibraryImage =
                     HasSidecarImage(file) ||
                     (libraryImagePath.Length > 0 && File.Exists(libraryImagePath));
-                var compatibility = InspectCompatibility(file.FullName, extension);
+                var compatibility = InspectCompatibility(file.FullName, extension, platform.Code);
                 var fallbackTitle = CleanTitle(Path.GetFileNameWithoutExtension(file.Name));
                 var title = _titleResolver.Resolve(
                     file,
@@ -219,8 +252,51 @@ public sealed class GameLibrary
         return string.IsNullOrWhiteSpace(title) ? "Untitled Game" : title;
     }
 
-    private static Compatibility InspectCompatibility(string filePath, string extension)
+    /// <summary>
+    /// Chooses the platform for a file, letting the GameCube folder claim the
+    /// disc containers whose extension alone does not identify a console.
+    /// </summary>
+    private static bool TryResolvePlatform(
+        string extension,
+        string relativeGamePath,
+        out PlatformDefinition platform)
     {
+        var gameCubePrefix = GameCubeFolderName + Path.DirectorySeparatorChar;
+        if (GameCubeDiscExtensions.Contains(extension) &&
+            relativeGamePath.StartsWith(gameCubePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            platform = GameCubePlatform;
+            return true;
+        }
+
+        return Platforms.TryGetValue(extension, out platform!);
+    }
+
+    private static Compatibility InspectCompatibility(
+        string filePath,
+        string extension,
+        string platformCode)
+    {
+        if (string.Equals(platformCode, "GC", StringComparison.Ordinal))
+        {
+            var disc = GameCubeDisc.Inspect(filePath, PixelCubeDiagnostics.Log);
+            return new Compatibility(
+                null,
+                0,
+                // A readable disc is offered for launch even though nothing
+                // executes yet: launching is how a trace gets produced, and a
+                // disc that cannot be started cannot be investigated. An
+                // unreadable container stays unlaunchable, because there would
+                // be nothing to trace.
+                disc.IsReadable,
+                disc.CompatibilityMessage,
+                disc.IsReadable ? $"{disc.GameId} / {disc.RegionText}" : disc.ContainerName,
+                disc.IsReadable,
+                disc.IsReadable ? disc.Title : null,
+                ".gci");
+        }
+
+
         if (string.Equals(extension, ".z64", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".v64", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".n64", StringComparison.OrdinalIgnoreCase))

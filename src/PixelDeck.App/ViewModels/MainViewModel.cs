@@ -9,6 +9,7 @@ using PixelDeck.App.Services;
 using PixelDeck.App.Services.Startup;
 using PixelDeck.App.Services.Updates;
 using PixelDeck.App.Settings;
+using PixelDeck.Emulation.GameCube;
 using PixelDeck.Emulation.Nes;
 using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
@@ -61,7 +62,16 @@ public partial class MainViewModel : ViewModelBase, IDisposable
                 "Place Nintendo 64 homebrew in Games/Nintendo64. PixelDeck will pick it up automatically.",
                 ["N64"],
                 PixelN64VersionText,
-                () => SelectedLibrarySystem = LibrarySystem.Nintendo64)
+                () => SelectedLibrarySystem = LibrarySystem.Nintendo64),
+            new(
+                LibrarySystem.GameCube,
+                "GameCube",
+                "Nintendo GameCube",
+                _library.GameCubeFolder,
+                "Place GameCube discs in Games/GameCube. PixelDeck will pick them up automatically.",
+                ["GC"],
+                PixelCubeVersionText,
+                () => SelectedLibrarySystem = LibrarySystem.GameCube)
         ];
         LibrarySystems[0].IsSelected = true;
 
@@ -220,6 +230,9 @@ public partial class MainViewModel : ViewModelBase, IDisposable
 
     public string PixelN64VersionText { get; } =
         FormatProductVersion("Pixel64", typeof(N64Machine).Assembly.GetName().Version);
+
+    public string PixelCubeVersionText { get; } =
+        FormatProductVersion("PixelCube", typeof(GameCubeMachine).Assembly.GetName().Version);
 
     public string LibraryEmulatorVersionText => SelectedLibrary.EmulatorVersionText;
 
@@ -1796,7 +1809,8 @@ public enum LibrarySystem
 {
     Nintendo,
     SuperNintendo,
-    Nintendo64
+    Nintendo64,
+    GameCube
 }
 
 public enum ControllerSetupPlayer

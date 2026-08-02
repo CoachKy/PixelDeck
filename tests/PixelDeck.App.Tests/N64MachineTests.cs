@@ -418,6 +418,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [InlineData("NPXE", N64SaveType.Eeprom4Kbit, 512, ".eep")]
     [InlineData("NGXE", N64SaveType.None, 32 * 1024, ".mpk")]
     [InlineData("NG5E", N64SaveType.None, 32 * 1024, ".mpk")]
+    [InlineData("NGME", N64SaveType.None, 32 * 1024, ".mpk")]
     [InlineData("NETE", N64SaveType.None, 32 * 1024, ".mpk")]
     [InlineData("NWXE", N64SaveType.Sram256Kbit, 32 * 1024, ".sra")]
     public void CartridgeDeclaresItsBatteryStoreRatherThanInferringItFromFileLength(
@@ -447,6 +448,7 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     [InlineData("NKTE", true, true, false)]
     [InlineData("NM8E", false, false, true)]
     [InlineData("NG5E", true, true, false)]
+    [InlineData("NGME", true, true, false)]
     [InlineData("NETE", true, true, false)]
     [InlineData("NWXE", true, false, false)]
     public void CartridgeProfileDeclaresItsControllerAccessories(
@@ -1948,6 +1950,30 @@ public sealed class N64MachineTests(ITestOutputHelper output)
         Assert.Equal(1 << 3, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 2, 0, 1)));
         Assert.Equal(1 << 4, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 0, -2, 1)));
         Assert.Equal(1 << 5, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 0, 2, 1)));
+        Assert.Equal(1 << 6, Fast3dRenderer.ComputeClipFlags(new Vector4(0, 0, 0, 0)));
+    }
+
+    [Fact]
+    public void Fast3dVerticesAtOrBehindTheEyeAreNotRasterized()
+    {
+        var viewportScale = new Vector4(160, 120, 511, 0);
+        var viewportTranslate = new Vector4(160, 120, 0, 0);
+
+        var visible = Fast3dRenderer.ProjectClipToScreen(
+            new Vector4(0, 0, 0.5f, 1),
+            1,
+            viewportScale,
+            viewportTranslate);
+        var behindEye = Fast3dRenderer.ProjectClipToScreen(
+            new Vector4(0, 0, 0.5f, 0),
+            0,
+            viewportScale,
+            viewportTranslate);
+
+        Assert.True(float.IsFinite(visible.X));
+        Assert.True(float.IsFinite(behindEye.X));
+        Assert.Equal(160, behindEye.X);
+        Assert.Equal(120, behindEye.Y);
     }
 
     [Fact]

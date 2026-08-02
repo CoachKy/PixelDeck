@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <!--
       A library, not an executable. PixelDeck.Launcher produces PixelDeck.exe and
@@ -21,10 +21,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- The application component's own version: the release number players see. -->
-    <Version>1.29.85</Version>
-    <AssemblyVersion>1.29.85.0</AssemblyVersion>
-    <FileVersion>1.29.85.0</FileVersion>
-    <InformationalVersion>1.29.85</InformationalVersion>
+    <Version>1.30.90</Version>
+    <AssemblyVersion>1.30.90.0</AssemblyVersion>
+    <FileVersion>1.30.90.0</FileVersion>
+    <InformationalVersion>1.30.90</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,5 +39,6 @@
     <ProjectReference Include="..\PixelDeck.Emulation.Nes\PixelDeck.Emulation.Nes.csproj" />
     <ProjectReference Include="..\PixelDeck.Emulation.N64\PixelDeck.Emulation.N64.csproj" />
     <ProjectReference Include="..\PixelDeck.Emulation.Snes\PixelDeck.Emulation.Snes.csproj" />
+    <ProjectReference Include="..\PixelDeck.Emulation.GameCube\PixelDeck.Emulation.GameCube.csproj" />
   </ItemGroup>
 </Project>

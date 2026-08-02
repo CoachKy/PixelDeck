@@ -7,6 +7,7 @@ and using the same console and nested game-folder layout:
 - `Nintendo` for NES and Famicom Disk System games.
 - `SuperNintendo` for Super Nintendo games.
 - `Nintendo64` for Nintendo 64 games.
+- `GameCube` for GameCube games.
 
 For example, `Games/SuperNintendo/RPG/FF3.sfc` uses
 `Library/SuperNintendo/RPG/FF3.png`.

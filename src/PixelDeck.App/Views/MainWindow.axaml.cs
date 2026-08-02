@@ -998,16 +998,30 @@ public partial class MainWindow : Window
         Show();
         Activate();
         _dashboardGamepads.Reset();
-        if (DataContext is MainViewModel viewModel)
+        _clockTimer.Start();
+        if (DataContext is not MainViewModel viewModel)
         {
-            _dashboardSoundsEnabled = false;
-            viewModel.RefreshPlayHistory();
-            _dashboardSoundsEnabled = true;
-            Dispatcher.UIThread.Post(() => FocusPageContent(viewModel), DispatcherPriority.Input);
+            _gamepadTimer.Start();
+            return;
         }
 
-        _clockTimer.Start();
-        _gamepadTimer.Start();
+        _dashboardSoundsEnabled = false;
+        viewModel.RefreshPlayHistory();
+        _dashboardSoundsEnabled = true;
+
+        // Restoring focus has to be deferred until the refreshed lists have
+        // laid out, and the pad must stay unread until it has happened.
+        // Polling first lets a fast player move the selection, and the queued
+        // focus call then drags them back onto the game they just quit, which
+        // the history refresh has moved to the top of the recent list.
+        Dispatcher.UIThread.Post(
+            () =>
+            {
+                FocusPageContent(viewModel);
+                _dashboardGamepads.Reset();
+                _gamepadTimer.Start();
+            },
+            DispatcherPriority.Input);
     }
 
     private void ConfigureWatcher(string gamesFolder)

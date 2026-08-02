@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>PixelDeck.CubeTrace</RootNamespace>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\PixelDeck.Emulation.GameCube\PixelDeck.Emulation.GameCube.csproj" />
+  </ItemGroup>
+
+</Project>

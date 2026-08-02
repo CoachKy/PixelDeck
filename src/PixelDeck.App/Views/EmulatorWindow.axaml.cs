@@ -12,6 +12,7 @@ using PixelDeck.App.Models;
 using PixelDeck.App.Services;
 using PixelDeck.App.Settings;
 using PixelDeck.Emulation.Nes;
+using PixelDeck.Emulation.GameCube;
 using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Snes;
 
@@ -44,6 +45,32 @@ public partial class EmulatorWindow : Window
     private uint _loggedN64HorizontalVideo;
     private long _n64FrameCounter;
     private long _coreFrameCounter;
+    private GameCubeMachine? _gameCubeMachine;
+    private long _gameCubeFrameCounter;
+    private bool _gameCubeStopped;
+    private GekkoRunResult _gameCubeResult;
+    private uint _gameCubeLastPc;
+    private long _gameCubeStallFrames;
+    private long _gameCubeStallBusiestCount;
+
+    /// <summary>
+    /// How many frames of no forward progress count as a stall rather than a
+    /// slow patch. Half a second: long enough that ordinary polling for a
+    /// device that will answer does not trip it.
+    /// </summary>
+    private const long GameCubeStallFrames = 30;
+
+    /// <summary>How far the program counter may drift and still count as stuck.</summary>
+    private const uint GameCubeStallWindow = 256;
+
+    /// <summary>
+    /// How long the Gekko interpreter runs per frame, and how much it does
+    /// between checks of that budget. The slice is small enough that a spin
+    /// loop cannot hold the dashboard for longer than the budget.
+    /// </summary>
+    private static readonly TimeSpan GameCubeFrameBudget = TimeSpan.FromMilliseconds(12);
+
+    private const long GameCubeInstructionsPerSlice = 250_000;
     private GamepadReader[]? _rumbleTargets;
     private readonly bool[] _rumbleMotorActive = new bool[GamepadManager.MaximumControllers];
     private SnesMachine? _snesMachine;
@@ -167,6 +194,12 @@ public partial class EmulatorWindow : Window
 
         _audioOutput?.Dispose();
         _audioOutput = null;
+
+        // Disposing the machine writes PixelCube's repeated-key tally and
+        // drains its trace file, which is the part of the session worth
+        // keeping.
+        _gameCubeMachine?.Dispose();
+        _gameCubeMachine = null;
         _cancellation.Dispose();
         _frameBitmap?.Dispose();
         _frameBitmap = null;
@@ -372,6 +405,18 @@ public partial class EmulatorWindow : Window
 
         LoadingOverlay.IsVisible = false;
 
+        if (_gameCubeMachine is not null)
+        {
+            // No video hardware, so the session panel is the whole picture.
+            // Refreshed here rather than every frame: its numbers move slowly.
+            if (frameNumber % 30 == 1)
+            {
+                UpdatePixelCubeOverlay();
+            }
+
+            return;
+        }
+
         // A picture the player chose themselves outranks the automatic one, so
         // games that already have a library image are left alone.
         if (_game is not null &&
@@ -418,6 +463,7 @@ public partial class EmulatorWindow : Window
 
         SetFastForward(
             !_isPaused &&
+            SupportsFastForward &&
             (playerOneGamepad.HasFlag(GamepadButton.RightTrigger) ||
              playerTwoGamepad.HasFlag(GamepadButton.RightTrigger)));
 
@@ -656,6 +702,15 @@ public partial class EmulatorWindow : Window
             Focus();
         }
     }
+
+    /// <summary>
+    /// Whether the right trigger runs the game at double speed. GameCube
+    /// sessions are excluded deliberately: PixelCube is nowhere near real
+    /// time, so a rate multiplier would not speed anything up, and holding the
+    /// trigger would change nothing except the pacing the trace is measured
+    /// against.
+    /// </summary>
+    private bool SupportsFastForward => _gameCubeMachine is null;
 
     private void SetFastForward(bool enabled)
     {
@@ -1025,6 +1080,20 @@ public partial class EmulatorWindow : Window
     {
         try
         {
+            if (_gameCubeMachine is not null)
+            {
+                // Nothing executes yet, so there is no state to keep.
+                SaveStateButton.IsEnabled = false;
+                LoadStateButton.IsEnabled = false;
+                LibraryImageButton.IsEnabled = false;
+                if (!preserveStatus)
+                {
+                    StateStatusText.Text = "PIXELCUBE HAS NO EXECUTION STATE TO SAVE YET";
+                }
+
+                return;
+            }
+
             IReadOnlyList<SaveStateSlot> slots = _game is null ? [] : StateCatalog.GetSlots();
             LoadStateButton.IsEnabled = slots.Count > 0;
             if (!preserveStatus)
@@ -1048,17 +1117,21 @@ public partial class EmulatorWindow : Window
     private bool HasMachine =>
         _nesMachine is not null ||
         _snesMachine is not null ||
-        _n64Machine is not null;
+        _n64Machine is not null ||
+        _gameCubeMachine is not null;
 
-    private int MachineWidth => _nesMachine?.Width ?? _snesMachine?.Width ?? _n64Machine?.Width
+    private int MachineWidth =>
+        _nesMachine?.Width ?? _snesMachine?.Width ?? _n64Machine?.Width ?? _gameCubeMachine?.Width
         ?? throw new InvalidOperationException("The emulator is not running.");
 
-    private int MachineHeight => _nesMachine?.Height ?? _snesMachine?.Height ?? _n64Machine?.Height
+    private int MachineHeight =>
+        _nesMachine?.Height ?? _snesMachine?.Height ?? _n64Machine?.Height ?? _gameCubeMachine?.Height
         ?? throw new InvalidOperationException("The emulator is not running.");
 
     private double MachineFramesPerSecond =>
         _snesMachine?.FramesPerSecond ??
         _n64Machine?.FramesPerSecond ??
+        _gameCubeMachine?.FramesPerSecond ??
         60.0988;
 
     private TimeSpan GetFrameInterval(int playbackRate)
@@ -1092,12 +1165,36 @@ public partial class EmulatorWindow : Window
         _nesMachine = null;
         _snesMachine = null;
         _n64Machine = null;
+        _gameCubeMachine?.Dispose();
+        _gameCubeMachine = null;
+        _gameCubeFrameCounter = 0;
+        _gameCubeStopped = false;
+        _gameCubeResult = default;
+        _gameCubeLastPc = 0;
+        _gameCubeStallFrames = 0;
         _loggedN64Width = 0;
         _loggedN64Height = 0;
         _loggedN64Control = 0;
         _loggedN64HorizontalVideo = uint.MaxValue;
         _n64FrameCounter = 0;
         StopAllRumble();
+
+        // GameCube discs are chosen by platform rather than by extension: an
+        // .iso only means GameCube because the player filed it under the
+        // GameCube folder, and the library has already settled that question.
+        if (string.Equals(_game.PlatformCode, "GC", StringComparison.Ordinal))
+        {
+            _gameCubeMachine = GameCubeMachine.Load(path, PixelCubeDiagnostics.Log);
+            _gameCubeMachine.TraceStartupReport();
+
+            var header = _gameCubeMachine.Disc.Header;
+            EmulatorDiagnostics.Write(
+                $"GameCube disc: title=\"{header.Title}\" id={header.GameId} " +
+                $"region={header.RegionText} container={_gameCubeMachine.Disc.ContainerName} " +
+                $"entry=0x{_gameCubeMachine.EntryPoint:X8}");
+            Title = $"{Title} - PixelCube trace only";
+            return;
+        }
 
         if (string.Equals(extension, ".nes", StringComparison.OrdinalIgnoreCase))
         {
@@ -1195,7 +1292,203 @@ public partial class EmulatorWindow : Window
             return;
         }
 
+        if (_gameCubeMachine is not null)
+        {
+            RunGameCubeFrame(destination);
+            return;
+        }
+
         throw new InvalidOperationException("The emulator is not running.");
+    }
+
+    /// <summary>
+    /// A GameCube frame: run the interpreter until it stops, then hold. There
+    /// is nothing to draw — no graphics hardware exists — so the session
+    /// panel and the trace file are the whole output.
+    /// </summary>
+    /// <remarks>
+    /// Execution is capped per frame rather than run to completion, so a game
+    /// that spins forever still leaves the dashboard responsive and still
+    /// updates its counters. Once the CPU stops on something it cannot do,
+    /// nothing further is attempted: repeating a failed instruction sixty
+    /// times a second would bury the trace under one obstacle.
+    /// </remarks>
+    private void RunGameCubeFrame(uint[] destination)
+    {
+        if (_gameCubeMachine is null)
+        {
+            return;
+        }
+
+        _gameCubeFrameCounter++;
+        _gameCubeMachine.Trace.Frame = _gameCubeFrameCounter;
+        destination.AsSpan(0, MachineWidth * MachineHeight).Clear();
+
+        if (_gameCubeStopped)
+        {
+            return;
+        }
+
+        // Run for a slice of wall-clock time rather than a fixed instruction
+        // count. Nothing is drawn, so the only thing a frame is really for is
+        // keeping the dashboard responsive — and a fixed count left the core
+        // running at a fraction of the speed the headless harness manages,
+        // which meant minutes of waiting to reach a state that takes seconds.
+        var deadline = Stopwatch.GetTimestamp() +
+            (long)(Stopwatch.Frequency * GameCubeFrameBudget.TotalSeconds);
+        do
+        {
+            _gameCubeResult = _gameCubeMachine.Run(GameCubeInstructionsPerSlice);
+            if (_gameCubeResult.Outcome != GekkoOutcome.Completed)
+            {
+                _gameCubeStopped = true;
+                EmulatorDiagnostics.Write(
+                    $"PixelCube stopped: {_gameCubeResult.Outcome} at 0x{_gameCubeResult.Pc:X8} " +
+                    $"after {_gameCubeMachine.Cpu.InstructionsExecuted:N0} instructions " +
+                    $"({GekkoDisassembler.Describe(_gameCubeResult.Instruction, _gameCubeResult.Pc)})");
+                return;
+            }
+        }
+        while (Stopwatch.GetTimestamp() < deadline);
+
+        TrackGameCubeProgress();
+
+        // One line a second while it is still running, so a long session shows
+        // progress without the log becoming the session.
+        _gameCubeMachine.Trace.WriteEvery(
+            GameCubeTraceChannel.Performance,
+            GameCubeTraceLevel.Information,
+            "session/heartbeat",
+            (long)Math.Round(_gameCubeMachine.FramesPerSecond),
+            $"{(IsGameCubeStalled ? "spinning" : "running")}: frame={_gameCubeFrameCounter} " +
+            $"instructions={_gameCubeMachine.Cpu.InstructionsExecuted} " +
+            $"pc=0x{_gameCubeMachine.Cpu.Pc:X8} " +
+            $"collapsed={_gameCubeMachine.Trace.SuppressedCount}");
+    }
+
+    /// <summary>
+    /// Notices when the program counter stops moving.
+    /// </summary>
+    /// <remarks>
+    /// Without this the session reports itself as "running" while it burns
+    /// millions of instructions inside a four-instruction poll, which is the
+    /// most misleading thing the panel could say — a stall and healthy
+    /// progress look identical from a frame counter alone. The address is
+    /// already known; only the comparison was missing.
+    /// </remarks>
+    private void TrackGameCubeProgress()
+    {
+        if (_gameCubeMachine is null)
+        {
+            return;
+        }
+
+        // Compared within a window rather than exactly. A spin loop is a
+        // handful of instructions, so the frame boundary lands on a different
+        // one each time and an exact comparison never fires — the very case
+        // this exists to catch.
+        var pc = _gameCubeMachine.Cpu.Pc;
+        if (pc < _gameCubeLastPc - GameCubeStallWindow ||
+            pc > _gameCubeLastPc + GameCubeStallWindow)
+        {
+            _gameCubeLastPc = pc;
+            _gameCubeStallFrames = 0;
+            return;
+        }
+
+        _gameCubeStallFrames++;
+        if (_gameCubeStallFrames != GameCubeStallFrames)
+        {
+            return;
+        }
+
+        // Remembered so the panel can tell the two kinds of stall apart. A
+        // program counter that stops advancing means either the game is
+        // waiting on hardware or it is deep in a long loop, and only whether
+        // something is being polled distinguishes them — a cache flush over
+        // sixty-four megabytes looks exactly like a hang from outside.
+        var busiest = _gameCubeMachine.Trace.BusiestCounter();
+        _gameCubeStallBusiestCount = busiest.Count;
+        _gameCubeMachine.Trace.Write(
+            GameCubeTraceChannel.Performance,
+            GameCubeTraceLevel.Warning,
+            $"execution has made no progress for {GameCubeStallFrames} frames at " +
+            $"0x{pc:X8}; busiest key is {busiest.Key} at {busiest.Count:N0}");
+        EmulatorDiagnostics.Write(
+            $"PixelCube stalled at 0x{pc:X8} after " +
+            $"{_gameCubeMachine.Cpu.InstructionsExecuted:N0} instructions; " +
+            $"busiest key {busiest.Key} at {busiest.Count:N0}");
+    }
+
+    /// <summary>Whether the program counter has stopped advancing.</summary>
+    private bool IsGameCubeStalled => _gameCubeStallFrames >= GameCubeStallFrames;
+
+    /// <summary>
+    /// Fills the GameCube session panel and shows it. Called once per second
+    /// from the input timer, because the numbers on it change slowly and the
+    /// panel is the only thing a player can see.
+    /// </summary>
+    private void UpdatePixelCubeOverlay()
+    {
+        string title;
+        string summary;
+        string traceText;
+
+        // Held while reading the machine because a reset disposes and replaces
+        // it, and the disc image behind these properties would be closed
+        // underneath this thread.
+        lock (_machineLock)
+        {
+            if (_gameCubeMachine is null)
+            {
+                return;
+            }
+
+            var machine = _gameCubeMachine;
+            var header = machine.Disc.Header;
+            var trace = machine.Trace;
+
+            title = header.Title;
+            summary =
+                $"{header.GameId}  ·  {header.RegionText}  ·  {machine.Disc.ContainerName}  ·  " +
+                $"{machine.Disc.Length / (1024.0 * 1024.0):F0} MB\n" +
+                $"{machine.Disc.FileSystem.Files.Count} files  ·  " +
+                $"boot image {machine.BootExecutable?.TotalSectionBytes ?? 0:N0} bytes in " +
+                $"{machine.BootExecutable?.Sections.Count ?? 0} sections";
+            var busiest = trace.BusiestCounter();
+            var state = _gameCubeStopped
+                ? $"stopped · {_gameCubeResult.Outcome} at 0x{_gameCubeResult.Pc:X8}  " +
+                  GekkoDisassembler.Describe(_gameCubeResult.Instruction, _gameCubeResult.Pc)
+                : !IsGameCubeStalled
+                    ? "running"
+                    : busiest.Count > _gameCubeStallBusiestCount
+                        ? $"WAITING on hardware at 0x{machine.Cpu.Pc:X8} — " +
+                          $"{_gameCubeStallFrames:N0} frames"
+                        : $"in a long loop at 0x{machine.Cpu.Pc:X8} — " +
+                          $"{_gameCubeStallFrames:N0} frames, nothing being polled";
+
+            traceText =
+                $"entry point   0x{machine.EntryPoint:X8}\n" +
+                $"instructions  {machine.Cpu.InstructionsExecuted:N0}\n" +
+                $"state         {state}\n" +
+                $"waiting on    {(busiest.Count == 0 ? "-" : $"{busiest.Key}  ×{busiest.Count:N0}")}\n" +
+                $"trace         {trace.KeptCount:N0} kept / {trace.SuppressedCount:N0} collapsed\n" +
+                $"level         {trace.Level} · {trace.Channels}\n" +
+                $"file          {trace.Settings.FilePath}";
+        }
+
+        PixelCubeOverlay.IsVisible = true;
+        PixelCubeTitleText.Text = title;
+        PixelCubeSummaryText.Text = summary;
+        PixelCubeTraceText.Text = traceText;
+        PixelCubeHintText.Text =
+            "PixelCube runs the Gekko CPU, the disc drive, and enough of the DSP, ARAM and " +
+            "serial interfaces for a game to get through startup. There is no graphics " +
+            "hardware, so nothing can be drawn however far the code gets — the trace is the " +
+            "output. \"WAITING on hardware\" means something unimplemented is being polled and " +
+            "the line below names it; \"in a long loop\" means the game is busy rather than " +
+            "stuck. Set PIXELCUBE_TRACE before launching (\"verbose:cpu\" for a disassembling " +
+            "instruction trace) or use the cubetrace tool for a ranked list of what a run hit.";
     }
 
     /// <summary>
@@ -1477,6 +1770,11 @@ public partial class EmulatorWindow : Window
             return _n64Machine.CurrentFrame.ToArray();
         }
 
+        if (_gameCubeMachine is not null)
+        {
+            return new uint[_gameCubeMachine.Width * _gameCubeMachine.Height];
+        }
+
         throw new InvalidOperationException("The emulator is not running.");
     }
 
@@ -1495,6 +1793,12 @@ public partial class EmulatorWindow : Window
         if (_n64Machine is not null)
         {
             return _n64Machine.SaveState();
+        }
+
+        if (_gameCubeMachine is not null)
+        {
+            throw new NotSupportedException(
+                "PixelCube cannot save a state yet: there is no execution state to save.");
         }
 
         throw new InvalidOperationException("The emulator is not running.");

@@ -38,6 +38,48 @@
                Stretch="Uniform"
                RenderOptions.BitmapInterpolationMode="None" />
 
+        <!--
+            PixelCube has no video hardware yet, so a GameCube session has
+            nothing to draw. Rather than show a black rectangle that cannot be
+            told apart from a hang, the session reports itself: what the disc
+            is, where it stopped, and where its trace file is.
+        -->
+        <Border Name="PixelCubeOverlay"
+                IsVisible="False"
+                Background="#0A1525"
+                Padding="64,56">
+            <StackPanel VerticalAlignment="Center" Spacing="14">
+                <TextBlock Text="PIXELCUBE"
+                           Foreground="#63B8FF"
+                           FontSize="12"
+                           FontWeight="Bold"
+                           LetterSpacing="3" />
+                <TextBlock Name="PixelCubeTitleText"
+                           FontSize="34"
+                           FontWeight="Black"
+                           LetterSpacing="-0.5"
+                           TextWrapping="Wrap" />
+                <TextBlock Name="PixelCubeSummaryText"
+                           Foreground="#9CACBF"
+                           FontSize="14"
+                           LineHeight="24"
+                           TextWrapping="Wrap" />
+                <Border Background="#14FFFFFF" CornerRadius="7" Padding="18,14">
+                    <TextBlock Name="PixelCubeTraceText"
+                               Foreground="#C8D6E5"
+                               FontFamily="Consolas,Menlo,monospace"
+                               FontSize="13"
+                               LineHeight="21"
+                               TextWrapping="Wrap" />
+                </Border>
+                <TextBlock Name="PixelCubeHintText"
+                           Foreground="#6F8299"
+                           FontSize="12"
+                           LineHeight="19"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+
         <Border Name="LoadingOverlay" Background="#000000">
             <TextBlock Name="EmulatorStatusText"
                        Text="POWERING ON"

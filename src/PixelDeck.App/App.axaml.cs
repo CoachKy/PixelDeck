@@ -25,7 +25,9 @@ public partial class App : Application
 
                 // Queued diagnostics are written on a background thread, so
                 // without this the last lines before a quit or a crash — the
-                // ones worth reading — never reach the file.
+                // ones worth reading — never reach the file. PixelCube keeps
+                // its own trace file and needs the same treatment.
+                PixelCubeDiagnostics.Flush();
                 EmulatorDiagnostics.Flush();
             };
             var directGamePath = GetDirectGamePath(desktop.Args);

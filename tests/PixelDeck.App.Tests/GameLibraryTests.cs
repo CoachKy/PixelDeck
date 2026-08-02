@@ -209,6 +209,101 @@ public sealed class GameLibraryTests
     }
 
     [Fact]
+    public async Task ScanAsync_OffersAReadableGameCubeDiscForLaunchSoItCanBeTraced()
+    {
+        var testRoot = CreateTestDirectory();
+        try
+        {
+            var gameCubeFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.GameCubeFolderName));
+            await File.WriteAllBytesAsync(
+                Path.Combine(gameCubeFolder.FullName, "Test Disc.ciso"),
+                GameCubeTestSupport.CreateCompressedImage(GameCubeTestSupport.CreateDiscImage()));
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("Nintendo GameCube", game.Platform);
+            Assert.Equal("GC", game.PlatformCode);
+            Assert.Equal("GTSE01 / NTSC-U", game.MapperText);
+
+            // Launching is how a trace is produced, so a readable disc starts
+            // even though nothing executes behind it.
+            Assert.True(game.CanLaunch);
+            Assert.Equal("PARTIAL", game.LaunchBadgeText);
+            Assert.Contains("trace log", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+            Assert.EndsWith(".gci", game.SaveRamPath, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(
+                Path.Combine(
+                    Directory.GetParent(testRoot)!.FullName,
+                    "Saves",
+                    GameLibrary.GameCubeFolderName,
+                    "Test Disc.gci"),
+                game.SaveRamPath);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_RefusesToLaunchAGameCubeDiscItCannotRead()
+    {
+        var testRoot = CreateTestDirectory();
+        try
+        {
+            var gameCubeFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.GameCubeFolderName));
+            await File.WriteAllBytesAsync(
+                Path.Combine(gameCubeFolder.FullName, "Broken.iso"),
+                new byte[0x1000]);
+
+            var game = Assert.Single(await new GameLibrary(testRoot).ScanAsync());
+
+            Assert.Equal("GC", game.PlatformCode);
+            Assert.False(game.CanLaunch);
+            Assert.Equal("UNSUPPORTED", game.LaunchBadgeText);
+            Assert.Contains("magic word", game.CompatibilityText, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
+    public async Task ScanAsync_TreatsAnIsoAsAGameCubeDiscOnlyInsideTheGameCubeFolder()
+    {
+        // ".iso" is the ordinary extension for a GameCube disc and for a disc
+        // image of anything else, so the folder the player chose is the only
+        // evidence of which one this is.
+        var testRoot = CreateTestDirectory();
+        try
+        {
+            var image = GameCubeTestSupport.CreateDiscImage();
+            var gameCubeFolder = Directory.CreateDirectory(
+                Path.Combine(testRoot, GameLibrary.GameCubeFolderName));
+            await File.WriteAllBytesAsync(
+                Path.Combine(gameCubeFolder.FullName, "Filed.iso"),
+                image);
+            await File.WriteAllBytesAsync(Path.Combine(testRoot, "Loose.iso"), image);
+
+            var games = await new GameLibrary(testRoot).ScanAsync();
+
+            var filed = Assert.Single(games, game => game.FileName == "Filed.iso");
+            var loose = Assert.Single(games, game => game.FileName == "Loose.iso");
+
+            Assert.Equal("GC", filed.PlatformCode);
+            Assert.Equal("DISC", loose.PlatformCode);
+            Assert.Empty(loose.SaveRamPath);
+        }
+        finally
+        {
+            DeleteTestDirectory(testRoot);
+        }
+    }
+
+    [Fact]
     public async Task ScanAsync_UsesAValidatedNintendoHeaderTitleForNesImages()
     {
         var testRoot = CreateTestDirectory();

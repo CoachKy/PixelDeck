@@ -6,6 +6,8 @@ PixelDeck stores every ROM-created battery save and save state beside the
 - `Nintendo` contains NES and Famicom Disk System saves.
 - `SuperNintendo` contains Super Nintendo saves.
 - `Nintendo64` contains Nintendo 64 saves.
+- `GameCube` will contain GameCube memory card saves as `.gci`. PixelCube
+  cannot run a game yet, so nothing is written here today.
 
 For example, `Games/SuperNintendo/RPG/FF3.sfc` uses
 `Saves/SuperNintendo/RPG/FF3.sav` for cartridge SRAM and numbered files such

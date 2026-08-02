@@ -1791,7 +1791,11 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             ComputeClipFlags(clipPosition),
             float.IsFinite(screen.X) &&
             float.IsFinite(screen.Y) &&
-            float.IsFinite(screen.Z));
+            float.IsFinite(screen.Z) &&
+            // Vertices at or behind the eye cannot be perspective-corrected.
+            // Rasterizing them pins geometry to the viewport centre and fills
+            // the frame with a wedge, which reads as an impassable wall.
+            clipPosition.W > 0.000001f);
     }
 
     internal static Vector3 ProjectClipToScreen(
