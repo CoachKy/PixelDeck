@@ -7,9 +7,13 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 {
     private const uint AlphaCompareMask = 0x3;
     private const uint ImageRead = 0x40;
+    private const uint CoverageTimesAlpha = 0x1000;
+    private const uint AlphaCoverageSelect = 0x2000;
     private const uint ForceBlend = 0x4000;
     private const int MaximumCommandsPerTask = 250_000;
     private const int MaximumDisplayListDepth = 32;
+    private const int MaximumCachedTextureTexels = 64 * 1024;
+    private const int MaximumDecodedTextureCacheEntries = 16;
 
     private readonly N64Memory _memory;
     private readonly uint[] _segments = new uint[16];
@@ -20,6 +24,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private readonly Fast3dTile[] _tiles = new Fast3dTile[8];
     private readonly LoadedTexture[] _loadedTextures = new LoadedTexture[512];
     private readonly byte[] _textureMemory = new byte[4 * 1024];
+    private readonly Dictionary<TextureDecodeCacheKey, Vector4[]> _decodedTextureCache = new();
     private readonly Stack<Matrix4x4> _modelViewStack = new();
     private uint _colorImageAddress;
     private int _colorImageWidth = 320;
@@ -51,11 +56,14 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private int _textureImageSize;
     private int _textureImageWidth = 1;
     private bool _combinerUsesTexture;
+    private bool _combinerUsesTexel0;
+    private bool _combinerUsesTexel1;
     private bool _combinerConfigured;
     private Vector4 _primitiveColor = Vector4.One;
     private Vector4 _environmentColor = Vector4.One;
     private Vector4 _fogColor;
     private Vector4 _blendColor;
+    private float _primitiveLodFraction;
     private CombinerCycle _combinerCycle0;
     private CombinerCycle _combinerCycle1;
     private uint _otherModeLow;
@@ -81,11 +89,25 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     public long TrianglesDrawn { get; private set; }
 
+    /// <summary>Vertices that reached the rasterizer with no perspective divide.</summary>
+    public long CentrePinnedVertices { get; private set; }
+
+    /// <summary>Vertices projected far outside the viewport by a near-zero W.</summary>
+    public long OffscreenProjectedVertices { get; private set; }
+
     public long LinesDrawn { get; private set; }
 
     public long VerticesTransformed { get; private set; }
 
     public long TexturedPixelsDrawn { get; private set; }
+
+    public long SecondaryTexturePixelsSampled { get; private set; }
+
+    public long FilteredTextureCacheHits { get; private set; }
+
+    public long FilteredTextureCacheMisses { get; private set; }
+
+    public long FilteredTextureTexelsDecoded { get; private set; }
 
     public string Name => "Pixel64 Fast3D software renderer";
 
@@ -130,6 +152,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         _blendColor,
         _combinerConfigured,
         _combinerUsesTexture,
+        _combinerUsesTexel0,
+        _combinerUsesTexel1,
         _keyGreenBlueWord0,
         _keyGreenBlueWord1,
         _keyRedWord1,
@@ -173,9 +197,10 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         _textureImageSize = 0;
         _textureImageWidth = 1;
         _primitiveColor = Vector4.One;
+        _primitiveLodFraction = 0;
         MicrocodeBanner = ReadMicrocodeBanner(task);
         MicrocodeCrc32 = CalculateMicrocodeCrc32(task);
-        _microcode = ClassifyMicrocode(MicrocodeBanner, MicrocodeCrc32);
+        _microcode = ClassifyMicrocode(MicrocodeBanner, MicrocodeCrc32, _microcode);
         DetectedMicrocode = _microcode;
         var remainingBudget = MaximumCommandsPerTask;
         if (_microcode == N64Microcode.F5Rogue)
@@ -252,6 +277,10 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     if (_microcode == N64Microcode.F3dex)
                     {
                         LoadVerticesF3dex(word0, word1);
+                    }
+                    else if (_microcode == N64Microcode.F3dBeta)
+                    {
+                        LoadVerticesF3dBeta(word0, word1);
                     }
                     else if (_microcode != N64Microcode.F3dex2)
                     {
@@ -340,10 +369,15 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
                     break;
                 case 0xBF: // F3D G_TRI1
-                    // Fast3D stores indices multiplied by 10; F3DEX by 2.
+                    // Fast3D stores indices multiplied by 10, the beta
+                    // microcode by 5, and F3DEX by 2.
                     if (_microcode == N64Microcode.F3dex)
                     {
                         DrawTriangleF3dex2(word1);
+                    }
+                    else if (_microcode == N64Microcode.F3dBeta)
+                    {
+                        DrawTriangleF3dBeta(word1);
                     }
                     else
                     {
@@ -354,6 +388,10 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 case 0xB1 when _microcode == N64Microcode.F3dex: // F3DEX G_TRI2
                     DrawTriangleF3dex2(word0);
                     DrawTriangleF3dex2(word1);
+                    break;
+                case 0xB1 when _microcode == N64Microcode.F3dBeta: // F3DBETA G_TRI2
+                    DrawTriangleF3dBeta(word0);
+                    DrawTriangleF3dBeta(word1);
                     break;
                 case 0xB1: // F3D G_TRI4: four triangles as packed nibble indices
                     for (var triangle = 0; triangle < 4; triangle++)
@@ -370,6 +408,16 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     }
 
                     break;
+                case 0xB5 when _microcode == N64Microcode.F3dBeta: // F3DBETA G_QUAD
+                {
+                    var first = (int)((word1 >> 24) & 0xFF) / 5;
+                    var second = (int)((word1 >> 16) & 0xFF) / 5;
+                    var third = (int)((word1 >> 8) & 0xFF) / 5;
+                    var fourth = (int)(word1 & 0xFF) / 5;
+                    DrawTriangleIndices(first, second, third);
+                    DrawTriangleIndices(first, third, fourth);
+                    break;
+                }
                 case 0xB5: // F3D/F3DEX G_LINE3D
                     RecordOmittedHlePrimitives(1);
                     if (_microcode == N64Microcode.F3dex)
@@ -458,6 +506,9 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 case 0x00:
                 case 0xB4: // G_RDPHALF_1
                     break;
+                case 0xB2 when _microcode == N64Microcode.F3dBeta: // G_RDPHALF_2
+                case 0xB3 when _microcode == N64Microcode.F3dBeta: // G_RDPHALF_1
+                    break;
                 case 0xE4: // G_TEXRECT
                 case 0xE5: // G_TEXRECTFLIP
                 {
@@ -510,7 +561,10 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     /// </summary>
     public uint MicrocodeCrc32 { get; private set; }
 
-    internal static N64Microcode ClassifyMicrocode(string? banner, uint crc32)
+    internal static N64Microcode ClassifyMicrocode(
+        string? banner,
+        uint crc32,
+        N64Microcode current = N64Microcode.Fast3d)
     {
         // Factor 5's Rogue Squadron microcode has no ordinary Fast3D banner
         // and changes both opcode meanings and command lengths.
@@ -519,9 +573,22 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             return N64Microcode.F5Rogue;
         }
 
+        // Early Fast3D beta uses five-times vertex indices and a different
+        // G_VTX layout. Shadows of the Empire ships this exact text image.
+        if (crc32 is 0x94C4C833 or 0xD17906E2)
+        {
+            return N64Microcode.F3dBeta;
+        }
+
         if (banner is null)
         {
-            return N64Microcode.Fast3d;
+            // An unreadable banner is a failed detection, not evidence of
+            // legacy Fast3D. Asserting Fast3D here makes the renderer decode
+            // an F3DEX2 display list against the wrong opcode table: WWF
+            // WrestleMania 2000 flips to Fast3D roughly 25 seconds in, logs
+            // 28,845 unsupported commands, and stops drawing entirely. Hold
+            // whatever the cartridge was last positively identified as.
+            return current;
         }
 
         if (banner.Contains("F3DZEX", StringComparison.Ordinal) ||
@@ -669,10 +736,13 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             ? uint.MaxValue
             : ((1u << length) - 1u) << shift;
         _otherModeHigh = (_otherModeHigh & ~valueMask) | (word1 & valueMask);
+        UpdateCombinerTextureUsage();
     }
 
     private void LoadTextureLookupTable(uint word0, uint word1)
     {
+        InvalidateDecodedTextureCache();
+
         // Palette entries land in upper TMEM at the tile's base. Hardware
         // quadricates each 16-bit entry across a 64-bit word; storing the
         // same replication keeps CI sampling arithmetic identical.
@@ -775,6 +845,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             return;
         }
 
+        InvalidateDecodedTextureCache();
+
         var bitsPerTexel = BitsPerTexel(_textureImageSize);
         var rowBits = width * bitsPerTexel;
         var rowStrideBits = tile.Line > 0
@@ -783,12 +855,24 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         for (var row = 0; row < height; row++)
         {
             var sourceTexel = ((upperLeftT + row) * _textureImageWidth) + upperLeftS;
-            CopyRdramRowToTmem(
-                _textureImageAddress,
-                sourceTexel * bitsPerTexel,
-                (tile.Tmem * 64) + (row * rowStrideBits),
-                rowBits,
-                ((upperLeftT + row) & 1) != 0);
+            if (_textureImageFormat == 0 && _textureImageSize == 3)
+            {
+                CopyRgba32RdramRowToTmem(
+                    _textureImageAddress,
+                    sourceTexel,
+                    (tile.Tmem * 8) + (row * (rowStrideBits >> 3)),
+                    width,
+                    ((upperLeftT + row) & 1) != 0);
+            }
+            else
+            {
+                CopyRdramRowToTmem(
+                    _textureImageAddress,
+                    sourceTexel * bitsPerTexel,
+                    (tile.Tmem * 64) + (row * rowStrideBits),
+                    rowBits,
+                    ((upperLeftT + row) & 1) != 0);
+            }
         }
 
         _loadedTextures[tile.Tmem] = new LoadedTexture(
@@ -802,6 +886,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     private void LoadTextureBlock(uint word0, uint word1)
     {
+        InvalidateDecodedTextureCache();
+
         var tileIndex = (int)((word1 >> 24) & 7);
         var tmem = _tiles[tileIndex].Tmem;
         var upperLeftS = (int)((word0 >> 12) & 0xFFF) >> 2;
@@ -813,13 +899,26 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         var destinationBitOffset = tmem * 64;
         var bitCount = texels * bitsPerTexel;
         var dxt = (int)(word1 & 0xFFF);
-        CopyRdramBlockToTmem(
-            _textureImageAddress,
-            sourceBitOffset,
-            destinationBitOffset,
-            bitCount,
-            upperLeftT,
-            dxt);
+        if (_textureImageFormat == 0 && _textureImageSize == 3)
+        {
+            CopyRgba32RdramBlockToTmem(
+                _textureImageAddress,
+                sourceTexel,
+                tmem * 8,
+                texels,
+                upperLeftT,
+                dxt);
+        }
+        else
+        {
+            CopyRdramBlockToTmem(
+                _textureImageAddress,
+                sourceBitOffset,
+                destinationBitOffset,
+                bitCount,
+                upperLeftT,
+                dxt);
+        }
         _loadedTextures[tmem] = new LoadedTexture(
             _textureImageAddress,
             _textureImageFormat,
@@ -827,6 +926,74 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             texels,
             tmem,
             bitCount);
+    }
+
+    /// <summary>
+    /// RGBA32 is not linear in TMEM. The RDP writes R/G to the lower 2 KiB
+    /// bank and B/A to the corresponding address in the upper bank. Each bank
+    /// therefore advances by two bytes per texel even though RDRAM advances by
+    /// four. Treating it as a conventional four-byte texture halves the
+    /// effective row width, which turned GoldenEye's 32x32 reticle into a
+    /// sheared red rectangle.
+    /// </summary>
+    private void CopyRgba32RdramRowToTmem(
+        uint sourceAddress,
+        int sourceTexel,
+        int destinationByteOffset,
+        int texelCount,
+        bool swapWordHalves)
+    {
+        for (var texel = 0; texel < texelCount; texel++)
+        {
+            var source = sourceAddress + (uint)((sourceTexel + texel) * 4);
+            var lowerAddress = (destinationByteOffset + (texel * 2)) & 0x7FF;
+            if (swapWordHalves)
+            {
+                lowerAddress ^= 4;
+            }
+
+            WriteRgba32TmemTexel(lowerAddress, source);
+        }
+    }
+
+    /// <summary>
+    /// LoadBlock uses its 1.11 DXT accumulator once per source 64-bit word.
+    /// A word contains two RGBA32 texels; use that derived row for the same
+    /// odd-row word swap performed by the texture sampler.
+    /// </summary>
+    private void CopyRgba32RdramBlockToTmem(
+        uint sourceAddress,
+        int sourceTexel,
+        int destinationByteOffset,
+        int texelCount,
+        int initialRow,
+        int dxt)
+    {
+        for (var texel = 0; texel < texelCount; texel++)
+        {
+            var sourceWord = texel >> 1;
+            var row = initialRow + ((sourceWord * dxt) >> 11);
+            var lowerAddress = (destinationByteOffset + (texel * 2)) & 0x7FF;
+            if ((row & 1) != 0)
+            {
+                lowerAddress ^= 4;
+            }
+
+            var source = sourceAddress + (uint)((sourceTexel + texel) * 4);
+            WriteRgba32TmemTexel(lowerAddress, source);
+        }
+    }
+
+    private void WriteRgba32TmemTexel(int lowerAddress, uint sourceAddress)
+    {
+        lowerAddress &= 0x7FF;
+        _textureMemory[lowerAddress] = _memory.ReadByte(sourceAddress);
+        _textureMemory[(lowerAddress + 1) & 0x7FF] = _memory.ReadByte(sourceAddress + 1);
+
+        var upperAddress = lowerAddress | 0x800;
+        _textureMemory[upperAddress] = _memory.ReadByte(sourceAddress + 2);
+        _textureMemory[0x800 | ((lowerAddress + 1) & 0x7FF)] =
+            _memory.ReadByte(sourceAddress + 3);
     }
 
     /// <summary>
@@ -1221,8 +1388,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         LoadVerticesEndIndexed((int)((word0 >> 12) & 0xFF), word0, word1);
 
     /// <summary>
-    /// Both F3DEX revisions name the slot one past the last vertex written;
-    /// only the width and position of the count field differ.
+    /// F3DEX2 names the slot one past the last vertex written.
     /// </summary>
     private void LoadVerticesEndIndexed(int count, uint word0, uint word1)
     {
@@ -1236,12 +1402,37 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     }
 
     /// <summary>
-    /// F3DEX version 1 keeps Fast3D's G_VTX opcode but repacks its operands:
-    /// the count sits at bits 10-15 and the field at bit 1 is the slot one
-    /// past the last vertex written.
+    /// F3DEX version 1 keeps Fast3D's G_VTX opcode but repacks its operands.
+    /// Its destination is stored doubled in bits 16-23; unlike F3DEX2, the
+    /// low seven bits are part of the DMA length and not a vertex index.
     /// </summary>
-    private void LoadVerticesF3dex(uint word0, uint word1) =>
-        LoadVerticesEndIndexed((int)((word0 >> 10) & 0x3F), word0, word1);
+    private void LoadVerticesF3dex(uint word0, uint word1)
+    {
+        var (destination, count) = DecodeF3dexVertexRange(word0);
+        if (count <= 0 || destination < 0 || destination + count > _vertices.Length)
+        {
+            return;
+        }
+
+        LoadVerticesInto(destination, count, ResolveAddress(word1));
+    }
+
+    internal static (int Destination, int Count) DecodeF3dexVertexRange(uint word0) =>
+        ((int)((word0 >> 16) & 0xFF) / 2, (int)((word0 >> 10) & 0x3F));
+
+    private void LoadVerticesF3dBeta(uint word0, uint word1)
+    {
+        var (destination, count) = DecodeF3dBetaVertexRange(word0);
+        if (count <= 0 || destination < 0 || destination + count > _vertices.Length)
+        {
+            return;
+        }
+
+        LoadVerticesInto(destination, count, ResolveAddress(word1));
+    }
+
+    internal static (int Destination, int Count) DecodeF3dBetaVertexRange(uint word0) =>
+        ((int)((word0 >> 16) & 0xFF) / 5, (int)((word0 >> 9) & 0x7F));
 
     /// <summary>
     /// F3DEX2 G_MODIFYVTX patches one attribute of an already-loaded vertex
@@ -1363,6 +1554,12 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             (int)((word1 >> 8) & 0xFF) / 10,
             (int)(word1 & 0xFF) / 10);
 
+    private void DrawTriangleF3dBeta(uint word) =>
+        DrawTriangleIndices(
+            (int)((word >> 16) & 0xFF) / 5,
+            (int)((word >> 8) & 0xFF) / 5,
+            (int)(word & 0xFF) / 5);
+
     private void DrawLine(uint word1) =>
         DrawLineIndices(
             (int)((word1 >> 16) & 0xFF) / 10,
@@ -1472,6 +1669,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 var depth = usePrimitiveDepth
                     ? (_primitiveDepth & 0x7FFF) / 32f
                     : a.Position.Z + ((b.Position.Z - a.Position.Z) * amount);
+                depth = ApplyDepthModeBias(_otherModeLow, depth);
                 if (compareDepth && depth > _depthBuffer[depthIndex])
                 {
                     DepthPixelsRejected++;
@@ -1480,7 +1678,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
                 var shade = Vector4.Lerp(a.Color, b.Color, amount);
                 var color = _combinerConfigured
-                    ? EvaluateCombiner(shade, Vector4.Zero)
+                    ? EvaluateCombiner(shade, Vector4.Zero, Vector4.Zero)
                     : shade;
                 if (WriteColorPixel(x, y, color, shade) && updateDepth)
                 {
@@ -1569,6 +1767,21 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             inverseW,
             _viewportScale,
             _viewportTranslate);
+
+        // Two ways a vertex produces a wedge radiating from the middle of the
+        // frame: no perspective divide at all, which pins it to the viewport
+        // centre, or a divide by a near-zero W, which flings it far enough
+        // off-screen that the triangle covers everything in between. Neither
+        // is visible in the primitive counts, so count them separately.
+        if (inverseW == 0)
+        {
+            CentrePinnedVertices++;
+        }
+        else if (Math.Abs(screen.X) > 8192 || Math.Abs(screen.Y) > 8192)
+        {
+            OffscreenProjectedVertices++;
+        }
+
         return new Fast3dVertex(
             clipPosition,
             screen,
@@ -1713,12 +1926,20 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
         // The edge functions are linear in x and y, so evaluate them once at
         // the top-left sample and step them incrementally across the box.
-        var drawTextured =
+        var sampleTexel0 =
             _textureEnabled &&
-            _combinerUsesTexture &&
+            _combinerUsesTexel0 &&
             HasTextureForTile(_textureTile);
-        var textureState = drawTextured
+        var sampleTexel1 =
+            _textureEnabled &&
+            _combinerUsesTexel1 &&
+            HasTextureForTile((_textureTile + 1) & 7);
+        var drawTextured = sampleTexel0 || sampleTexel1;
+        var textureState0 = sampleTexel0
             ? CreateTextureSampleState(_textureTile)
+            : default;
+        var textureState1 = sampleTexel1
+            ? CreateTextureSampleState((_textureTile + 1) & 7)
             : default;
         var stepAx = (c.Position.Y - b.Position.Y) * inverseArea;
         var stepAy = (b.Position.X - c.Position.X) * inverseArea;
@@ -1749,6 +1970,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     : (a.Position.Z * weightA) +
                       (b.Position.Z * weightB) +
                       (c.Position.Z * weightC);
+                depth = ApplyDepthModeBias(_otherModeLow, depth);
                 if (compareDepth && depth > _depthBuffer[depthIndex])
                 {
                     DepthPixelsRejected++;
@@ -1758,7 +1980,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 var shade =
                     (a.Color * weightA) + (b.Color * weightB) + (c.Color * weightC);
                 var color = shade;
-                var texel = Vector4.Zero;
+                var texel0 = Vector4.Zero;
+                var texel1 = Vector4.Zero;
                 if (drawTextured)
                 {
                     var reciprocalW =
@@ -1772,13 +1995,29 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                              (b.TextureCoordinate * (weightB * b.ReciprocalW)) +
                              (c.TextureCoordinate * (weightC * c.ReciprocalW))) /
                             reciprocalW;
-                        var textureColor = SampleTexture(textureCoordinate, textureState);
-                        if (textureColor.W <= 0)
+                        // Zero texel alpha does not universally discard a
+                        // fragment. The colour combiner may use it as an
+                        // interpolation factor, as G_CC_BLENDRGBFADEA does
+                        // for Mario's eyes, moustache and sideburns:
+                        // transparent texture areas resolve to the lit skin
+                        // shade. Alpha compare later in the pixel pipeline is
+                        // the operation that can actually reject the result.
+                        if (sampleTexel0)
                         {
-                            continue;
+                            texel0 = SampleTexture(textureCoordinate, textureState0);
                         }
 
-                        texel = textureColor;
+                        // In two-cycle mode TEXEL1 comes from the following
+                        // tile descriptor. Games use it for mip levels, detail
+                        // textures, water layers, projected shadows and
+                        // particle alpha masks. Aliasing it to TEXEL0 turns
+                        // those masks into opaque black/white rectangles.
+                        if (sampleTexel1)
+                        {
+                            texel1 = SampleTexture(textureCoordinate, textureState1);
+                            SecondaryTexturePixelsSampled++;
+                        }
+
                         TexturedPixelsDrawn++;
                     }
                 }
@@ -1790,7 +2029,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 // has actually configured a combiner.
                 if (_combinerConfigured)
                 {
-                    color = EvaluateCombiner(shade, texel);
+                    color = EvaluateCombiner(shade, texel0, texel1);
                 }
 
                 if (WriteColorPixel(x, y, color, shade) && updateDepth)
@@ -1812,6 +2051,26 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         const uint cullBack = 0x00002000;
         return ((geometryMode & cullBack) != 0 && signedArea < 0) ||
                ((geometryMode & cullFront) != 0 && signedArea > 0);
+    }
+
+    /// <summary>
+    /// The RDP decal depth mode applies polygon offset before depth comparison.
+    /// Games place carpets, decals and shadows directly on their supporting
+    /// geometry and rely on this bias to prevent the two coplanar surfaces from
+    /// fighting. Our screen-space depth spans roughly 0..1024, making three
+    /// depth units the native-resolution equivalent of the RDP offset used by
+    /// established renderers.
+    /// </summary>
+    internal static float ApplyDepthModeBias(uint otherModeLow, float depth)
+    {
+        const int zModeShift = 10;
+        const uint zModeMask = 3;
+        const uint zModeDecal = 3;
+        const float decalBias = 3f;
+
+        return ((otherModeLow >> zModeShift) & zModeMask) == zModeDecal
+            ? MathF.Max(0, depth - decalBias)
+            : depth;
     }
 
     internal static byte ComputeClipFlags(Vector4 clip)
@@ -1842,6 +2101,17 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         else if (clip.Z > clip.W)
         {
             flags |= 1 << 5;
+        }
+
+        // The near plane needs a flag of its own even though the X/Y/Z tests
+        // already compare against W. A vertex at or behind the eye has no
+        // meaningful perspective divide, and its screen position is pinned to
+        // the viewport centre; without this bit the triangle reports itself
+        // unclipped, skips the clipper entirely, and is rasterized as a wedge
+        // radiating from the middle of the frame.
+        if (clip.W <= 0.000001f)
+        {
+            flags |= 1 << 6;
         }
 
         return flags;
@@ -1947,17 +2217,43 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             return;
         }
 
+        // RDP texture rectangles include the lower/right edge only in COPY
+        // mode. One- and two-cycle rectangles exclude those edges so adjacent
+        // atlas cells do not bleed into glyphs and HUD sprites. Treating every
+        // mode as inclusive made Quest draw an extra character column and row
+        // around the loading-screen text.
+        var inclusiveLowerRight = CycleType == 2;
+        var rasterRight = right - (inclusiveLowerRight ? 0 : 1);
+        var rasterBottom = bottom - (inclusiveLowerRight ? 0 : 1);
+        if (rasterRight < left || rasterBottom < top)
+        {
+            return;
+        }
+
         var maximumHeight = Math.Min(
             480,
             Math.Max(
                 1,
                 (N64Memory.RdramSize - (int)_colorImageAddress) /
                 (_colorImageWidth * (_colorImageSize == 2 ? 2 : 4))));
-        var firstX = Math.Clamp(left, 0, _colorImageWidth - 1);
-        var lastX = Math.Clamp(right, 0, _colorImageWidth - 1);
-        var firstY = Math.Clamp(top, 0, maximumHeight - 1);
-        var lastY = Math.Clamp(bottom, 0, maximumHeight - 1);
-        var textureState = CreateTextureSampleState(tileIndex);
+        // Texture rectangles pass through the same RDP scissor as triangles.
+        // Quest 64 keeps HUD work outside its visible eight-pixel border; if
+        // those rectangles ignore G_SETSCISSOR, stale copies of the HP/MP UI
+        // leak down the left edge of the presented framebuffer.
+        var firstX = Math.Clamp(Math.Max(left, _scissorLeft), 0, _colorImageWidth - 1);
+        var lastX = Math.Clamp(Math.Min(rasterRight, _scissorRight - 1), 0, _colorImageWidth - 1);
+        var firstY = Math.Clamp(Math.Max(top, _scissorTop), 0, maximumHeight - 1);
+        var lastY = Math.Clamp(Math.Min(rasterBottom, _scissorBottom - 1), 0, maximumHeight - 1);
+        if (lastX < firstX || lastY < firstY)
+        {
+            return;
+        }
+        var sampleTexel0 = CycleType == 2 || _combinerUsesTexel0 || !_combinerConfigured;
+        var sampleTexel1 = _combinerUsesTexel1 && HasTextureForTile((tileIndex + 1) & 7);
+        var textureState0 = CreateTextureSampleState(tileIndex);
+        var textureState1 = sampleTexel1
+            ? CreateTextureSampleState((tileIndex + 1) & 7)
+            : default;
         for (var y = firstY; y <= lastY; y++)
         {
             for (var x = firstX; x <= lastX; x++)
@@ -1967,16 +2263,32 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 var textureCoordinate = flip
                     ? new Vector2(startS + (deltaY * stepS), startT + (deltaX * stepT))
                     : new Vector2(startS + (deltaX * stepS), startT + (deltaY * stepT));
-                var color = SampleTexture(textureCoordinate, textureState);
-                if (color.W <= 0)
+                var texel0 = sampleTexel0
+                    ? SampleTexture(textureCoordinate, textureState0)
+                    : Vector4.Zero;
+                var texel1 = sampleTexel1
+                    ? SampleTexture(textureCoordinate, textureState1)
+                    : Vector4.Zero;
+                if (sampleTexel1)
                 {
-                    continue;
+                    SecondaryTexturePixelsSampled++;
+                }
+                var shade = Vector4.One;
+                // COPY mode moves texels straight to the framebuffer with the
+                // colour combiner bypassed, so a combiner left configured by
+                // earlier geometry must not tint the copy.
+                Vector4 output;
+                if (CycleType == 2)
+                {
+                    output = texel0;
+                }
+                else
+                {
+                    output = _combinerConfigured
+                        ? EvaluateCombiner(shade, texel0, texel1)
+                        : texel0 * _primitiveColor;
                 }
 
-                var shade = Vector4.One;
-                var output = _combinerConfigured
-                    ? EvaluateCombiner(shade, color)
-                    : color * _primitiveColor;
                 WriteColorPixel(x, y, output, shade);
                 TexturedPixelsDrawn++;
             }
@@ -1989,14 +2301,22 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     {
         var tileIndex = Math.Clamp(selectedTile, 0, _tiles.Length - 1);
         var tile = _tiles[tileIndex];
-        var width = Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1);
-        var height = Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1);
+        var clampWidth = Math.Max(1, ((tile.LowerRightS - tile.UpperLeftS) >> 2) + 1);
+        var clampHeight = Math.Max(1, ((tile.LowerRightT - tile.UpperLeftT) >> 2) + 1);
+        // SL/TL/SH/TH define the sampling limits only when an axis clamps. A
+        // wrapped axis is instead bounded by its mask's power-of-two period.
+        // Using SetTileSize as an unconditional extent collapsed wrapped HUD
+        // atlases onto their final texel; Quest 64's rotating compass letters
+        // consequently appeared as jagged white/black fragments around the
+        // otherwise-correct compass face.
+        var width = ResolveTextureSampleDimension(clampWidth, tile.MaskS, tile.ClampS);
+        var height = ResolveTextureSampleDimension(clampHeight, tile.MaskT, tile.ClampT);
         var bitsPerTexel = BitsPerTexel(tile.Size);
         var rowStrideBits = tile.Line > 0
             ? tile.Line * 64
             : width * bitsPerTexel;
         RecordSampledTextureFormatSupport(tile.Format, tile.Size);
-        return new TextureSampleState(
+        var state = new TextureSampleState(
             tile.Format,
             tile.Size,
             tile.Palette,
@@ -2012,10 +2332,77 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             tile.ShiftT,
             tile.MaskS,
             tile.MaskT,
+            CycleType == 2 ? 0 : (int)((_otherModeHigh >> 12) & 3),
             tile.ClampS,
             tile.ClampT,
             tile.MirrorS,
-            tile.MirrorT);
+            tile.MirrorT,
+            null);
+
+        // Filtering samples the same TMEM texel up to four times for every
+        // output pixel. Decode a reasonably sized tile once per TMEM load so
+        // the hot raster loop only performs addressing and array lookups.
+        // Point-filtered textures retain the cheaper on-demand path.
+        var texelCount = (long)width * height;
+        if (state.FilterMode is 2 or 3 &&
+            texelCount is > 0 and <= MaximumCachedTextureTexels)
+        {
+            state = state with { DecodedTexels = GetDecodedTexture(state, (int)texelCount) };
+        }
+
+        return state;
+    }
+
+    private Vector4[] GetDecodedTexture(
+        in TextureSampleState state,
+        int texelCount)
+    {
+        var key = new TextureDecodeCacheKey(
+            state.Format,
+            state.Size,
+            state.Palette,
+            state.Width,
+            state.Height,
+            state.BitsPerTexel,
+            state.RowStrideBits,
+            state.BaseBitOffset,
+            state.UpperLeftRow,
+            (int)((_otherModeHigh >> 14) & 3));
+        if (_decodedTextureCache.TryGetValue(key, out var decoded))
+        {
+            FilteredTextureCacheHits++;
+            return decoded;
+        }
+
+        FilteredTextureCacheMisses++;
+        if (_decodedTextureCache.Count >= MaximumDecodedTextureCacheEntries)
+        {
+            InvalidateDecodedTextureCache();
+        }
+
+        decoded = System.Buffers.ArrayPool<Vector4>.Shared.Rent(texelCount);
+        for (var y = 0; y < state.Height; y++)
+        {
+            var rowOffset = y * state.Width;
+            for (var x = 0; x < state.Width; x++)
+            {
+                decoded[rowOffset + x] = DecodeTexturePoint(x, y, state);
+            }
+        }
+
+        FilteredTextureTexelsDecoded += texelCount;
+        _decodedTextureCache[key] = decoded;
+        return decoded;
+    }
+
+    private void InvalidateDecodedTextureCache()
+    {
+        foreach (var decoded in _decodedTextureCache.Values)
+        {
+            System.Buffers.ArrayPool<Vector4>.Shared.Return(decoded);
+        }
+
+        _decodedTextureCache.Clear();
     }
 
     private Vector4 SampleTexture(
@@ -2024,18 +2411,85 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     {
         var s = ApplyTextureShift(textureCoordinate.X - state.UpperLeftS, state.ShiftS);
         var t = ApplyTextureShift(textureCoordinate.Y - state.UpperLeftT, state.ShiftT);
+        var baseX = (int)MathF.Floor(s);
+        var baseY = (int)MathF.Floor(t);
+
+        // G_TF_BILERP is named after bilinear filtering in libultra, but the
+        // RDP implements a three-sample triangular filter. Which diagonal of
+        // the texel quad is used depends on the sum of the fractional S/T
+        // coordinates. This is the characteristic smoothing visible on N64
+        // skyboxes and other magnified low-resolution textures.
+        if (state.FilterMode == 2)
+        {
+            var fractionS = s - baseX;
+            var fractionT = t - baseY;
+            var topLeft = SampleTexturePoint(baseX, baseY, state);
+            if (fractionS + fractionT <= 1f)
+            {
+                return InterpolateThreePoint(
+                    topLeft,
+                    SampleTexturePoint(baseX + 1, baseY, state),
+                    SampleTexturePoint(baseX, baseY + 1, state),
+                    default,
+                    fractionS,
+                    fractionT);
+            }
+
+            return InterpolateThreePoint(
+                topLeft,
+                SampleTexturePoint(baseX + 1, baseY, state),
+                SampleTexturePoint(baseX, baseY + 1, state),
+                SampleTexturePoint(baseX + 1, baseY + 1, state),
+                fractionS,
+                fractionT);
+        }
+
+        // G_TF_AVERAGE is a box average of the enclosing 2x2 texels. It is
+        // uncommon in games, but honoring it prevents the mode from silently
+        // falling back to point sampling.
+        if (state.FilterMode == 3)
+        {
+            return (
+                SampleTexturePoint(baseX, baseY, state) +
+                SampleTexturePoint(baseX + 1, baseY, state) +
+                SampleTexturePoint(baseX, baseY + 1, state) +
+                SampleTexturePoint(baseX + 1, baseY + 1, state)) * 0.25f;
+        }
+
+        return SampleTexturePoint(baseX, baseY, state);
+    }
+
+    private Vector4 SampleTexturePoint(
+        int sourceX,
+        int sourceY,
+        in TextureSampleState state)
+    {
         var x = ApplyTextureAddressing(
-            (int)MathF.Floor(s),
+            sourceX,
             state.Width,
             state.MaskS,
             state.ClampS,
             state.MirrorS);
         var y = ApplyTextureAddressing(
-            (int)MathF.Floor(t),
+            sourceY,
             state.Height,
             state.MaskT,
             state.ClampT,
             state.MirrorT);
+
+        if (state.DecodedTexels is { } decoded)
+        {
+            return decoded[(y * state.Width) + x];
+        }
+
+        return DecodeTexturePoint(x, y, state);
+    }
+
+    private Vector4 DecodeTexturePoint(
+        int x,
+        int y,
+        in TextureSampleState state)
+    {
         var bitOffset =
             state.BaseBitOffset +
             (y * state.RowStrideBits) +
@@ -2046,8 +2500,13 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         }
         return (state.Format, state.Size) switch
         {
+            // The RDP does define the otherwise unusual RGBA4/RGBA8 sample
+            // paths. Each stored component is replicated into R, G, B, and A;
+            // treating RGBA8 as unsupported made GoldenEye's masks solid white.
+            (0, 0) => DecodeRgba4(ReadTmemByte(bitOffset >> 3), x),
+            (0, 1) => DecodeRgba8(ReadTmemByte(bitOffset >> 3)),
             (0, 2) => DecodeRgba16(ReadTmemUInt16(bitOffset >> 3)),
-            (0, 3) => DecodeRgba32(ReadTmemUInt32(bitOffset >> 3)),
+            (0, 3) => DecodeRgba32Tmem(x, y, state),
             (2, 0) => DecodePaletteTexel(
                 state.Palette * 16 +
                 ((x & 1) == 0
@@ -2065,6 +2524,51 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             (4, 1) => DecodeIntensity8(ReadTmemByte(bitOffset >> 3)),
             _ => Vector4.One
         };
+    }
+
+    private Vector4 DecodeRgba32Tmem(
+        int x,
+        int y,
+        in TextureSampleState state)
+    {
+        // For RGBA32, Line is the byte stride of each 16-bit TMEM bank rather
+        // than the combined four-byte texel stream. Address R/G in the lower
+        // bank and B/A at the same halfword in the upper bank.
+        var lowerAddress =
+            (state.BaseBitOffset >> 3) +
+            (y * (state.RowStrideBits >> 3)) +
+            (x * 2);
+        lowerAddress &= 0x7FF;
+        if (((state.UpperLeftRow + y) & 1) != 0)
+        {
+            lowerAddress ^= 4;
+        }
+
+        var redGreen = ReadTmemUInt16(lowerAddress);
+        var blueAlpha = ReadTmemUInt16(lowerAddress | 0x800);
+        return DecodeRgba32(((uint)redGreen << 16) | blueAlpha);
+    }
+
+    internal static Vector4 InterpolateThreePoint(
+        Vector4 topLeft,
+        Vector4 topRight,
+        Vector4 bottomLeft,
+        Vector4 bottomRight,
+        float fractionS,
+        float fractionT)
+    {
+        fractionS = Math.Clamp(fractionS, 0f, 1f);
+        fractionT = Math.Clamp(fractionT, 0f, 1f);
+        if (fractionS + fractionT <= 1f)
+        {
+            return topLeft +
+                   ((topRight - topLeft) * fractionS) +
+                   ((bottomLeft - topLeft) * fractionT);
+        }
+
+        return bottomRight +
+               ((bottomLeft - bottomRight) * (1f - fractionS)) +
+               ((topRight - bottomRight) * (1f - fractionT));
     }
 
     /// <summary>
@@ -2096,7 +2600,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     {
         var supported = (format, size) switch
         {
-            (0, 2) or (0, 3) or (2, 0) or (2, 1) => true,
+            (0, 0) or (0, 1) or (0, 2) or (0, 3) or (2, 0) or (2, 1) => true,
             (3, 0) or (3, 1) or (3, 2) or (4, 0) or (4, 1) => true,
             _ => false
         };
@@ -2120,6 +2624,22 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         int AlphaC,
         int AlphaD);
 
+    private static bool CombinerCycleUsesTexel(CombinerCycle cycle, int texel)
+    {
+        var colourSource = texel + 1;
+        var colourAlphaSource = texel + 8;
+        return
+            cycle.ColourA == colourSource ||
+            cycle.ColourB == colourSource ||
+            cycle.ColourC == colourSource ||
+            cycle.ColourC == colourAlphaSource ||
+            cycle.ColourD == colourSource ||
+            cycle.AlphaA == colourSource ||
+            cycle.AlphaB == colourSource ||
+            cycle.AlphaC == colourSource ||
+            cycle.AlphaD == colourSource;
+    }
+
     private void DecodeCombiner(uint word0, uint word1)
     {
         _combinerCycle0 = new CombinerCycle(
@@ -2142,6 +2662,23 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             (int)(word1 & 0x7));
         _combinerUsesTexture = CombineUsesTexture(word0, word1);
         _combinerConfigured = true;
+        UpdateCombinerTextureUsage();
+    }
+
+    private void UpdateCombinerTextureUsage()
+    {
+        if (!_combinerConfigured)
+        {
+            return;
+        }
+
+        var usesSecondCycle = CycleType == 1;
+        _combinerUsesTexel0 = CombinerCycleUsesTexel(_combinerCycle0, texel: 0) ||
+                              (usesSecondCycle &&
+                               CombinerCycleUsesTexel(_combinerCycle1, texel: 0));
+        _combinerUsesTexel1 = CombinerCycleUsesTexel(_combinerCycle0, texel: 1) ||
+                              (usesSecondCycle &&
+                               CombinerCycleUsesTexel(_combinerCycle1, texel: 1));
     }
 
     /// <summary>
@@ -2149,12 +2686,25 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     /// (A - B) * C + D independently for colour and alpha. In two-cycle mode
     /// the first cycle's result feeds the second as the COMBINED source.
     /// </summary>
-    private Vector4 EvaluateCombiner(Vector4 shade, Vector4 texel)
+    private Vector4 EvaluateCombiner(
+        Vector4 shade,
+        Vector4 texel0,
+        Vector4 texel1)
     {
-        var combined = EvaluateCombinerCycle(_combinerCycle0, shade, texel, Vector4.Zero);
+        var combined = EvaluateCombinerCycle(
+            _combinerCycle0,
+            shade,
+            texel0,
+            texel1,
+            Vector4.Zero);
         if (CycleType == 1)
         {
-            combined = EvaluateCombinerCycle(_combinerCycle1, shade, texel, combined);
+            combined = EvaluateCombinerCycle(
+                _combinerCycle1,
+                shade,
+                texel0,
+                texel1,
+                combined);
         }
 
         return Vector4.Clamp(combined, Vector4.Zero, Vector4.One);
@@ -2163,54 +2713,173 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private Vector4 EvaluateCombinerCycle(
         CombinerCycle cycle,
         Vector4 shade,
-        Vector4 texel,
+        Vector4 texel0,
+        Vector4 texel1,
         Vector4 combined)
     {
         // Fold the alpha selectors into the W lane so the cycle evaluates as
         // one vector expression rather than three scalar lanes plus a scalar
         // alpha; this runs for every textured pixel.
-        var a = WithAlpha(CombinerColour(cycle.ColourA, shade, texel, combined), cycle.AlphaA, shade, texel, combined);
-        var b = WithAlpha(CombinerColour(cycle.ColourB, shade, texel, combined), cycle.AlphaB, shade, texel, combined);
-        var c = WithAlpha(CombinerScale(cycle.ColourC, shade, texel, combined), cycle.AlphaC, shade, texel, combined);
-        var d = WithAlpha(CombinerColour(cycle.ColourD, shade, texel, combined), cycle.AlphaD, shade, texel, combined);
+        var a = ColourSourceA(cycle.ColourA, shade, texel0, texel1, combined) with
+        {
+            W = AlphaSource(cycle.AlphaA, shade, texel0, texel1, combined)
+        };
+        var b = ColourSourceB(cycle.ColourB, shade, texel0, texel1, combined) with
+        {
+            W = AlphaSource(cycle.AlphaB, shade, texel0, texel1, combined)
+        };
+        var c = ColourSourceC(cycle.ColourC, shade, texel0, texel1, combined) with
+        {
+            W = AlphaScaleSource(cycle.AlphaC, shade, texel0, texel1, combined)
+        };
+        var d = ColourSourceD(cycle.ColourD, shade, texel0, texel1, combined) with
+        {
+            W = AlphaSource(cycle.AlphaD, shade, texel0, texel1, combined)
+        };
         return ((a - b) * c) + d;
     }
 
-    private Vector4 WithAlpha(
-        Vector4 colour,
-        int alphaSource,
+    /// <summary>
+    /// Selectors 0-5 are common to every colour mux slot. The slots diverge
+    /// from 6 upward, and each has its own width, so the remaining values are
+    /// decoded per slot rather than from one shared table.
+    /// </summary>
+    private Vector4 CommonColourSource(
+        int source,
         Vector4 shade,
-        Vector4 texel,
+        Vector4 texel0,
+        Vector4 texel1,
         Vector4 combined) =>
-        colour with { W = CombinerColour(alphaSource, shade, texel, combined).W };
-
-    private Vector4 CombinerColour(int source, Vector4 shade, Vector4 texel, Vector4 combined) =>
         source switch
         {
             0 => combined,
-            1 or 2 => texel,
+            1 => texel0,
+            2 => texel1,
             3 => _primitiveColor,
             4 => shade,
-            5 => _environmentColor,
+            _ => _environmentColor
+        };
+
+    /// <summary>Colour A: four bits, 6 = 1, 7 = NOISE, 8-15 = 0.</summary>
+    private Vector4 ColourSourceA(int source, Vector4 shade, Vector4 texel0, Vector4 texel1, Vector4 combined) =>
+        source switch
+        {
+            < 6 => CommonColourSource(source, shade, texel0, texel1, combined),
+            6 => Vector4.One,
+            // NOISE is a per-pixel dither source; games use it for a handful of
+            // effects, and approximating it as black is closer than white.
+            _ => Vector4.Zero
+        };
+
+    /// <summary>Colour B: four bits, 6 = key CENTER, 7 = K4, 8-15 = 0.</summary>
+    private Vector4 ColourSourceB(int source, Vector4 shade, Vector4 texel0, Vector4 texel1, Vector4 combined) =>
+        source switch
+        {
+            < 6 => CommonColourSource(source, shade, texel0, texel1, combined),
+            6 => KeyCenter,
+            7 => new Vector4(ConvertK4),
+            _ => Vector4.Zero
+        };
+
+    /// <summary>
+    /// Colour C: five bits. Beyond the common sources it can select a key
+    /// scale, any alpha channel broadcast across all lanes, a level-of-detail
+    /// fraction, or the K5 conversion coefficient.
+    /// </summary>
+    private Vector4 ColourSourceC(int source, Vector4 shade, Vector4 texel0, Vector4 texel1, Vector4 combined) =>
+        source switch
+        {
+            < 6 => CommonColourSource(source, shade, texel0, texel1, combined),
+            6 => KeyScale,
+            7 => new Vector4(combined.W),
+            8 => new Vector4(texel0.W),
+            9 => new Vector4(texel1.W),
+            10 => new Vector4(_primitiveColor.W),
+            11 => new Vector4(shade.W),
+            12 => new Vector4(_environmentColor.W),
+            13 => new Vector4(LodFraction),
+            14 => new Vector4(_primitiveLodFraction),
+            15 => new Vector4(ConvertK5),
+            _ => Vector4.Zero
+        };
+
+    /// <summary>Colour D: three bits, 6 = 1, 7 = 0.</summary>
+    private Vector4 ColourSourceD(int source, Vector4 shade, Vector4 texel0, Vector4 texel1, Vector4 combined) =>
+        source switch
+        {
+            < 6 => CommonColourSource(source, shade, texel0, texel1, combined),
             6 => Vector4.One,
             _ => Vector4.Zero
         };
 
     /// <summary>
-    /// The C multiplier shares the colour sources but can also select an
-    /// alpha channel, broadcast across all lanes.
+    /// Alpha A, B and D: three bits selecting an alpha channel, then 6 = 1
+    /// and 7 = 0.
     /// </summary>
-    private Vector4 CombinerScale(int source, Vector4 shade, Vector4 texel, Vector4 combined) =>
+    private float AlphaSource(int source, Vector4 shade, Vector4 texel0, Vector4 texel1, Vector4 combined) =>
         source switch
         {
-            < 6 => CombinerColour(source, shade, texel, combined),
-            7 => new Vector4(combined.W),
-            8 or 9 => new Vector4(texel.W),
-            10 => new Vector4(_primitiveColor.W),
-            11 => new Vector4(shade.W),
-            12 => new Vector4(_environmentColor.W),
-            _ => Vector4.Zero
+            0 => combined.W,
+            1 => texel0.W,
+            2 => texel1.W,
+            3 => _primitiveColor.W,
+            4 => shade.W,
+            5 => _environmentColor.W,
+            6 => 1f,
+            _ => 0f
         };
+
+    /// <summary>
+    /// Alpha C uses a different table from the other alpha slots: 0 selects
+    /// the level-of-detail fraction rather than the combined alpha, and 6
+    /// selects the primitive LOD fraction rather than one.
+    /// </summary>
+    private float AlphaScaleSource(int source, Vector4 shade, Vector4 texel0, Vector4 texel1, Vector4 combined) =>
+        source switch
+        {
+            0 => LodFraction,
+            1 => texel0.W,
+            2 => texel1.W,
+            3 => _primitiveColor.W,
+            4 => shade.W,
+            5 => _environmentColor.W,
+            6 => _primitiveLodFraction,
+            _ => 0f
+        };
+
+    /// <summary>
+    /// Mip-mapping is not implemented, so the hardware's per-pixel
+    /// level-of-detail fraction is always the base level.
+    /// </summary>
+    private static float LodFraction => 0f;
+
+    /// <summary>
+    /// Chroma key centre from G_SETKEYR and G_SETKEYGB. Games that never set
+    /// a key leave this at black, which is what the hardware powers up with.
+    /// </summary>
+    private Vector4 KeyCenter => new(
+        ((_keyRedWord1 >> 8) & 0xFF) / 255f,
+        ((_keyGreenBlueWord1 >> 24) & 0xFF) / 255f,
+        ((_keyGreenBlueWord1 >> 8) & 0xFF) / 255f,
+        0f);
+
+    /// <summary>Chroma key scale from G_SETKEYR and G_SETKEYGB.</summary>
+    private Vector4 KeyScale => new(
+        (_keyRedWord1 & 0xFF) / 255f,
+        ((_keyGreenBlueWord1 >> 16) & 0xFF) / 255f,
+        (_keyGreenBlueWord1 & 0xFF) / 255f,
+        0f);
+
+    /// <summary>
+    /// K4 and K5 from G_SETCONVERT are nine-bit signed coefficients packed
+    /// into the low half of the command's second word.
+    /// </summary>
+    private float ConvertK4 => SignExtend9((int)((_convertWord1 >> 9) & 0x1FF)) / 255f;
+
+    private float ConvertK5 => SignExtend9((int)(_convertWord1 & 0x1FF)) / 255f;
+
+    private static int SignExtend9(int value) =>
+        (value & 0x100) != 0 ? value - 0x200 : value;
 
     private Vector4 DecodePaletteTexel(int paletteIndex)
     {
@@ -2279,6 +2948,14 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private static float ApplyTextureShift(float coordinate, int shift) =>
         shift <= 10 ? coordinate / (1 << shift) : coordinate * (1 << (16 - shift));
 
+    internal static int ResolveTextureSampleDimension(
+        int clampDimension,
+        int mask,
+        bool clamp) =>
+        !clamp && mask > 0
+            ? 1 << Math.Clamp(mask, 0, 15)
+            : Math.Max(1, clampDimension);
+
     private static int ApplyTextureAddressing(
         int coordinate,
         int dimension,
@@ -2317,6 +2994,19 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             ((pixel >> 6) & 31) / 31f,
             ((pixel >> 1) & 31) / 31f,
             (pixel & 1) != 0 ? 1 : 0);
+
+    internal static Vector4 DecodeRgba4(byte packed, int x)
+    {
+        var component = (x & 1) == 0 ? packed >> 4 : packed & 0xF;
+        var value = component / 15f;
+        return new Vector4(value);
+    }
+
+    internal static Vector4 DecodeRgba8(byte pixel)
+    {
+        var value = pixel / 255f;
+        return new Vector4(value);
+    }
 
     private static Vector4 DecodeRgba32(uint pixel) =>
         new(
@@ -2374,6 +3064,27 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             return false;
         }
 
+        // CVG_X_ALPHA multiplies raster coverage by the combiner's alpha.
+        // In our single-sample renderer a zero-alpha result therefore has no
+        // coverage and must not modify the framebuffer. Texture-edge modes
+        // rely on this to cut the transparent border out of HUD textures.
+        // Keep this separate from ALPHA_CVG_SEL: the latter can route full
+        // raster coverage to the blender even when vertex alpha is zero.
+        if (!HasRasterCoverage(_otherModeLow, color.W))
+        {
+            AlphaPixelsRejected++;
+            return false;
+        }
+
+        // ALPHA_CVG_SEL routes raster coverage to the blender's alpha input.
+        // Opaque libultra render modes rely on this: lit vertices commonly use
+        // their fourth colour byte for normal data and leave it at zero, while
+        // a fully covered interior pixel must still blend as opaque. When
+        // CVG_X_ALPHA is also enabled, source alpha first scales coverage (the
+        // texture-edge case), so our single-sample coverage approximation keeps
+        // that alpha. Otherwise full coverage resolves to one.
+        color.W = ResolveBlenderAlpha(_otherModeLow, color.W);
+
         // The RDP blender's colour and alpha selectors are encoded in the
         // upper half of other-mode-low. Decode those selectors instead of
         // assuming every translucent mode is a conventional source-alpha
@@ -2385,10 +3096,20 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         if (readsFramebuffer)
         {
             var existing = ReadColorPixel(destination);
-            color = ApplyBlenderCycle(color, existing, shade, cycle: 0);
+            color = ApplyBlenderCycle(
+                color,
+                existing,
+                shade,
+                cycle: 0,
+                preserveInputAlpha: CycleType == 1);
             if (CycleType == 1)
             {
-                color = ApplyBlenderCycle(color, existing, shade, cycle: 1);
+                color = ApplyBlenderCycle(
+                    color,
+                    existing,
+                    shade,
+                    cycle: 1,
+                    preserveInputAlpha: false);
             }
 
             FramebufferPixelsBlended++;
@@ -2422,6 +3143,24 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         return true;
     }
 
+    internal static float ResolveBlenderAlpha(uint otherModeLow, float pixelAlpha)
+    {
+        var clampedAlpha = Math.Clamp(pixelAlpha, 0f, 1f);
+        if ((otherModeLow & AlphaCoverageSelect) == 0)
+        {
+            return clampedAlpha;
+        }
+
+        return (otherModeLow & CoverageTimesAlpha) != 0
+            ? clampedAlpha
+            : 1f;
+    }
+
+    internal static bool HasRasterCoverage(uint otherModeLow, float pixelAlpha)
+    {
+        return (otherModeLow & CoverageTimesAlpha) == 0 || pixelAlpha > 0f;
+    }
+
     private bool PassesAlphaCompare(int x, int y, float alpha)
     {
         return (_otherModeLow & AlphaCompareMask) switch
@@ -2430,7 +3169,10 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             1 => alpha >= _blendColor.W,
             // Hardware uses an alpha dither/noise source. A stable Bayer
             // threshold keeps the coverage pattern deterministic for tests.
-            2 => alpha >= BayerAlphaThreshold(x, y),
+            // G_AC_DITHER is encoded as 3, not 2. Quest uses this mode for
+            // fading spell and dust billboards; treating it as the reserved
+            // value let every transparent texel update the framebuffer.
+            3 => alpha >= BayerAlphaThreshold(x, y),
             _ => true
         };
     }
@@ -2458,7 +3200,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         Vector4 input,
         Vector4 memory,
         Vector4 shade,
-        int cycle)
+        int cycle,
+        bool preserveInputAlpha)
     {
         var pShift = cycle == 0 ? 30 : 28;
         var aShift = cycle == 0 ? 26 : 24;
@@ -2480,8 +3223,17 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
         var rgb = ((new Vector3(p.X, p.Y, p.Z) * a) +
                    (new Vector3(m.X, m.Y, m.Z) * b)) / denominator;
+        // The blender produces RGB. Between the two hardware cycles the
+        // combiner alpha remains available to cycle one, so preserve it for
+        // that intermediate value. The completed framebuffer pixel retains
+        // the existing coverage approximation used by the software backend.
+        // Promoting alpha after cycle zero made Quest's second cycle treat
+        // every transparent shadow/particle texel as opaque.
+        var outputAlpha = preserveInputAlpha
+            ? input.W
+            : Math.Max(input.W, memory.W);
         return Vector4.Clamp(
-            new Vector4(rgb, Math.Max(input.W, memory.W)),
+            new Vector4(rgb, outputAlpha),
             Vector4.Zero,
             Vector4.One);
     }
@@ -2562,9 +3314,18 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             EnsureDepthBuffer(_colorImageWidth, maximumHeight);
         }
 
-        for (var y = Math.Max(0, top); y <= bottom; y++)
+        var firstX = Math.Max(0, Math.Max(left, _scissorLeft));
+        var lastX = Math.Min(right, Math.Min(_colorImageWidth - 1, _scissorRight - 1));
+        var firstY = Math.Max(0, Math.Max(top, _scissorTop));
+        var lastY = Math.Min(bottom, _scissorBottom - 1);
+        if (lastX < firstX || lastY < firstY)
         {
-            for (var x = Math.Max(0, left); x <= right && x < _colorImageWidth; x++)
+            return;
+        }
+
+        for (var y = firstY; y <= lastY; y++)
+        {
+            for (var x = firstX; x <= lastX; x++)
             {
                 var destination =
                     _colorImageAddress + (((uint)y * (uint)_colorImageWidth + (uint)x) * bytesPerPixel);
@@ -2602,7 +3363,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 else
                 {
                     var shade = _primitiveColor;
-                    var color = EvaluateCombiner(shade, Vector4.Zero);
+                    var color = EvaluateCombiner(shade, Vector4.Zero, Vector4.Zero);
                     WriteColorPixel(x, y, color, shade);
                 }
             }
@@ -2670,10 +3431,24 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         int ShiftT,
         int MaskS,
         int MaskT,
+        int FilterMode,
         bool ClampS,
         bool ClampT,
         bool MirrorS,
-        bool MirrorT);
+        bool MirrorT,
+        Vector4[]? DecodedTexels);
+
+    private readonly record struct TextureDecodeCacheKey(
+        int Format,
+        int Size,
+        int Palette,
+        int Width,
+        int Height,
+        int BitsPerTexel,
+        int RowStrideBits,
+        int BaseBitOffset,
+        int UpperLeftRow,
+        int TextureLutMode);
 
     /// <summary>
     /// Records which display-list opcodes a cartridge issues. Cheap enough to
@@ -2690,6 +3465,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     internal enum N64Microcode
     {
         Fast3d,
+        F3dBeta,
         F3dex,
         F3dex2,
         F5Rogue

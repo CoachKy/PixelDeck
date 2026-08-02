@@ -128,7 +128,26 @@ SNES keyboard additions are A/S for X/Y and Q/W for L/R. All eight SNES buttons 
 
 ## Nintendo 64 core status
 
-Pixel64 0.15.020 adds multi-task native framebuffer, depth-buffer, and
+Pixel64 0.16.026 gives wrapped texture axes the full power-of-two span selected
+by their RDP mask instead of incorrectly limiting them to the clamp rectangle.
+This restores the small rotating direction overlay on Quest 64's compass and
+the same wrapped-atlas rule used by other HUD and effect textures. Pixel64
+0.16.025 applies the RDP's mode-dependent texture-rectangle edge rules,
+preventing one- and two-cycle font/HUD sprites from sampling an extra row or
+column from the neighboring atlas cell. Pixel64 0.16.024 corrected the RDP's `G_AC_DITHER` encoding so fading spell,
+dust, and shadow textures apply their alpha masks instead of exposing their
+rectangular billboards. Pixel64 0.16.023 made texture and fill rectangles obey the RDP scissor and
+preserves combiner alpha between two-cycle blender stages. That prevents
+Quest 64's off-screen HUD work from leaking down the left edge and keeps its
+masked shadow and dust billboards from becoming solid black or white quads.
+Pixel64 0.16.022 added the RDP's distinct TEXEL1/tile+1 sampling path for
+two-cycle materials, particle masks, projected shadows, detail textures and
+layered water. It also runs the first two-cycle blender stage even when the
+final framebuffer blend is disabled, matching the hardware pipeline used by
+opaque fog and detail passes. Pixel64 0.16.021 corrected the original F3DEX
+vertex-command layout used by
+Quest 64 and Mario Kart 64, and adds the early F3DBETA geometry stream used by
+Shadows of the Empire. Pixel64 0.15.020 added multi-task native framebuffer, depth-buffer, and
 hidden-coverage validation to the compiled-renderer integration boundary in
 PixelDeck's in-repository Nintendo 64 core. A pinned, MIT-licensed
 paraLLEl-RDP standalone revision now sits behind a small versioned C ABI. The

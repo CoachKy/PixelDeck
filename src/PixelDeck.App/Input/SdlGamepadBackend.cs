@@ -75,6 +75,30 @@ internal sealed class SdlGamepadBackend : IGamepadBackend
         return ReadState(userIndex).Buttons;
     }
 
+    public void SetRumble(int userIndex, bool active)
+    {
+        lock (_sync)
+        {
+            if (_disposed || userIndex is < 0 or >= GamepadManager.MaximumControllers)
+            {
+                return;
+            }
+
+            var gamepad = _slots[userIndex];
+            if (gamepad is null)
+            {
+                return;
+            }
+
+            // The Rumble Pak motor has no intensity control, so both actuators
+            // run flat out. The duration outlasts any single frame because the
+            // game holds the motor on until it writes zero, and stopping is an
+            // explicit zero-strength call rather than an expiry.
+            var strength = active ? ushort.MaxValue : (ushort)0;
+            SDL.RumbleGamepad(gamepad.Handle, strength, strength, active ? 60_000u : 0u);
+        }
+    }
+
     public GamepadState ReadState(int userIndex)
     {
         lock (_sync)

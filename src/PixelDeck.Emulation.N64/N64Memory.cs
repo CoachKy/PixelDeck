@@ -17,6 +17,7 @@ public sealed class N64Memory
     /// address falls outside anything the cartridge actually provides.
     /// </summary>
     public const int SramSize = 32 * 1024;
+    public const int ControllerPakSize = 32 * 1024;
     public const int NtscCpuTicksPerField = 781_250;
     public const int PalCpuTicksPerField = 937_500;
     public const int CpuTicksPerSecond = 46_875_000;
@@ -35,6 +36,9 @@ public sealed class N64Memory
     // roughly sevenfold and it never reaches gameplay. Until that interaction is understood the
     // default stays permissive, and SetControllerConnected is opt-in.
     private readonly bool[] _controllerConnected = [true, true, true, true];
+    // Most currently profiled games use a Rumble Pak. Titles whose cartridge
+    // profile requires a Controller Pak get real storage in port one instead.
+    private readonly bool[] _rumbleMotorActive = new bool[4];
     private readonly N64TlbEntry[] _tlb = new N64TlbEntry[32];
     private byte _tlbAsid;
     private uint _spMemoryAddress;
@@ -81,13 +85,21 @@ public sealed class N64Memory
     private int _audioReadPosition;
     private int _audioWritePosition;
     private int _audioBufferedValues;
+    private double _audioResamplePosition;
+    private float _audioPreviousLeft;
+    private float _audioPreviousRight;
+    private bool _audioHasPreviousFrame;
 
     public N64Memory(N64Cartridge cartridge)
     {
         _cartridge = cartridge;
-        Eeprom = new byte[cartridge.SaveType == N64SaveType.Eeprom16Kbit
-            ? 2 * 1024
-            : 512];
+        Eeprom = cartridge.SaveType switch
+        {
+            N64SaveType.Eeprom16Kbit => new byte[2 * 1024],
+            N64SaveType.Eeprom4Kbit => new byte[512],
+            _ => []
+        };
+        FormatControllerPak(ControllerPak);
         CpuTicksPerField = cartridge.VideoRegion == N64VideoRegion.Ntsc
             ? NtscCpuTicksPerField
             : PalCpuTicksPerField;
@@ -119,6 +131,14 @@ public sealed class N64Memory
     public bool SramDirty { get; private set; }
 
     /// <summary>
+    /// The 32 KiB Controller Pak installed in port one for games whose
+    /// cartridge profile requests it.
+    /// </summary>
+    public byte[] ControllerPak { get; } = new byte[ControllerPakSize];
+
+    public bool ControllerPakDirty { get; private set; }
+
+    /// <summary>
     /// IPL2 leaves this short routine in RSP IMEM for the x105 IPL3. Games
     /// using CIC-6105 call it while authenticating their boot code; zero-filled
     /// IMEM lets execution reach the cartridge but leaves its handshake word
@@ -146,6 +166,22 @@ public sealed class N64Memory
     }
 
     public void MarkSramFlushed() => SramDirty = false;
+
+    public void MarkControllerPakFlushed() => ControllerPakDirty = false;
+
+    public void LoadControllerPak(ReadOnlySpan<byte> data)
+    {
+        if (data.Length == ControllerPakSize)
+        {
+            data.CopyTo(ControllerPak);
+        }
+        else
+        {
+            FormatControllerPak(ControllerPak);
+        }
+
+        ControllerPakDirty = false;
+    }
 
     public void LoadSram(ReadOnlySpan<byte> data)
     {
@@ -187,11 +223,11 @@ public sealed class N64Memory
     public uint ViYScale => _viYScale;
 
     /// <summary>
-    /// The live output size derived from the video interface: VI_WIDTH is the
-    /// frame-buffer stride and the visible height is the active scan window
-    /// scaled by VI_Y_SCALE. Verified against four commercial cartridges —
-    /// Super Mario 64, Quest 64, and Ocarina of Time program 320 wide while
-    /// GoldenEye 007 programs 440.
+    /// The live output size derived from the video interface: each axis is the
+    /// active scan window scaled by VI_X_SCALE or VI_Y_SCALE. This is the
+    /// visible image, which is not the same as VI_WIDTH — that register is the
+    /// frame-buffer stride, and cartridges such as GoldenEye 007 program it
+    /// wider (440) than the image they actually display.
     /// </summary>
     public int VideoWidth { get; private set; } = 320;
 
@@ -199,22 +235,47 @@ public sealed class N64Memory
 
     private void UpdateVideoResolution()
     {
-        var verticalStart = (int)((_viVerticalVideo >> 16) & 0x3FF);
-        var verticalEnd = (int)(_viVerticalVideo & 0x3FF);
-        var verticalScale = (int)(_viYScale & 0xFFF);
-        var width = (int)_viWidth;
-        if (width <= 0 || verticalEnd <= verticalStart || verticalScale <= 0)
+        // Both axes are the active scan window scaled into frame-buffer space:
+        // the scale registers are 2.10 fixed-point source pixels per output
+        // pixel, and the vertical window is measured in half-lines. VI_WIDTH is
+        // deliberately not read here — it is the frame-buffer stride, which a
+        // cartridge may program wider than the image it displays.
+        //
+        // The axes are resolved independently because a cartridge programs the
+        // registers one at a time; holding the last valid size for whichever
+        // half is still unprogrammed keeps the image from collapsing mid-setup.
+        if (_viWidth == 0)
         {
-            // The cartridge has not finished programming the video interface;
-            // keep the last valid size rather than collapsing the image.
+            // A zero stride means no frame buffer has been allocated yet, so
+            // the scan window is not describing anything presentable. Sizing
+            // from it here would show whatever RDRAM is under the origin.
             return;
         }
 
-        VideoWidth = Math.Clamp(width, 1, MaximumVideoWidth);
-        VideoHeight = Math.Clamp(
-            (verticalEnd - verticalStart) / 2 * verticalScale / 1024,
-            1,
-            MaximumVideoHeight);
+        var horizontalStart = (int)((_viHorizontalVideo >> 16) & 0x3FF);
+        var horizontalEnd = (int)(_viHorizontalVideo & 0x3FF);
+        var horizontalScale = (int)(_viXScale & 0xFFF);
+        if (horizontalEnd > horizontalStart && horizontalScale > 0)
+        {
+            // The scan window can resolve to slightly more source pixels than
+            // the buffer holds once the scale rounds, and nothing can display
+            // more columns than were allocated, so the stride is the ceiling.
+            VideoWidth = Math.Clamp(
+                (horizontalEnd - horizontalStart) * horizontalScale / 1024,
+                1,
+                Math.Min((int)_viWidth, MaximumVideoWidth));
+        }
+
+        var verticalStart = (int)((_viVerticalVideo >> 16) & 0x3FF);
+        var verticalEnd = (int)(_viVerticalVideo & 0x3FF);
+        var verticalScale = (int)(_viYScale & 0xFFF);
+        if (verticalEnd > verticalStart && verticalScale > 0)
+        {
+            VideoHeight = Math.Clamp(
+                (verticalEnd - verticalStart) / 2 * verticalScale / 1024,
+                1,
+                MaximumVideoHeight);
+        }
     }
 
     public uint SpStatus => _spStatus;
@@ -242,6 +303,13 @@ public sealed class N64Memory
     public long ControllerStatusQueries { get; private set; }
 
     public long ControllerReadCommands { get; private set; }
+
+    /// <summary>
+    /// Fast scheduler signal. The CPU checks this inexpensive flag before
+    /// asking for the full 64-byte task descriptor; most instructions do not
+    /// submit an RSP task.
+    /// </summary>
+    internal bool RspTaskPending => _rspStartRequested;
 
     public uint TranslateVirtualAddress(uint address)
     {
@@ -292,6 +360,44 @@ public sealed class N64Memory
 
         physicalAddress = 0;
         return matchedInvalid ? N64TlbFault.Invalid : N64TlbFault.Refill;
+    }
+
+    /// <summary>
+    /// Fetches the overwhelmingly common KSEG0/KSEG1 instruction directly
+    /// from RDRAM. This keeps full TLB and physical-bus behavior for every
+    /// other address while avoiding two general memory-map walks per opcode.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal N64TlbFault FetchInstruction(uint virtualAddress, out uint instruction)
+    {
+        uint physicalAddress;
+        N64TlbFault fault;
+        if (virtualAddress - 0x80000000u <= 0x3FFFFFFFu)
+        {
+            physicalAddress = virtualAddress & 0x1FFFFFFFu;
+            fault = N64TlbFault.None;
+        }
+        else
+        {
+            fault = TranslateCpuAddress(virtualAddress, out physicalAddress);
+        }
+
+        if (fault != N64TlbFault.None)
+        {
+            instruction = 0;
+            return fault;
+        }
+
+        if (physicalAddress <= RdramSize - sizeof(uint))
+        {
+            var offset = (int)physicalAddress;
+            instruction = BinaryPrimitives.ReadUInt32BigEndian(
+                Rdram.AsSpan(offset, sizeof(uint)));
+            return N64TlbFault.None;
+        }
+
+        instruction = ReadUInt32Physical(physicalAddress);
+        return N64TlbFault.None;
     }
 
     internal void WriteTlbEntry(
@@ -525,7 +631,141 @@ public sealed class N64Memory
         UpdateViCurrent();
     }
 
+    /// <summary>
+    /// Single-instruction clock path used by the interpreter. It is equivalent
+    /// to <c>AdvanceCpuTicks(1)</c>, but avoids the general multi-tick loops and
+    /// immutable DMA copies on every one of the 46.875 million host calls made
+    /// per emulated NTSC second.
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool AdvanceCpuTick()
+    {
+        var rdramChanged = false;
+        if (_aiCurrent.Active)
+        {
+            _aiCurrent.RemainingTicks--;
+            if (_aiCurrent.RemainingTicks == 0)
+            {
+                _aiCurrent = _aiQueued;
+                _aiQueued = default;
+                AudioDmasCompleted++;
+                MiInterrupt |= 1u << 2;
+            }
+        }
+
+        if (_siDmaDirection != 0 && --_siDmaTicksRemaining <= 0)
+        {
+            var direction = _siDmaDirection;
+            _siDmaDirection = 0;
+            _siDmaTicksRemaining = 0;
+            if (direction == 1)
+            {
+                CopyPifRamToRdram();
+                rdramChanged = true;
+            }
+            else
+            {
+                CopyRdramToPifRam();
+            }
+        }
+
+        _viTicksInField++;
+        if (_viTicksInField >= CpuTicksPerField)
+        {
+            _viTicksInField -= CpuTicksPerField;
+            _viField ^= (_viControl >> 6) & 1;
+            _viLastInterruptLine = uint.MaxValue;
+            _viNextLineChangeTick = 0;
+        }
+
+        if (_viTicksInField >= _viNextLineChangeTick)
+        {
+            UpdateViCurrent();
+        }
+
+        return rdramChanged;
+    }
+
+    /// <summary>
+    /// Validates cached straight-line code against RDRAM in one direct pass.
+    /// Pixel64 does not assume code is immutable: games may generate or patch
+    /// executable instructions at runtime.
+    /// </summary>
+    internal bool MatchesRdramInstructions(
+        uint virtualAddress,
+        ReadOnlySpan<uint> instructions)
+    {
+        if (virtualAddress - 0x80000000u > 0x3FFFFFFFu)
+        {
+            return false;
+        }
+
+        var physicalAddress = virtualAddress & 0x1FFFFFFFu;
+        var byteCount = checked((uint)instructions.Length * sizeof(uint));
+        if ((ulong)physicalAddress + byteCount > RdramSize)
+        {
+            return false;
+        }
+
+        var source = Rdram.AsSpan((int)physicalAddress, (int)byteCount);
+        for (var index = 0; index < instructions.Length; index++)
+        {
+            if (BinaryPrimitives.ReadUInt32BigEndian(
+                    source.Slice(index * sizeof(uint), sizeof(uint))) != instructions[index])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     public bool CpuInterruptPending => (MiInterrupt & MiInterruptMask) != 0;
+
+    /// <summary>
+    /// Returns the number of CPU ticks until the next asynchronous device
+    /// transition. Bulk CPU-idle advancement stops there so DMA completion and
+    /// the VI interrupt are raised at the same emulated instant as the normal
+    /// one-instruction clock path.
+    /// </summary>
+    internal int TicksUntilNextCpuEvent(int maximumTicks)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maximumTicks);
+        var ticks = maximumTicks;
+
+        if (_siDmaDirection != 0 && _siDmaTicksRemaining > 0)
+        {
+            ticks = Math.Min(ticks, _siDmaTicksRemaining);
+        }
+
+        if (_aiCurrent.Active && _aiCurrent.RemainingTicks > 0)
+        {
+            ticks = (int)Math.Min(ticks, _aiCurrent.RemainingTicks);
+        }
+
+        var linesPerField = (_viVerticalSync & 0x3FF) + 1;
+        if (linesPerField <= 1)
+        {
+            linesPerField = _cartridge.VideoRegion == N64VideoRegion.Ntsc ? 525u : 625u;
+        }
+
+        var interruptLine = _viVerticalInterrupt & 0x3FE;
+        if (interruptLine < linesPerField)
+        {
+            var interruptTick =
+                (((long)interruptLine * CpuTicksPerField) + linesPerField - 1) /
+                linesPerField;
+            var untilInterrupt = interruptTick > _viTicksInField
+                ? interruptTick - _viTicksInField
+                : CpuTicksPerField - _viTicksInField + interruptTick;
+            if (untilInterrupt > 0)
+            {
+                ticks = (int)Math.Min(ticks, untilInterrupt);
+            }
+        }
+
+        return ticks;
+    }
 
     public void SetControllerState(int port, N64ControllerState state)
     {
@@ -573,6 +813,22 @@ public sealed class N64Memory
         }
 
         return _controllerConnected[port - 1];
+    }
+
+    /// <summary>
+    /// Whether the game currently has the Rumble Pak motor running in
+    /// <paramref name="port"/>. Games drive this by writing 0x01 or 0x00 to
+    /// pak address 0xC000, and hold it on for as long as the effect lasts
+    /// rather than requesting a duration.
+    /// </summary>
+    public bool IsRumbleMotorActive(int port)
+    {
+        if (port is < 1 or > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(port));
+        }
+
+        return _rumbleMotorActive[port - 1];
     }
 
     public void LoadEeprom(ReadOnlySpan<byte> data)
@@ -715,6 +971,8 @@ public sealed class N64Memory
         writer.Write(EepromDirty);
         writer.Write(Sram);
         writer.Write(SramDirty);
+        writer.Write(ControllerPak);
+        writer.Write(ControllerPakDirty);
         foreach (var controller in _controllers)
         {
             writer.Write((ushort)controller.Buttons);
@@ -723,7 +981,7 @@ public sealed class N64Memory
         }
     }
 
-    internal void LoadState(BinaryReader reader)
+    internal void LoadState(BinaryReader reader, int stateVersion)
     {
         _piDramAddress = reader.ReadUInt32();
         _piCartAddress = reader.ReadUInt32();
@@ -787,6 +1045,18 @@ public sealed class N64Memory
         EepromDirty = reader.ReadBoolean();
         reader.ReadExactly(Sram);
         SramDirty = reader.ReadBoolean();
+        if (stateVersion >= 9)
+        {
+            reader.ReadExactly(ControllerPak);
+            ControllerPakDirty = reader.ReadBoolean();
+        }
+        else
+        {
+            // Version 8 predates Controller Pak storage. Keep the freshly
+            // formatted pak so existing Pixel64 states remain loadable.
+            FormatControllerPak(ControllerPak);
+            ControllerPakDirty = false;
+        }
         for (var index = 0; index < _controllers.Length; index++)
         {
             _controllers[index] = new N64ControllerState(
@@ -1326,7 +1596,9 @@ public sealed class N64Memory
                 {
                     PifRam[responseOffset] = 0x05;
                     PifRam[responseOffset + 1] = 0x00;
-                    PifRam[responseOffset + 2] = 0x00;
+                    // Bit 0 of the status byte is the accessory-present flag.
+                    // Reporting it clear is what makes a game skip rumble.
+                    PifRam[responseOffset + 2] = 0x01;
                 }
 
                 break;
@@ -1352,10 +1624,177 @@ public sealed class N64Memory
                 }
 
                 break;
+            case 0x02:
+                ReadControllerPak(
+                    commandOffset,
+                    transmitLength,
+                    responseOffset,
+                    receiveLength,
+                    receiveDescriptorOffset);
+                break;
+            case 0x03:
+                WriteControllerPak(
+                    channel,
+                    commandOffset,
+                    transmitLength,
+                    responseOffset,
+                    receiveLength,
+                    receiveDescriptorOffset);
+                break;
             default:
                 PifRam[receiveDescriptorOffset] |= 0x80;
                 break;
         }
+    }
+
+    /// <summary>
+    /// Pak reads carry a two-byte address whose low five bits are a check code
+    /// over the upper eleven. A Controller Pak maps 32 KiB below 0x8000; a
+    /// Rumble Pak identifies itself by returning 0x80 from the 0x8000 bank.
+    /// </summary>
+    private void ReadControllerPak(
+        int commandOffset,
+        int transmitLength,
+        int responseOffset,
+        int receiveLength,
+        int receiveDescriptorOffset)
+    {
+        // A transfer this port cannot service still has to be answered. Games
+        // block on the PIF until a response or an error comes back, so
+        // returning silently hangs them outright.
+        if (transmitLength < 3 || receiveLength < 33)
+        {
+            PifRam[receiveDescriptorOffset] |= 0x80;
+            return;
+        }
+
+        var address = (PifRam[commandOffset + 1] << 8) | PifRam[commandOffset + 2];
+        var block = address & 0xFFE0;
+        if (_cartridge.UsesControllerPak && block < ControllerPakSize)
+        {
+            ControllerPak.AsSpan(block, 32).CopyTo(PifRam.AsSpan(responseOffset, 32));
+        }
+        else
+        {
+            var fill = (byte)(
+                !_cartridge.UsesControllerPak && block is >= 0x8000 and < 0x9000
+                    ? 0x80
+                    : 0x00);
+            PifRam.AsSpan(responseOffset, 32).Fill(fill);
+        }
+
+        PifRam[responseOffset + 32] = ControllerPakDataCrc(PifRam.AsSpan(responseOffset, 32));
+    }
+
+    /// <summary>
+    /// Controller Pak writes below 0x8000 update persistent storage. For a
+    /// Rumble Pak, writes to 0xC000 drive the motor.
+    /// </summary>
+    private void WriteControllerPak(
+        int channel,
+        int commandOffset,
+        int transmitLength,
+        int responseOffset,
+        int receiveLength,
+        int receiveDescriptorOffset)
+    {
+        if (transmitLength < 35 || receiveLength < 1)
+        {
+            PifRam[receiveDescriptorOffset] |= 0x80;
+            return;
+        }
+
+        var address = (PifRam[commandOffset + 1] << 8) | PifRam[commandOffset + 2];
+        var block = address & 0xFFE0;
+        var payload = PifRam.AsSpan(commandOffset + 3, 32);
+        if (_cartridge.UsesControllerPak && block < ControllerPakSize)
+        {
+            payload.CopyTo(ControllerPak.AsSpan(block, 32));
+            ControllerPakDirty = true;
+        }
+        else if (!_cartridge.UsesControllerPak && block is >= 0xC000 and < 0xE000)
+        {
+            _rumbleMotorActive[channel] = payload[0] != 0;
+        }
+
+        PifRam[responseOffset] = ControllerPakDataCrc(payload);
+    }
+
+    /// <summary>
+    /// The controller answers every pak transfer with a CRC over the 32-byte
+    /// block, computed one bit at a time against polynomial 0x85 with a final
+    /// zero byte clocked through.
+    /// </summary>
+    private static byte ControllerPakDataCrc(ReadOnlySpan<byte> data)
+    {
+        var crc = 0;
+        for (var index = 0; index <= data.Length; index++)
+        {
+            for (var bit = 7; bit >= 0; bit--)
+            {
+                var xorTerm = (crc & 0x80) != 0 ? 0x85 : 0x00;
+                crc <<= 1;
+                if (index < data.Length && (data[index] & (1 << bit)) != 0)
+                {
+                    crc |= 1;
+                }
+
+                crc ^= xorTerm;
+            }
+        }
+
+        return (byte)crc;
+    }
+
+    /// <summary>
+    /// Creates the filesystem found on a freshly formatted 256-Kbit Controller
+    /// Pak: redundant ID blocks, primary/backup inode tables, and 123 free
+    /// pages. Multi-byte values are stored in the console's big-endian order.
+    /// </summary>
+    private static void FormatControllerPak(Span<byte> pak)
+    {
+        const int pageSize = 256;
+        Span<byte> id = stackalloc byte[32];
+        pak.Clear();
+
+        // A stable Pixel64 serial followed by the standard one-bank device
+        // identity. The final words validate the preceding 28 bytes.
+        ReadOnlySpan<uint> serial = [0x50495845, 0x4C363450, 0x414B0001, 0, 0, 0];
+        for (var index = 0; index < serial.Length; index++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(id[(index * 4)..], serial[index]);
+        }
+
+        BinaryPrimitives.WriteUInt16BigEndian(id[24..], 0x0001);
+        id[26] = 0x01;
+        id[27] = 0x00;
+        ushort sum = 0;
+        for (var offset = 0; offset < 28; offset += 2)
+        {
+            sum = unchecked((ushort)(sum + BinaryPrimitives.ReadUInt16BigEndian(id[offset..])));
+        }
+
+        BinaryPrimitives.WriteUInt16BigEndian(id[28..], sum);
+        BinaryPrimitives.WriteUInt16BigEndian(id[30..], unchecked((ushort)(0xFFF2 - sum)));
+        foreach (var block in new[] { 1, 3, 4, 6 })
+        {
+            id.CopyTo(pak[(block * 32)..]);
+        }
+
+        var inode = pak.Slice(pageSize, pageSize);
+        for (var page = 5; page < 128; page++)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(inode[(page * 2)..], 0x0003);
+        }
+
+        var inodeChecksum = 0;
+        for (var index = 10; index < pageSize; index++)
+        {
+            inodeChecksum += inode[index];
+        }
+
+        inode[1] = (byte)inodeChecksum;
+        inode.CopyTo(pak.Slice(pageSize * 2, pageSize));
     }
 
     private void ProcessEepromCommand(
@@ -1366,6 +1805,12 @@ public sealed class N64Memory
         int receiveDescriptorOffset)
     {
         if (transmitLength == 0)
+        {
+            PifRam[receiveDescriptorOffset] |= 0x80;
+            return;
+        }
+
+        if (_cartridge.SaveType is not (N64SaveType.Eeprom4Kbit or N64SaveType.Eeprom16Kbit))
         {
             PifRam[receiveDescriptorOffset] |= 0x80;
             return;
@@ -1450,22 +1895,83 @@ public sealed class N64Memory
     {
         var offset = (int)(address & RdramMask);
         var values = (int)Math.Min(length, (uint)(RdramSize - offset)) / 2;
+        var frames = values / 2;
+        if (frames == 0)
+        {
+            return;
+        }
+
         lock (_audioLock)
         {
-            for (var index = 0; index < values; index++)
+            // AI_DACRATE selects the cartridge's actual playback clock. The
+            // host stream is fixed at 32 kHz, so copying DMA words verbatim
+            // makes every non-32-kHz title play at the wrong speed and causes
+            // the audio clock to repeatedly drain/rebuffer. Preserve a
+            // fractional source position across DMA boundaries so conversion
+            // never introduces a click at the edge of an audio list.
+            var sourceFramesPerOutputFrame =
+                CurrentAudioSampleRate / (double)N64Machine.AudioSampleRate;
+            var position = _audioResamplePosition;
+            while (position <= frames - 1)
             {
-                if (_audioBufferedValues == _audioRing.Length)
+                var firstFrame = (int)Math.Floor(position);
+                var fraction = (float)(position - firstFrame);
+                if (fraction > 0 && firstFrame + 1 >= frames)
                 {
-                    DroppedAudioSampleCount += values - index;
-                    return;
+                    // Interpolate this final interval when the next DMA makes
+                    // its right-hand sample available.
+                    break;
                 }
 
-                var sample = BinaryPrimitives.ReadInt16BigEndian(Rdram.AsSpan(offset + (index * 2), 2));
-                _audioRing[_audioWritePosition] = sample * (1f / 32768f);
-                _audioWritePosition = (_audioWritePosition + 1) & (_audioRing.Length - 1);
-                _audioBufferedValues++;
+                ReadAudioFrame(offset, frames, firstFrame, out var firstLeft, out var firstRight);
+                var secondFrame = Math.Min(firstFrame + 1, frames - 1);
+                ReadAudioFrame(offset, frames, secondFrame, out var secondLeft, out var secondRight);
+                if (_audioRing.Length - _audioBufferedValues < 2)
+                {
+                    var remainingFrames = Math.Max(
+                        1,
+                        (int)Math.Ceiling((frames - Math.Max(position, 0)) / sourceFramesPerOutputFrame));
+                    DroppedAudioSampleCount += remainingFrames * 2L;
+                    position += remainingFrames * sourceFramesPerOutputFrame;
+                    break;
+                }
+
+                EnqueueAudioValue(firstLeft + ((secondLeft - firstLeft) * fraction));
+                EnqueueAudioValue(firstRight + ((secondRight - firstRight) * fraction));
+                position += sourceFramesPerOutputFrame;
             }
+
+            _audioResamplePosition = position - frames;
+            ReadAudioFrame(offset, frames, frames - 1, out _audioPreviousLeft, out _audioPreviousRight);
+            _audioHasPreviousFrame = true;
         }
+    }
+
+    private void ReadAudioFrame(
+        int byteOffset,
+        int frameCount,
+        int frame,
+        out float left,
+        out float right)
+    {
+        if (frame < 0 && _audioHasPreviousFrame)
+        {
+            left = _audioPreviousLeft;
+            right = _audioPreviousRight;
+            return;
+        }
+
+        var safeFrame = Math.Clamp(frame, 0, frameCount - 1);
+        var sampleOffset = byteOffset + (safeFrame * 4);
+        left = BinaryPrimitives.ReadInt16BigEndian(Rdram.AsSpan(sampleOffset, 2)) * (1f / 32768f);
+        right = BinaryPrimitives.ReadInt16BigEndian(Rdram.AsSpan(sampleOffset + 2, 2)) * (1f / 32768f);
+    }
+
+    private void EnqueueAudioValue(float sample)
+    {
+        _audioRing[_audioWritePosition] = sample;
+        _audioWritePosition = (_audioWritePosition + 1) & (_audioRing.Length - 1);
+        _audioBufferedValues++;
     }
 
     /// <summary>
@@ -1495,6 +2001,10 @@ public sealed class N64Memory
             _audioReadPosition = 0;
             _audioWritePosition = 0;
             _audioBufferedValues = 0;
+            _audioResamplePosition = 0;
+            _audioPreviousLeft = 0;
+            _audioPreviousRight = 0;
+            _audioHasPreviousFrame = false;
         }
     }
 
@@ -1552,10 +2062,7 @@ public sealed class N64Memory
         {
             if (remainingTicks < _aiCurrent.RemainingTicks)
             {
-                _aiCurrent = _aiCurrent with
-                {
-                    RemainingTicks = _aiCurrent.RemainingTicks - remainingTicks
-                };
+                _aiCurrent.RemainingTicks -= remainingTicks;
                 return;
             }
 
@@ -1693,7 +2200,7 @@ internal enum N64TlbLookup
     Valid
 }
 
-internal readonly record struct N64AiDma(
+internal record struct N64AiDma(
     uint Address,
     uint Length,
     long TotalTicks,

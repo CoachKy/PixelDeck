@@ -39,4 +39,6 @@ internal sealed class GamepadReader
     public GamepadButton ReadButtons() => GamepadManager.Shared.ReadButtons(UserIndex);
 
     public GamepadState ReadState() => GamepadManager.Shared.ReadState(UserIndex);
+
+    public void SetRumble(bool active) => GamepadManager.Shared.SetRumble(UserIndex, active);
 }

@@ -186,6 +186,7 @@ public sealed partial class Fast3dRenderer
             case 0xEF: // G_RDPSETOTHERMODE
                 _otherModeHigh = word0 & 0x00FFFFFF;
                 _otherModeLow = word1;
+                UpdateCombinerTextureUsage();
                 break;
             case 0xED: // G_SETSCISSOR
                 _scissorLeft = (int)((word0 >> 12) & 0xFFF) / 4;
@@ -203,6 +204,9 @@ public sealed partial class Fast3dRenderer
                 _blendColor = DecodeRgba32(word1);
                 break;
             case 0xFA: // G_SETPRIMCOLOR
+                // word0 carries the LOD level in bits 15-8 and the LOD
+                // fraction in bits 7-0; the fraction is a combiner source.
+                _primitiveLodFraction = (word0 & 0xFF) / 255f;
                 _primitiveColor = DecodeRgba32(word1);
                 break;
             case 0xE4: // G_TEXRECT

@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
@@ -7,7 +8,8 @@ namespace PixelDeck.Emulation.N64;
 
 public sealed class N64Machine
 {
-    private const int StateVersion = 8;
+    private const int StateVersion = 9;
+    private const int PreviousStateVersion = 8;
     private static readonly byte[] StateMagic = "P64STATE"u8.ToArray();
 
     /// <summary>
@@ -22,6 +24,7 @@ public sealed class N64Machine
     private readonly uint[] _frame = new uint[MaximumWidth * MaximumHeight];
     private readonly byte[] _cartridgeIdentity;
     private readonly string? _savePath;
+    private readonly string? _controllerPakPath;
     private readonly Fast3dRenderer _renderer;
     [SuppressMessage(
         "Performance",
@@ -34,8 +37,11 @@ public sealed class N64Machine
         Justification = "This is the intentional audio-backend boundary for interchangeable RSP audio implementations.")]
     private readonly IN64AudioBackend _audioBackend;
     private readonly N64AudioProcessor _audioProcessor;
-    private bool _executeGraphicsTasks = true;
     private bool _captureNextGraphicsTask;
+    private long _fieldExecutionTicks;
+    private long _graphicsExecutionTicks;
+    private long _audioExecutionTicks;
+    private long _videoInterfaceTicks;
 
     private N64Machine(N64Cartridge cartridge, string? savePath)
     {
@@ -55,6 +61,11 @@ public sealed class N64Machine
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);
         _cartridgeIdentity = SHA256.HashData(cartridge.Rom);
         _savePath = savePath;
+        _controllerPakPath = savePath is null || !cartridge.UsesControllerPak
+            ? null
+            : cartridge.SaveType == N64SaveType.None
+                ? savePath
+                : Path.ChangeExtension(savePath, ".mpk");
         LoadBatterySave();
     }
 
@@ -77,6 +88,10 @@ public sealed class N64Machine
 
     public int Height => Memory.VideoHeight;
 
+    public bool IsVideoOutputActive =>
+        (Memory.ViControl & 3) is 2u or 3u &&
+        HasActiveVideoWindow(Memory.ViHorizontalVideo);
+
     public double FramesPerSecond =>
         Cartridge.VideoRegion == N64VideoRegion.Ntsc ? NtscFramesPerSecond : 50.0;
 
@@ -90,6 +105,19 @@ public sealed class N64Machine
 
     public long AudioTasksSubmitted { get; private set; }
 
+    /// <summary>
+    /// Cumulative host-side timings used to identify which Pixel64 subsystem
+    /// prevents real-time playback. These counters do not affect emulated time.
+    /// </summary>
+    public N64PerformanceSnapshot Performance => new(
+        FrameNumber,
+        GraphicsTasksSubmitted,
+        AudioTasksSubmitted,
+        Stopwatch.GetElapsedTime(0, _fieldExecutionTicks),
+        Stopwatch.GetElapsedTime(0, _graphicsExecutionTicks),
+        Stopwatch.GetElapsedTime(0, _audioExecutionTicks),
+        Stopwatch.GetElapsedTime(0, _videoInterfaceTicks));
+
     public N64RspTask? LastRspTask { get; private set; }
 
     public N64RspTask? LastGraphicsTask { get; private set; }
@@ -101,6 +129,11 @@ public sealed class N64Machine
     public string GraphicsBackendStatus { get; }
 
     public Fast3dRenderer Renderer => _renderer;
+
+    /// <summary>
+    /// Whether the game is driving the Rumble Pak motor in <paramref name="port"/>.
+    /// </summary>
+    public bool IsRumbleMotorActive(int port) => Memory.IsRumbleMotorActive(port);
 
     public N64GraphicsTaskCapture? LastGraphicsCapture { get; private set; }
 
@@ -141,42 +174,52 @@ public sealed class N64Machine
 
     public ReadOnlySpan<uint> RunFrame()
     {
-        return RunFrame(renderGraphics: true, executeGraphicsTasks: true);
-    }
-
-    /// <summary>
-    /// Advances a complete video field. A host that misses its real-time
-    /// deadline may suppress raster work or skip that field's graphics task
-    /// completely while CPU, audio, input, interrupts, and RSP completion
-    /// continue at the cartridge cadence.
-    /// </summary>
-    public ReadOnlySpan<uint> RunFrame(
-        bool renderGraphics,
-        bool executeGraphicsTasks = true)
-    {
-        _graphicsBackend.RasterizationEnabled = renderGraphics;
-        _executeGraphicsTasks = executeGraphicsTasks;
+        var fieldStarted = Stopwatch.GetTimestamp();
         try
         {
             RunInstructions(Memory.CpuTicksPerField);
+            var videoStarted = Stopwatch.GetTimestamp();
             RenderVideoInterface();
+            _videoInterfaceTicks += Stopwatch.GetTimestamp() - videoStarted;
             FrameNumber++;
             return CurrentFrame;
         }
         finally
         {
-            _graphicsBackend.RasterizationEnabled = true;
-            _executeGraphicsTasks = true;
+            _fieldExecutionTicks += Stopwatch.GetTimestamp() - fieldStarted;
         }
     }
 
     public void RunInstructions(int count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        for (var index = 0; index < count; index++)
+        var remaining = count;
+        while (remaining > 0)
         {
-            Cpu.Step();
-            ServiceRspTask();
+            // libultra's idle thread is an unconditional branch-to-self with a
+            // NOP delay slot. Interpreting that pair millions of times per
+            // second needlessly steals host time from the RDP. Advance the
+            // emulated clocks in bulk, but stop at the first device or CP0
+            // timer event so interrupt timing remains observable to software.
+            var idleTicks = Cpu.TrySkipIdleLoop(remaining);
+            if (idleTicks > 0)
+            {
+                remaining -= idleTicks;
+                continue;
+            }
+
+            var executed = Cpu.RunCachedBlock(remaining);
+            if (executed == 0)
+            {
+                Cpu.Step();
+                executed = 1;
+            }
+
+            remaining -= executed;
+            if (Memory.RspTaskPending)
+            {
+                ServiceRspTask();
+            }
             if (Cpu.ProgramCounter == Cartridge.EffectiveEntryPoint &&
                 !ReachedCartridgeEntryPoint)
             {
@@ -263,7 +306,8 @@ public sealed class N64Machine
             throw new InvalidDataException("This is not a Pixel64 save state.");
         }
 
-        if (reader.ReadInt32() != StateVersion)
+        var stateVersion = reader.ReadInt32();
+        if (stateVersion is not (PreviousStateVersion or StateVersion))
         {
             throw new InvalidDataException("This Pixel64 save-state version is not supported.");
         }
@@ -295,7 +339,7 @@ public sealed class N64Machine
         GraphicsTasksSubmitted = payloadReader.ReadInt64();
         AudioTasksSubmitted = payloadReader.ReadInt64();
         Cpu.LoadState(payloadReader);
-        Memory.LoadState(payloadReader);
+        Memory.LoadState(payloadReader, stateVersion);
         _audioBackend.LoadState(payloadReader);
         Memory.ClearAudioSamples();
         for (var index = 0; index < _frame.Length; index++) _frame[index] = payloadReader.ReadUInt32();
@@ -306,85 +350,108 @@ public sealed class N64Machine
     }
 
     /// <summary>
-    /// Writes the battery-backed store the cartridge declares. Only that
-    /// store is written and only it is marked clean, so a dirty buffer for
-    /// the other type can never be silently discarded.
+    /// Writes every persistent store installed for the cartridge. Cartridge
+    /// save hardware and a Controller Pak are independent devices, so titles
+    /// such as Mario Kart 64 can safely persist both in the same session.
     /// </summary>
     public void FlushBatterySave()
     {
-        if (_savePath is null)
+        if (_savePath is not null && Cartridge.SaveType != N64SaveType.None)
         {
-            return;
+            var usesSram = Cartridge.SaveType is N64SaveType.Sram256Kbit or N64SaveType.FlashRam1Mbit;
+            if (usesSram ? Memory.SramDirty : Memory.EepromDirty)
+            {
+                WriteSaveAtomically(_savePath, usesSram ? Memory.Sram : Memory.Eeprom);
+                if (usesSram)
+                {
+                    Memory.MarkSramFlushed();
+                }
+                else
+                {
+                    Memory.MarkEepromFlushed();
+                }
+            }
         }
 
-        var usesSram = Cartridge.SaveType is N64SaveType.Sram256Kbit or N64SaveType.FlashRam1Mbit;
-        if (usesSram ? !Memory.SramDirty : !Memory.EepromDirty)
+        if (_controllerPakPath is not null && Memory.ControllerPakDirty)
         {
-            return;
-        }
-
-        var directory = Path.GetDirectoryName(_savePath);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        var temporaryPath = _savePath + ".tmp";
-        File.WriteAllBytes(temporaryPath, usesSram ? Memory.Sram : Memory.Eeprom);
-        File.Move(temporaryPath, _savePath, overwrite: true);
-        if (usesSram)
-        {
-            Memory.MarkSramFlushed();
-        }
-        else
-        {
-            Memory.MarkEepromFlushed();
+            WriteSaveAtomically(_controllerPakPath, Memory.ControllerPak);
+            Memory.MarkControllerPakFlushed();
         }
     }
 
     private void LoadBatterySave()
     {
-        if (_savePath is null)
+        if (_savePath is not null && Cartridge.SaveType != N64SaveType.None)
         {
-            return;
+            var data = ReadSaveWithRecovery(_savePath);
+            if (data is not null)
+            {
+                if (Cartridge.SaveType is N64SaveType.Sram256Kbit or N64SaveType.FlashRam1Mbit)
+                {
+                    Memory.LoadSram(data);
+                }
+                else
+                {
+                    Memory.LoadEeprom(data);
+                }
+            }
         }
 
-        var candidate = File.Exists(_savePath)
-            ? _savePath
-            : File.Exists(_savePath + ".tmp") ? _savePath + ".tmp" : null;
-        if (candidate is null)
+        if (_controllerPakPath is not null)
         {
-            return;
-        }
-
-        // The cartridge declares its store, so the file is never identified by
-        // length — two save types can legitimately share a size.
-        var data = File.ReadAllBytes(candidate);
-        if (Cartridge.SaveType is N64SaveType.Sram256Kbit or N64SaveType.FlashRam1Mbit)
-        {
-            Memory.LoadSram(data);
-        }
-        else
-        {
-            Memory.LoadEeprom(data);
-        }
-
-        if (!string.Equals(candidate, _savePath, StringComparison.OrdinalIgnoreCase))
-        {
-            File.Move(candidate, _savePath, overwrite: true);
+            var data = ReadSaveWithRecovery(_controllerPakPath);
+            if (data is not null)
+            {
+                Memory.LoadControllerPak(data);
+            }
         }
     }
 
-    private void RenderVideoInterface()
+    private static void WriteSaveAtomically(string path, byte[] data)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var temporaryPath = path + ".tmp";
+        File.WriteAllBytes(temporaryPath, data);
+        File.Move(temporaryPath, path, overwrite: true);
+    }
+
+    private static byte[]? ReadSaveWithRecovery(string path)
+    {
+        var candidate = File.Exists(path)
+            ? path
+            : File.Exists(path + ".tmp") ? path + ".tmp" : null;
+        if (candidate is null)
+        {
+            return null;
+        }
+
+        // The cartridge profile declares the store, so the file is never
+        // identified by length; two save types can legitimately share a size.
+        var data = File.ReadAllBytes(candidate);
+        if (!string.Equals(candidate, path, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Move(candidate, path, overwrite: true);
+        }
+
+        return data;
+    }
+
+    internal void RenderVideoInterface()
     {
         var format = Memory.ViControl & 3;
-        // The VI width register is the frame-buffer stride; games can run
-        // wider than our 320-pixel output (GoldenEye uses 440), in which
-        // case we show the left 320 columns rather than shearing rows.
+        // Rows are addressed by the frame-buffer stride but only the visible
+        // width is presented, so a cartridge that allocates a wider buffer
+        // than it displays (GoldenEye strides 440) reads without shearing.
         var sourceStride = (int)Math.Max(Memory.ViWidth, 1);
         var sourceWidth = Math.Min(sourceStride, Width);
         var origin = Memory.ViOrigin & 0x7FFFFF;
-        if (format is not (2u or 3u))
+        if (!IsVideoOutputActive)
         {
             Array.Fill(_frame, 0xFF000000);
             return;
@@ -415,6 +482,19 @@ public sealed class N64Machine
                     : ConvertRgba8888(Memory.ReadUInt32(origin + (pixelIndex * 4)));
             }
         }
+    }
+
+    /// <summary>
+    /// A zero-width horizontal VI window is hardware blanking, not an
+    /// instruction to keep scanning the last-sized framebuffer. Libultra's
+    /// osViBlack implements transitions by writing H_START to zero while the
+    /// game is free to recycle the hidden framebuffer memory.
+    /// </summary>
+    internal static bool HasActiveVideoWindow(uint horizontalVideo)
+    {
+        var start = (horizontalVideo >> 16) & 0x3FF;
+        var end = horizontalVideo & 0x3FF;
+        return end > start;
     }
 
     private void RenderVideoInterfaceFromRdram(uint format, int sourceStride, int sourceWidth, uint origin)
@@ -478,10 +558,9 @@ public sealed class N64Machine
                     _captureNextGraphicsTask = false;
                 }
 
-                if (_executeGraphicsTasks)
-                {
-                    _graphicsBackend.Execute(task);
-                }
+                var graphicsStarted = Stopwatch.GetTimestamp();
+                _graphicsBackend.Execute(task);
+                _graphicsExecutionTicks += Stopwatch.GetTimestamp() - graphicsStarted;
 
                 Memory.CompleteRspTask();
                 Memory.CompleteDisplayProcessor();
@@ -489,7 +568,9 @@ public sealed class N64Machine
             case 2:
                 AudioTasksSubmitted++;
                 LastAudioTask = task;
+                var audioStarted = Stopwatch.GetTimestamp();
                 _audioBackend.Execute(task);
+                _audioExecutionTicks += Stopwatch.GetTimestamp() - audioStarted;
                 Memory.CompleteRspTask();
                 break;
             default:

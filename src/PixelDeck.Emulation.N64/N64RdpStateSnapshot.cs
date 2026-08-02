@@ -17,6 +17,8 @@ public readonly record struct N64RdpStateSnapshot(
     Vector4 BlendColor,
     bool CombinerConfigured,
     bool CombinerUsesTexture,
+    bool CombinerUsesTexel0,
+    bool CombinerUsesTexel1,
     uint KeyGreenBlueWord0,
     uint KeyGreenBlueWord1,
     uint KeyRedWord1,

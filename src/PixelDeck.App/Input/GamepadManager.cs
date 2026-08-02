@@ -34,6 +34,14 @@ internal sealed class GamepadManager : IDisposable
     public string? GetControllerName(int userIndex) =>
         _disposed ? null : _backend.GetControllerName(userIndex);
 
+    public void SetRumble(int userIndex, bool active)
+    {
+        if (!_disposed)
+        {
+            _backend.SetRumble(userIndex, active);
+        }
+    }
+
     public static void Shutdown()
     {
         if (LazyShared.IsValueCreated)

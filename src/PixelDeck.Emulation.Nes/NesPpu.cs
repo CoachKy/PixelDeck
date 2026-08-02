@@ -109,6 +109,18 @@ internal sealed class NesPpu
 
     public bool NmiRequested { get; private set; }
 
+    /// <summary>
+    /// PPUMASK bits 3-4. A frame that renders nothing looks identical whether
+    /// the game disabled rendering deliberately or the emulator never got the
+    /// write, so this is reported rather than only used internally.
+    /// </summary>
+    public bool IsRenderingEnabled => RenderingEnabled;
+
+    /// <summary>The live PPUCTRL and PPUMASK values.</summary>
+    public byte Control => _control;
+
+    public byte Mask => _mask;
+
     private bool RenderingEnabled => (_mask & 0x18) != 0;
 
     private bool RenderingOamBusActive =>

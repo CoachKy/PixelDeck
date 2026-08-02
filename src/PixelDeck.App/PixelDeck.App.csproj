@@ -21,10 +21,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- The application component's own version: the release number players see. -->
-    <Version>1.28.79</Version>
-    <AssemblyVersion>1.28.79.0</AssemblyVersion>
-    <FileVersion>1.28.79.0</FileVersion>
-    <InformationalVersion>1.28.79</InformationalVersion>
+    <Version>1.29.85</Version>
+    <AssemblyVersion>1.29.85.0</AssemblyVersion>
+    <FileVersion>1.29.85.0</FileVersion>
+    <InformationalVersion>1.29.85</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,6 +1,8 @@
+using System.Runtime.CompilerServices;
+
 namespace PixelDeck.Emulation.N64;
 
-public sealed class Vr4300Cpu
+public sealed partial class Vr4300Cpu
 {
     private const int Cp0Index = 0;
     private const int Cp0Random = 1;
@@ -46,9 +48,32 @@ public sealed class Vr4300Cpu
 
     public long InstructionsExecuted { get; private set; }
 
+    /// <summary>
+    /// Host-side performance diagnostic counting emulated instructions whose
+    /// clocks were advanced in bulk while the CPU was in a side-effect-free
+    /// idle loop. This is intentionally excluded from save states.
+    /// </summary>
+    public long IdleInstructionsSkipped { get; private set; }
+
     public uint LastInstruction { get; private set; }
 
     public int UnsupportedInstructionCount { get; private set; }
+
+    /// <summary>
+    /// Diagnostic exception counters. Interrupts are tracked separately because
+    /// a healthy game raises one for virtually every video field; an increasing
+    /// non-interrupt count is the useful signal when a title stops progressing.
+    /// These host-only counters are deliberately excluded from save states.
+    /// </summary>
+    public long ExceptionsRaised { get; private set; }
+
+    public long InterruptExceptionsRaised { get; private set; }
+
+    public long NonInterruptExceptionsRaised => ExceptionsRaised - InterruptExceptionsRaised;
+
+    public int LastExceptionCode { get; private set; } = -1;
+
+    public uint LastExceptionAddress { get; private set; }
 
     public uint ReadCoprocessor0(int index) => _coprocessor0[index & 31];
 
@@ -92,14 +117,20 @@ public sealed class Vr4300Cpu
 
     public void Reset(N64Cic cic, N64VideoRegion region)
     {
+        ResetCachedBlocks();
         Array.Clear(_registers);
         Array.Clear(_floatingRegisters);
         Array.Clear(_coprocessor0);
         Hi = 0;
         Lo = 0;
         InstructionsExecuted = 0;
+        IdleInstructionsSkipped = 0;
         LastInstruction = 0;
         UnsupportedInstructionCount = 0;
+        ExceptionsRaised = 0;
+        InterruptExceptionsRaised = 0;
+        LastExceptionCode = -1;
+        LastExceptionAddress = 0;
         _nextInstructionIsDelaySlot = false;
         _nextDelaySlotBranchAddress = 0;
         _executingDelaySlot = false;
@@ -137,6 +168,7 @@ public sealed class Vr4300Cpu
         UpdateInterruptLines();
         if (InterruptsEnabled() && !_nextInstructionIsDelaySlot)
         {
+            _hasPrefetchedInstruction = false;
             _executingDelaySlot = false;
             EnterException(0, ProgramCounter);
             InstructionsExecuted++;
@@ -149,7 +181,19 @@ public sealed class Vr4300Cpu
         _executingDelaySlot = _nextInstructionIsDelaySlot;
         _executingDelaySlotBranchAddress = _nextDelaySlotBranchAddress;
         _nextInstructionIsDelaySlot = false;
-        var fetchFault = _memory.TranslateCpuAddress(instructionAddress, out var fetchPhysical);
+        N64TlbFault fetchFault;
+        uint instruction;
+        if (_hasPrefetchedInstruction && _prefetchedInstructionAddress == instructionAddress)
+        {
+            _hasPrefetchedInstruction = false;
+            instruction = _prefetchedInstruction;
+            fetchFault = N64TlbFault.None;
+        }
+        else
+        {
+            _hasPrefetchedInstruction = false;
+            fetchFault = _memory.FetchInstruction(instructionAddress, out instruction);
+        }
         if (fetchFault != N64TlbFault.None)
         {
             EnterTlbException(instructionAddress, isStore: false, fetchFault, instructionAddress);
@@ -159,7 +203,6 @@ public sealed class Vr4300Cpu
             return;
         }
 
-        var instruction = _memory.ReadUInt32Physical(fetchPhysical);
         LastInstruction = instruction;
         ProgramCounter = _nextProgramCounter;
         _nextProgramCounter += 4;
@@ -169,15 +212,34 @@ public sealed class Vr4300Cpu
         var opcode = instruction >> 26;
         var rs = (int)((instruction >> 21) & 31);
         var rt = (int)((instruction >> 16) & 31);
-        var rd = (int)((instruction >> 11) & 31);
-        var shift = (int)((instruction >> 6) & 31);
         var immediate = (ushort)instruction;
         var signedImmediate = (short)immediate;
+
+        // The N64 OS lazily switches floating-point contexts. A thread whose
+        // Status.CU1 bit is clear must trap before *any* COP1 operation,
+        // including floating-point loads and stores, so the exception handler
+        // can save the previous owner and restore this thread's FPRs. Letting
+        // the instruction execute here silently mixes registers across
+        // preempted threads.
+        if (opcode is 0x11 or 0x31 or 0x35 or 0x39 or 0x3D &&
+            !Coprocessor1Usable)
+        {
+            EnterCoprocessorUnusable(1, instructionAddress);
+            _registers[0] = 0;
+            _executingDelaySlot = false;
+            return;
+        }
 
         switch (opcode)
         {
             case 0x00:
-                ExecuteSpecial(instruction, rs, rt, rd, shift, instructionAddress);
+                ExecuteSpecial(
+                    instruction,
+                    rs,
+                    rt,
+                    (int)((instruction >> 11) & 31),
+                    (int)((instruction >> 6) & 31),
+                    instructionAddress);
                 break;
             case 0x01:
                 ExecuteRegImm(rt, rs, signedImmediate, instructionAddress);
@@ -228,10 +290,19 @@ public sealed class Vr4300Cpu
                 WriteRegister(rt, SignExtend32((uint)immediate << 16));
                 break;
             case 0x10:
-                ExecuteCoprocessor0(instruction, rs, rt, rd);
+                ExecuteCoprocessor0(
+                    instruction,
+                    rs,
+                    rt,
+                    (int)((instruction >> 11) & 31));
                 break;
             case 0x11:
-                ExecuteCoprocessor1(instruction, rs, rt, rd, instructionAddress);
+                ExecuteCoprocessor1(
+                    instruction,
+                    rs,
+                    rt,
+                    (int)((instruction >> 11) & 31),
+                    instructionAddress);
                 break;
             case 0x14:
                 BranchLikely(_registers[rs] == _registers[rt], signedImmediate, instructionAddress);
@@ -1008,6 +1079,7 @@ public sealed class Vr4300Cpu
         }));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void BranchIf(bool condition, short immediate, uint instructionAddress)
     {
         MarkDelaySlot(instructionAddress);
@@ -1032,18 +1104,21 @@ public sealed class Vr4300Cpu
         _nextProgramCounter += 4;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void Branch(uint target, uint instructionAddress)
     {
         MarkDelaySlot(instructionAddress);
         _nextProgramCounter = target;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void MarkDelaySlot(uint instructionAddress)
     {
         _nextInstructionIsDelaySlot = true;
         _nextDelaySlotBranchAddress = instructionAddress;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private uint EffectiveAddress(int register, short immediate) =>
         unchecked((uint)(_registers[register] + (ulong)(long)immediate));
 
@@ -1268,7 +1343,16 @@ public sealed class Vr4300Cpu
 
     private void EnterExceptionAt(int code, uint instructionAddress, uint vector)
     {
-        _coprocessor0[Cp0Cause] = (_coprocessor0[Cp0Cause] & ~0x7Cu) | ((uint)code << 2);
+        ExceptionsRaised++;
+        if (code == 0)
+        {
+            InterruptExceptionsRaised++;
+        }
+
+        LastExceptionCode = code;
+        LastExceptionAddress = instructionAddress;
+        _coprocessor0[Cp0Cause] =
+            (_coprocessor0[Cp0Cause] & ~(0x30000000u | 0x7Cu)) | ((uint)code << 2);
         if (_executingDelaySlot)
         {
             _coprocessor0[Cp0Cause] |= 1u << 31;
@@ -1284,6 +1368,12 @@ public sealed class Vr4300Cpu
         ProgramCounter = vector;
         _nextProgramCounter = ProgramCounter + 4;
         _nextInstructionIsDelaySlot = false;
+    }
+
+    private void EnterCoprocessorUnusable(int coprocessor, uint instructionAddress)
+    {
+        EnterException(11, instructionAddress);
+        _coprocessor0[Cp0Cause] |= ((uint)coprocessor & 3u) << 28;
     }
 
     /// <summary>
@@ -1312,7 +1402,28 @@ public sealed class Vr4300Cpu
             useGeneralVector ? 0x80000180u : 0x80000000u);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool TryGetPhysicalAddress(
+        uint virtualAddress,
+        bool isStore,
+        uint instructionAddress,
+        out uint physicalAddress)
+    {
+        if (virtualAddress - 0x80000000u <= 0x3FFFFFFFu)
+        {
+            physicalAddress = virtualAddress & 0x1FFFFFFFu;
+            return true;
+        }
+
+        return TryGetMappedPhysicalAddress(
+            virtualAddress,
+            isStore,
+            instructionAddress,
+            out physicalAddress);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryGetMappedPhysicalAddress(
         uint virtualAddress,
         bool isStore,
         uint instructionAddress,
@@ -1328,6 +1439,7 @@ public sealed class Vr4300Cpu
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void UpdateInterruptLines()
     {
         if (_memory.CpuInterruptPending)
@@ -1340,7 +1452,8 @@ public sealed class Vr4300Cpu
         }
     }
 
-    private void AdvanceClock()
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private bool AdvanceClock()
     {
         _coprocessor0[Cp0Count]++;
         if (_coprocessor0[Cp0Count] == _coprocessor0[Cp0Compare])
@@ -1355,9 +1468,10 @@ public sealed class Vr4300Cpu
             ? 31u
             : random - 1;
 
-        _memory.AdvanceCpuTicks(1);
+        return _memory.AdvanceCpuTick();
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool InterruptsEnabled()
     {
         var status = _coprocessor0[Cp0Status];
@@ -1367,6 +1481,10 @@ public sealed class Vr4300Cpu
                (status & cause & 0xFF00) != 0;
     }
 
+    private bool Coprocessor1Usable =>
+        (_coprocessor0[Cp0Status] & 0x20000000u) != 0;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void WriteRegister(int register, ulong value)
     {
         if (register != 0)
@@ -1404,8 +1522,10 @@ public sealed class Vr4300Cpu
             $"Pixel64 does not implement R4300i instruction 0x{instruction:X8} at 0x{address:X8}.");
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ulong SignExtend32(uint value) => (ulong)(long)(int)value;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static ulong SignExtend64(short value) => (ulong)(long)value;
 
     private enum FloatingRoundingMode : uint

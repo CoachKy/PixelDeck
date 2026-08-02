@@ -32,6 +32,24 @@ public sealed class NesMachine
 
     public ReadOnlySpan<uint> CurrentFrame => _bus.Ppu.FrameBuffer;
 
+    /// <summary>
+    /// State that distinguishes the ways a Nintendo core can look broken from
+    /// the outside. A blank frame means something different depending on
+    /// whether rendering is even enabled, and a mapper number names the code
+    /// path responsible without having to identify the cartridge by eye.
+    /// </summary>
+    public int MapperNumber => Cartridge.MapperNumber;
+
+    public int SubmapperNumber => Cartridge.SubmapperNumber;
+
+    public bool IsRenderingEnabled => _bus.Ppu.IsRenderingEnabled;
+
+    public byte PpuControl => _bus.Ppu.Control;
+
+    public byte PpuMask => _bus.Ppu.Mask;
+
+    public int Scanline => _bus.Ppu.Scanline;
+
     public static NesMachine Load(
         string gamePath,
         string? batterySavePath = null,

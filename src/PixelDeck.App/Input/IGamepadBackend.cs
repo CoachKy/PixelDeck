@@ -14,6 +14,14 @@ internal interface IGamepadBackend : IDisposable
         new(ReadButtons(userIndex), 0, 0, 0, 0);
 
     string? GetControllerName(int userIndex);
+
+    /// <summary>
+    /// Starts or stops force feedback. Backends without haptics ignore it,
+    /// which is why this defaults to doing nothing rather than throwing.
+    /// </summary>
+    void SetRumble(int userIndex, bool active)
+    {
+    }
 }
 
 internal readonly record struct GamepadState(

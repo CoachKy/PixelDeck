@@ -19,7 +19,15 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.Exit += static (_, _) => GamepadManager.Shutdown();
+            desktop.Exit += static (_, _) =>
+            {
+                GamepadManager.Shutdown();
+
+                // Queued diagnostics are written on a background thread, so
+                // without this the last lines before a quit or a crash — the
+                // ones worth reading — never reach the file.
+                EmulatorDiagnostics.Flush();
+            };
             var directGamePath = GetDirectGamePath(desktop.Args);
             if (directGamePath is not null)
             {

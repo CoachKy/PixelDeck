@@ -22,6 +22,7 @@ public enum N64VideoRegion
 /// </summary>
 public enum N64SaveType
 {
+    None,
     Eeprom4Kbit,
     Eeprom16Kbit,
     Sram256Kbit,
@@ -61,7 +62,11 @@ public sealed class N64Cartridge
         GameCode = $"{MediaFormat}{CartridgeId}{CountryCode}";
         VideoRegion = GetVideoRegion(CountryCode);
         BootCodeCrc32 = ComputeCrc32(rom.AsSpan(0x40, 0xFC0));
-        SaveType = ResolveSaveType(GameCode);
+        var profile = ResolveProfile(CartridgeId);
+        SaveType = profile.SaveType;
+        SupportsControllerPak = profile.SupportsControllerPak;
+        UsesControllerPak = profile.ControllerPakByDefault;
+        UsesTransferPak = profile.UsesTransferPak;
         Cic = BootCodeCrc32 switch
         {
             0x6170A4A1 => N64Cic.Cic6101,
@@ -115,22 +120,56 @@ public sealed class N64Cartridge
     public N64SaveType SaveType { get; }
 
     /// <summary>
-    /// The cartridge header carries no save-type field, so real hardware
-    /// relies on the game knowing its own fitment. Emulators keep a lookup
-    /// keyed by game code; this covers the locally verified titles and
-    /// defaults the rest to 4 Kbit EEPROM.
+    /// Whether the title contains Controller Pak support. A game may support
+    /// both cartridge storage and a Controller Pak (Mario Kart ghost data is
+    /// the common example), so this is intentionally separate from
+    /// <see cref="SaveType"/>.
     /// </summary>
-    private static N64SaveType ResolveSaveType(string gameCode) => gameCode switch
+    public bool SupportsControllerPak { get; }
+
+    /// <summary>
+    /// Whether Pixel64 installs a Controller Pak in port one by default.
+    /// Controller-Pak-only games need this to save; games whose normal save is
+    /// on the cartridge retain their expected default accessory. Mario Kart
+    /// is the exception for now because its time-trial ghost data needs a Pak
+    /// and PixelDeck does not yet expose a per-game accessory selector.
+    /// </summary>
+    public bool UsesControllerPak { get; }
+
+    /// <summary>
+    /// Whether the title has optional Transfer Pak integration. Pixel64 can
+    /// run the N64 portion, but does not yet emulate the attached Game Boy.
+    /// </summary>
+    public bool UsesTransferPak { get; }
+
+    /// <summary>
+    /// N64 headers do not identify save hardware or controller accessories.
+    /// The two-character cartridge ID does remain stable across media/region
+    /// variants, so resolve the installed retail hardware from that ID. This
+    /// table covers the local compatibility collection; unknown cartridges
+    /// retain the platform's common 4-Kbit EEPROM fallback.
+    /// </summary>
+    private static N64CartridgeProfile ResolveProfile(string cartridgeId) => cartridgeId switch
     {
-        // The three-character identifier ignores the region byte, so a title
-        // resolves the same way across its regional releases.
-        _ when gameCode.StartsWith("NZL", StringComparison.Ordinal) => N64SaveType.Sram256Kbit, // Ocarina of Time
-        _ when gameCode.StartsWith("NZS", StringComparison.Ordinal) => N64SaveType.Sram256Kbit, // Majora's Mask
-        _ when gameCode.StartsWith("NGE", StringComparison.Ordinal) => N64SaveType.Eeprom16Kbit, // GoldenEye 007
-        _ when gameCode.StartsWith("NDO", StringComparison.Ordinal) => N64SaveType.Eeprom16Kbit, // Donkey Kong 64
-        _ when gameCode.StartsWith("NQ8", StringComparison.Ordinal) => N64SaveType.Sram256Kbit, // Quest 64
-        _ when gameCode.StartsWith("NWX", StringComparison.Ordinal) => N64SaveType.Eeprom16Kbit, // WWF WrestleMania 2000
-        _ => N64SaveType.Eeprom4Kbit
+        "DO" => new(N64SaveType.Eeprom16Kbit),                         // Donkey Kong 64
+        "GX" => new(N64SaveType.None, true, true),                    // Gauntlet Legends
+        "GE" => new(N64SaveType.Eeprom4Kbit),                          // GoldenEye 007
+        "ZL" => new(N64SaveType.Sram256Kbit),                          // Ocarina of Time
+        "ZS" => new(N64SaveType.FlashRam1Mbit),                        // Majora's Mask
+        "KG" => new(N64SaveType.Sram256Kbit, true),                    // MLB Featuring Ken Griffey Jr.
+        "MF" => new(N64SaveType.Sram256Kbit, UsesTransferPak: true),   // Mario Golf
+        "KT" => new(N64SaveType.Eeprom4Kbit, true, true),              // Mario Kart 64
+        "M8" => new(N64SaveType.Eeprom16Kbit, UsesTransferPak: true),  // Mario Tennis
+        "G5" => new(N64SaveType.None, true, true),                    // Mystical Ninja Starring Goemon
+        "PW" => new(N64SaveType.Eeprom4Kbit),                          // Pilotwings 64
+        "ET" => new(N64SaveType.None, true, true),                    // Quest 64
+        "FX" => new(N64SaveType.Eeprom4Kbit),                          // Star Fox 64
+        "RS" => new(N64SaveType.Eeprom4Kbit),                          // Rogue Squadron
+        "SW" => new(N64SaveType.Eeprom4Kbit),                          // Shadows of the Empire
+        "NA" => new(N64SaveType.Eeprom4Kbit),                          // Battle for Naboo
+        "SM" => new(N64SaveType.Eeprom4Kbit),                          // Super Mario 64
+        "WX" => new(N64SaveType.Sram256Kbit, true),                    // WWF WrestleMania 2000
+        _ => new(N64SaveType.Eeprom4Kbit)
     };
 
     /// <summary>
@@ -138,6 +177,7 @@ public sealed class N64Cartridge
     /// </summary>
     public int SaveSize => SaveType switch
     {
+        N64SaveType.None => UsesControllerPak ? N64Memory.ControllerPakSize : 0,
         N64SaveType.Eeprom4Kbit => 512,
         N64SaveType.Eeprom16Kbit => 2 * 1024,
         N64SaveType.Sram256Kbit => 32 * 1024,
@@ -159,6 +199,7 @@ public sealed class N64Cartridge
     /// </summary>
     public string SaveExtension => SaveType switch
     {
+        N64SaveType.None when UsesControllerPak => ".mpk",
         N64SaveType.Sram256Kbit => ".sra",
         N64SaveType.FlashRam1Mbit => ".fla",
         _ => ".eep"
@@ -282,4 +323,10 @@ public sealed class N64Cartridge
 
         return ~crc;
     }
+
+    private readonly record struct N64CartridgeProfile(
+        N64SaveType SaveType,
+        bool SupportsControllerPak = false,
+        bool ControllerPakByDefault = false,
+        bool UsesTransferPak = false);
 }

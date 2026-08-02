@@ -10,10 +10,10 @@ public sealed class ProductVersionTests
     [Fact]
     public void Assemblies_HaveIndependentProductVersions()
     {
-        Assert.Equal(new Version(1, 28, 79, 0), typeof(MainViewModel).Assembly.GetName().Version);
+        Assert.Equal(new Version(1, 29, 85, 0), typeof(MainViewModel).Assembly.GetName().Version);
         Assert.Equal(new Version(1, 15, 23, 0), typeof(NesMachine).Assembly.GetName().Version);
         Assert.Equal(new Version(1, 16, 23, 0), typeof(SnesMachine).Assembly.GetName().Version);
-        Assert.Equal(new Version(0, 15, 20, 0), typeof(N64Machine).Assembly.GetName().Version);
+        Assert.Equal(new Version(0, 16, 26, 0), typeof(N64Machine).Assembly.GetName().Version);
     }
 
     [Fact]
@@ -33,7 +33,7 @@ public sealed class ProductVersionTests
     {
         using var viewModel = new MainViewModel();
 
-        Assert.Equal("PixelDeck v1.28.079", viewModel.PixelDeckVersionText);
+        Assert.Equal("PixelDeck v1.29.085", viewModel.PixelDeckVersionText);
         Assert.Equal("PixelNES v1.15.023", viewModel.LibraryEmulatorVersionText);
 
         viewModel.SelectedLibrarySystem = LibrarySystem.SuperNintendo;
@@ -42,6 +42,6 @@ public sealed class ProductVersionTests
 
         viewModel.SelectedLibrarySystem = LibrarySystem.Nintendo64;
 
-        Assert.Equal("Pixel64 v0.15.020", viewModel.LibraryEmulatorVersionText);
+        Assert.Equal("Pixel64 v0.16.026", viewModel.LibraryEmulatorVersionText);
     }
 }

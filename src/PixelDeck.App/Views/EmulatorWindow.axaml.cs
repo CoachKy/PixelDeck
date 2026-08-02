@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -38,6 +38,14 @@ public partial class EmulatorWindow : Window
     private Task? _emulationTask;
     private NesMachine? _nesMachine;
     private N64Machine? _n64Machine;
+    private int _loggedN64Width;
+    private int _loggedN64Height;
+    private uint _loggedN64Control;
+    private uint _loggedN64HorizontalVideo;
+    private long _n64FrameCounter;
+    private long _coreFrameCounter;
+    private GamepadReader[]? _rumbleTargets;
+    private readonly bool[] _rumbleMotorActive = new bool[GamepadManager.MaximumControllers];
     private SnesMachine? _snesMachine;
     private EmulatorAudioOutput? _audioOutput;
     private Stopwatch? _playSession;
@@ -184,6 +192,14 @@ public partial class EmulatorWindow : Window
                     continue;
                 }
 
+                var requestedRate = Volatile.Read(ref _playbackRateMultiplier);
+                if (requestedRate != currentRate)
+                {
+                    currentRate = requestedRate;
+                    nextFrameAt = clock.Elapsed;
+                }
+
+                var frameInterval = GetFrameInterval(currentRate);
                 var producedFrame = false;
                 frameNumber++;
                 lock (_machineLock)
@@ -227,14 +243,6 @@ public partial class EmulatorWindow : Window
 
                 ScheduleFramePresentation();
 
-                var requestedRate = Volatile.Read(ref _playbackRateMultiplier);
-                if (requestedRate != currentRate)
-                {
-                    currentRate = requestedRate;
-                    nextFrameAt = clock.Elapsed;
-                }
-
-                var frameInterval = GetFrameInterval(currentRate);
                 nextFrameAt += frameInterval;
                 if (_n64Machine is not null && currentRate == 1)
                 {
@@ -734,7 +742,7 @@ public partial class EmulatorWindow : Window
     /// </summary>
     /// <remarks>
     /// The pause menu is a separate control composited over the video, so the
-    /// emulator's own bitmap already excludes it — no need to hide the overlay
+    /// emulator's own bitmap already excludes it â€” no need to hide the overlay
     /// or re-run the machine to get a clean capture.
     /// </remarks>
     private void CaptureLibraryImage()
@@ -758,7 +766,7 @@ public partial class EmulatorWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            StateStatusText.Text = $"LIBRARY IMAGE FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"LIBRARY IMAGE FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -816,7 +824,7 @@ public partial class EmulatorWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            StateStatusText.Text = $"STATE LIST FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"STATE LIST FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -843,7 +851,7 @@ public partial class EmulatorWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            StateStatusText.Text = $"STATE LIST FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"STATE LIST FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -896,7 +904,7 @@ public partial class EmulatorWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            StateStatusText.Text = $"SAVE FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"SAVE FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -912,12 +920,12 @@ public partial class EmulatorWindow : Window
 
             CrashSafeFile.WriteAllBytes(slot.Path, state);
             StateStatusText.Text =
-                $"SLOT {slot.Number} SAVED  ·  {DateTime.Now:h:mm tt}".ToUpperInvariant();
+                $"SLOT {slot.Number} SAVED  Â·  {DateTime.Now:h:mm tt}".ToUpperInvariant();
             ShowMainPauseMenu(preserveStatus: true);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            StateStatusText.Text = $"SAVE FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"SAVE FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -975,7 +983,7 @@ public partial class EmulatorWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
         {
-            StateStatusText.Text = $"LOAD FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"LOAD FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -1009,7 +1017,7 @@ public partial class EmulatorWindow : Window
         }
         catch (Exception exception)
         {
-            StateStatusText.Text = $"RESET FAILED  ·  {exception.Message}".ToUpperInvariant();
+            StateStatusText.Text = $"RESET FAILED  Â·  {exception.Message}".ToUpperInvariant();
         }
     }
 
@@ -1023,7 +1031,7 @@ public partial class EmulatorWindow : Window
             {
                 StateStatusText.Text = slots.Count == 0
                     ? "NO SAVED STATES YET"
-                    : $"{slots.Count} SAVED {(slots.Count == 1 ? "STATE" : "STATES")}  ·  " +
+                    : $"{slots.Count} SAVED {(slots.Count == 1 ? "STATE" : "STATES")}  Â·  " +
                       $"LAST {slots.Max(slot => slot.LastWriteTime):MMM d, h:mm tt}".ToUpperInvariant();
             }
         }
@@ -1032,7 +1040,7 @@ public partial class EmulatorWindow : Window
             LoadStateButton.IsEnabled = false;
             if (!preserveStatus)
             {
-                StateStatusText.Text = $"STATE LIST FAILED  ·  {exception.Message}".ToUpperInvariant();
+                StateStatusText.Text = $"STATE LIST FAILED  Â·  {exception.Message}".ToUpperInvariant();
             }
         }
     }
@@ -1084,6 +1092,12 @@ public partial class EmulatorWindow : Window
         _nesMachine = null;
         _snesMachine = null;
         _n64Machine = null;
+        _loggedN64Width = 0;
+        _loggedN64Height = 0;
+        _loggedN64Control = 0;
+        _loggedN64HorizontalVideo = uint.MaxValue;
+        _n64FrameCounter = 0;
+        StopAllRumble();
 
         if (string.Equals(extension, ".nes", StringComparison.OrdinalIgnoreCase))
         {
@@ -1098,6 +1112,10 @@ public partial class EmulatorWindow : Window
                     EnableOamDecay = PixelDeckSettingsStore.Current.EnableNesOamDecay,
                     OamCorruptionMode = PixelDeckSettingsStore.Current.NesOamCorruptionMode
                 });
+            EmulatorDiagnostics.Write(
+                $"NES cartridge: mapper={_nesMachine.MapperNumber}/{_nesMachine.SubmapperNumber} " +
+                $"battery={_nesMachine.Cartridge.HasBatteryBackedRam} " +
+                $"input={_nesMachine.Cartridge.DefaultInputDevice}");
             return;
         }
 
@@ -1105,6 +1123,9 @@ public partial class EmulatorWindow : Window
             string.Equals(extension, ".smc", StringComparison.OrdinalIgnoreCase))
         {
             _snesMachine = SnesMachine.Load(path, _game.SaveRamPath);
+            EmulatorDiagnostics.Write(
+                $"SNES cartridge: sa1={_snesMachine.HasSa1} superfx={_snesMachine.HasSuperFx} " +
+                $"sdd1={_snesMachine.HasSdd1} size={_snesMachine.Width}x{_snesMachine.Height}");
             return;
         }
 
@@ -1113,6 +1134,13 @@ public partial class EmulatorWindow : Window
             string.Equals(extension, ".n64", StringComparison.OrdinalIgnoreCase))
         {
             _n64Machine = N64Machine.Load(path, _game.SaveRamPath);
+
+            EmulatorDiagnostics.Write(
+                $"N64 cartridge: title=\"{_n64Machine.Cartridge.Title}\" " +
+                $"code={_n64Machine.Cartridge.GameCode} revision={_n64Machine.Cartridge.Revision} " +
+                $"cic={_n64Machine.Cartridge.Cic} " +
+                $"entry=0x{_n64Machine.Cartridge.EffectiveEntryPoint:X8} " +
+                $"region={_n64Machine.Cartridge.VideoRegion} save={_n64Machine.Cartridge.SaveType}");
 
             // The backend choice is made silently inside N64Machine, which falls
             // back to the software renderer whenever paraLLEl-RDP cannot be
@@ -1147,22 +1175,289 @@ public partial class EmulatorWindow : Window
         if (_nesMachine is not null)
         {
             _nesMachine.RunFrame().CopyTo(destination);
+            LogNesStatisticsPeriodically(destination);
             return;
         }
 
         if (_snesMachine is not null)
         {
             _snesMachine.RunFrame().CopyTo(destination);
+            LogSnesStatisticsPeriodically(destination);
             return;
         }
 
         if (_n64Machine is not null)
         {
             _n64Machine.RunFrame().CopyTo(destination);
+            LogN64VideoStateWhenItChanges();
+            LogN64RenderStatisticsPeriodically();
+            ApplyN64RumbleState();
             return;
         }
 
         throw new InvalidOperationException("The emulator is not running.");
+    }
+
+    /// <summary>
+    /// The Nintendo core's counterpart to the N64 line. A blank or wrong frame
+    /// is ambiguous on its own: the mapper number names the code path, and the
+    /// PPU mask says whether the game asked for nothing or the emulator lost
+    /// the write. Counts are cumulative so a frozen core shows up as identical
+    /// consecutive samples.
+    /// </summary>
+    private void LogNesStatisticsPeriodically(uint[] frame)
+    {
+        if (_nesMachine is null)
+        {
+            return;
+        }
+
+        _coreFrameCounter++;
+        if (_coreFrameCounter != 60 && _coreFrameCounter % 300 != 0)
+        {
+            return;
+        }
+
+        EmulatorDiagnostics.Write(
+            $"NES @{_coreFrameCounter}: mapper={_nesMachine.MapperNumber}" +
+            $"/{_nesMachine.SubmapperNumber} " +
+            $"rendering={_nesMachine.IsRenderingEnabled} " +
+            $"ppuctrl=0x{_nesMachine.PpuControl:X2} ppumask=0x{_nesMachine.PpuMask:X2} " +
+            $"scanline={_nesMachine.Scanline} " +
+            $"colors={CountDistinctFrameColors(frame)} " +
+            $"cycles={_nesMachine.CpuCycles:N0} pc=0x{_nesMachine.ProgramCounter:X4} " +
+            $"audio={_nesMachine.BufferedAudioSampleCount:N0}" +
+            $"/{_nesMachine.DroppedAudioSampleCount:N0} dropped");
+    }
+
+    /// <summary>
+    /// The Super Nintendo core reports which enhancement chip is live, because
+    /// an unimplemented or stalled coprocessor and a PPU fault produce the same
+    /// blank screen.
+    /// </summary>
+    private void LogSnesStatisticsPeriodically(uint[] frame)
+    {
+        if (_snesMachine is null)
+        {
+            return;
+        }
+
+        _coreFrameCounter++;
+        if (_coreFrameCounter != 60 && _coreFrameCounter % 300 != 0)
+        {
+            return;
+        }
+
+        var chip = _snesMachine switch
+        {
+            { HasSa1: true } => "SA-1",
+            { HasSuperFx: true } => "SuperFX",
+            { HasSdd1: true } => "S-DD1",
+            _ => "none"
+        };
+        var coprocessor = _snesMachine switch
+        {
+            { HasSa1: true } =>
+                $" sa1={_snesMachine.Sa1ExecutedInstructions:N0} " +
+                $"pc=0x{_snesMachine.Sa1ProgramAddress:X6} " +
+                $"ctrl=0x{_snesMachine.Sa1ControlRegister:X2} dma={_snesMachine.Sa1DmaCount:N0}",
+            { HasSuperFx: true } =>
+                $" gsu={_snesMachine.SuperFxExecutedInstructions:N0} " +
+                $"running={_snesMachine.SuperFxRunning}",
+            { HasSdd1: true } => $" sdd1={_snesMachine.Sdd1DecompressionCount:N0}",
+            _ => string.Empty
+        };
+
+        EmulatorDiagnostics.Write(
+            $"SNES @{_coreFrameCounter}: chip={chip} " +
+            $"bgmode={_snesMachine.BackgroundMode} mainscreen=0x{_snesMachine.MainScreenLayers:X2} " +
+            $"blanked={_snesMachine.IsDisplayBlanked} brightness={_snesMachine.DisplayBrightness} " +
+            $"colors={CountDistinctFrameColors(frame)} " +
+            $"ppuwrites={_snesMachine.PpuRegisterWriteCount:N0} " +
+            $"dma={_snesMachine.DmaTransferCount:N0} hdma={_snesMachine.HdmaEnableWrites:N0} " +
+            $"joyreads={_snesMachine.HvbJoyReads:N0}" +
+            $"/{_snesMachine.HvbJoyAutoReadBusyReads:N0} busy " +
+            $"spriteover={_snesMachine.SpriteRangeOverLines:N0}" +
+            $"/{_snesMachine.SpriteTimeOverTiles:N0} " +
+            $"cycles={_snesMachine.CpuCycles:N0} pc=0x{_snesMachine.ProgramAddress:X6}" +
+            coprocessor);
+    }
+
+    /// <summary>
+    /// A count of unique pixel values in the presented frame. One colour means
+    /// a flat screen, which is the single most common way both of these cores
+    /// fail, and it cannot be inferred from any register.
+    /// </summary>
+    private static int CountDistinctFrameColors(uint[] pixels)
+    {
+        if (pixels.Length == 0)
+        {
+            return 0;
+        }
+
+        var seen = new HashSet<uint>();
+        // Sampling every fourth pixel keeps this off the per-frame cost curve
+        // while still separating a flat screen from a rendered one.
+        for (var index = 0; index < pixels.Length && seen.Count <= 64; index += 4)
+        {
+            seen.Add(pixels[index]);
+        }
+
+        return seen.Count;
+    }
+
+    /// <summary>
+    /// Records what the renderer actually drew. A frame buffer full of stale
+    /// data looks identical to a video interface fault from the outside; the
+    /// primitive counts are what separate "we presented the wrong memory" from
+    /// "nothing was ever drawn into the right memory".
+    /// </summary>
+    private void LogN64RenderStatisticsPeriodically()
+    {
+        if (_n64Machine is null)
+        {
+            return;
+        }
+
+        _n64FrameCounter++;
+        if (_n64FrameCounter != 60 && _n64FrameCounter % 300 != 0)
+        {
+            return;
+        }
+
+        var renderer = _n64Machine.Renderer;
+        var performance = _n64Machine.Performance;
+        var cachedInstructions = _n64Machine.Cpu.CachedInstructionsExecuted;
+        var cachedBlocks = _n64Machine.Cpu.CachedBlocksExecuted;
+        var cachedCoverage = _n64Machine.Cpu.InstructionsExecuted == 0
+            ? 0d
+            : cachedInstructions * 100d / _n64Machine.Cpu.InstructionsExecuted;
+        var averageBlockLength = cachedBlocks == 0
+            ? 0d
+            : cachedInstructions / (double)cachedBlocks;
+        EmulatorDiagnostics.Write(
+            $"N64 render @{_n64FrameCounter}: microcode={renderer.DetectedMicrocodeName} " +
+            $"crc=0x{renderer.MicrocodeCrc32:X8} " +
+            $"commands={renderer.CommandsProcessed:N0} unsupported={renderer.UnsupportedCommands:N0} " +
+            $"tris={renderer.TrianglesDrawn:N0} fillrects={renderer.FillRectanglesDrawn:N0} " +
+            $"texrects={renderer.TextureRectanglesDrawn:N0} texpixels={renderer.TexturedPixelsDrawn:N0} " +
+            $"texel1={renderer.SecondaryTexturePixelsSampled:N0} " +
+            $"texcache={renderer.FilteredTextureCacheHits:N0}/{renderer.FilteredTextureCacheMisses:N0}/" +
+            $"{renderer.FilteredTextureTexelsDecoded:N0} " +
+            $"depthreject={renderer.DepthPixelsRejected:N0} " +
+            $"alphareject={renderer.AlphaPixelsRejected:N0} blended={renderer.FramebufferPixelsBlended:N0} " +
+            $"centrepinned={renderer.CentrePinnedVertices:N0} offscreen={renderer.OffscreenProjectedVertices:N0}; " +
+            $"blocks={cachedBlocks:N0}/{cachedInstructions:N0} instructions " +
+            $"({cachedCoverage:F1}% coverage, {averageBlockLength:F1} avg); " +
+            $"idle-skipped={_n64Machine.Cpu.IdleInstructionsSkipped:N0}; " +
+            $"pc=0x{_n64Machine.Cpu.ProgramCounter:X8} " +
+            $"tasks={_n64Machine.GraphicsTasksSubmitted:N0}/{_n64Machine.AudioTasksSubmitted:N0} " +
+            $"audio-ucode={_n64Machine.AudioProcessor.DetectedMicrocodeName} " +
+            $"audio-cmds={_n64Machine.AudioProcessor.CommandsProcessed:N0}/" +
+            $"{_n64Machine.AudioProcessor.UnsupportedCommands:N0} unsupported " +
+            $"audio-queue={_n64Machine.BufferedAudioSampleCount:N0}/" +
+            $"{_n64Machine.DroppedAudioSampleCount:N0} dropped " +
+            $"audio-underruns={_audioOutput?.UnderrunSampleCount ?? 0:N0} " +
+            $"ai={_n64Machine.Memory.CurrentAudioSampleRate:N0}Hz/" +
+            $"{_n64Machine.Memory.AudioDmasCompleted:N0} dmas " +
+            $"vi={_n64Machine.Memory.VerticalInterruptsRaised:N0} " +
+            $"polls={_n64Machine.Memory.ControllerPolls:N0}/" +
+            $"{_n64Machine.Memory.NonNeutralControllerPolls:N0} " +
+            $"exceptions={_n64Machine.Cpu.InterruptExceptionsRaised:N0}/" +
+            $"{_n64Machine.Cpu.NonInterruptExceptionsRaised:N0} " +
+            $"last={_n64Machine.Cpu.LastExceptionCode}@0x{_n64Machine.Cpu.LastExceptionAddress:X8}; " +
+            $"timing={performance.AverageMillisecondsPerField:F2} ms/field, " +
+            $"graphics={performance.GraphicsPercentage:F1}%, " +
+            $"cpu+scheduler={performance.CpuAndSchedulingPercentage:F1}%, " +
+            $"audio={performance.AudioPercentage:F1}%, vi={performance.VideoInterfacePercentage:F1}%");
+    }
+
+    /// <summary>
+    /// Silences every motor. A pad keeps rumbling until it is told to stop, so
+    /// this has to run when a game unloads rather than relying on the effect
+    /// timing out on its own.
+    /// </summary>
+    private void StopAllRumble()
+    {
+        if (_rumbleTargets is null)
+        {
+            return;
+        }
+
+        for (var port = 0; port < _rumbleTargets.Length; port++)
+        {
+            if (_rumbleMotorActive[port])
+            {
+                _rumbleMotorActive[port] = false;
+                _rumbleTargets[port].SetRumble(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Mirrors each port's Rumble Pak motor onto the pad driving it. The motor
+    /// is held on by the game rather than pulsed, so this only talks to the
+    /// device when the state actually changes.
+    /// </summary>
+    private void ApplyN64RumbleState()
+    {
+        if (_n64Machine is null)
+        {
+            return;
+        }
+
+        _rumbleTargets ??= [_gamepad, _playerTwoGamepad, _playerThreeGamepad, _playerFourGamepad];
+        for (var port = 0; port < _rumbleTargets.Length; port++)
+        {
+            var active = _n64Machine.IsRumbleMotorActive(port + 1);
+            if (active == _rumbleMotorActive[port])
+            {
+                continue;
+            }
+
+            _rumbleMotorActive[port] = active;
+            _rumbleTargets[port].SetRumble(active);
+        }
+    }
+
+    /// <summary>
+    /// The video interface registers and the renderer's skipped texel formats
+    /// are tracked continuously but were never reported anywhere. Recording
+    /// them when the programmed output changes is what distinguishes a
+    /// mis-sized frame from a mis-decoded one without guessing.
+    /// </summary>
+    private void LogN64VideoStateWhenItChanges()
+    {
+        if (_n64Machine is null)
+        {
+            return;
+        }
+
+        var memory = _n64Machine.Memory;
+        if (_n64Machine.Width == _loggedN64Width &&
+            _n64Machine.Height == _loggedN64Height &&
+            memory.ViControl == _loggedN64Control &&
+            memory.ViHorizontalVideo == _loggedN64HorizontalVideo)
+        {
+            return;
+        }
+
+        _loggedN64Width = _n64Machine.Width;
+        _loggedN64Height = _n64Machine.Height;
+        _loggedN64Control = memory.ViControl;
+        _loggedN64HorizontalVideo = memory.ViHorizontalVideo;
+
+        var unsupported = _n64Machine.Renderer.UnsupportedTextureFormatCounts;
+        var formats = unsupported.Count == 0
+            ? "none"
+            : string.Join(", ", unsupported.Select(entry => $"{entry.Key}={entry.Value:N0}"));
+        EmulatorDiagnostics.Write(
+            $"N64 video: {_loggedN64Width}x{_loggedN64Height} " +
+            $"origin=0x{memory.ViOrigin:X6} stride={memory.ViWidth} " +
+            $"control=0x{memory.ViControl:X2} active={_n64Machine.IsVideoOutputActive} " +
+            $"h=0x{memory.ViHorizontalVideo:X8} v=0x{memory.ViVerticalVideo:X8} " +
+            $"xscale=0x{memory.ViXScale:X} yscale=0x{memory.ViYScale:X}; " +
+            $"unsupported texel formats: {formats}");
     }
 
     private uint[] GetCurrentMachineFrame()
