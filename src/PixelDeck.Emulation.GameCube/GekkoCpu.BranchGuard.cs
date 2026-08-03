@@ -139,9 +139,25 @@ public sealed partial class GekkoCpu
             $"wild branch to 0x{target:X8} from 0x{Pc:X8}  " +
             $"{GekkoDisassembler.Describe(instruction, Pc)}");
 
+        TraceContext(GameCubeTraceLevel.Error);
+        return GekkoOutcome.WildBranch;
+    }
+
+    /// <summary>
+    /// Writes the full processor context: every register, the stack around the
+    /// stack pointer, the recent calls and the recent branches.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the wild-branch report and the stall report, because the two
+    /// need exactly the same thing. A spin is a fault that has not stopped yet:
+    /// the loop is waiting on an address held in a register, and without the
+    /// registers there is no way to work out which address that is.
+    /// </remarks>
+    public void TraceContext(GameCubeTraceLevel level)
+    {
         _trace.Write(
             GameCubeTraceChannel.Cpu,
-            GameCubeTraceLevel.Error,
+            level,
             $"  lr=0x{Lr:X8} ctr=0x{Ctr:X8} msr=0x{Msr:X8} cr=0x{Cr:X8} " +
             $"after {InstructionsExecuted:N0} instructions");
 
@@ -153,19 +169,19 @@ public sealed partial class GekkoCpu
         {
             _trace.Write(
                 GameCubeTraceChannel.Cpu,
-                GameCubeTraceLevel.Error,
+                level,
                 $"  r{register,-2}=0x{_gpr[register]:X8} r{register + 1,-2}=0x{_gpr[register + 1]:X8} " +
                 $"r{register + 2,-2}=0x{_gpr[register + 2]:X8} r{register + 3,-2}=0x{_gpr[register + 3]:X8}");
         }
 
-        TraceStack();
+        TraceStack(level);
 
         // Calls first: it is the shorter list and the one that names the fault.
         foreach (var (from, to) in CaptureRecentCalls())
         {
             _trace.Write(
                 GameCubeTraceChannel.Cpu,
-                GameCubeTraceLevel.Error,
+                level,
                 $"  called 0x{to:X8} from 0x{from:X8}");
         }
 
@@ -173,18 +189,16 @@ public sealed partial class GekkoCpu
         {
             _trace.Write(
                 GameCubeTraceChannel.Cpu,
-                GameCubeTraceLevel.Error,
+                level,
                 $"  came from 0x{from:X8} -> 0x{to:X8}  {GekkoDisassembler.Describe(taken, from)}");
         }
-
-        return GekkoOutcome.WildBranch;
     }
 
     /// <summary>
     /// Dumps the words around the stack pointer, which is where a corrupted
     /// return address is visible as data rather than inferred from a branch.
     /// </summary>
-    private void TraceStack()
+    private void TraceStack(GameCubeTraceLevel level)
     {
         var stack = _gpr[1];
         if (!GameCubeMemory.TryTranslate(stack, out _))
@@ -198,7 +212,7 @@ public sealed partial class GekkoCpu
             var at = start + offset;
             _trace.Write(
                 GameCubeTraceChannel.Cpu,
-                GameCubeTraceLevel.Error,
+                level,
                 $"  stack {at:X8}{(at == stack ? " <-" : "   ")} " +
                 $"{_memory.ReadUInt32(at):X8} {_memory.ReadUInt32(at + 4):X8} " +
                 $"{_memory.ReadUInt32(at + 8):X8} {_memory.ReadUInt32(at + 12):X8}");

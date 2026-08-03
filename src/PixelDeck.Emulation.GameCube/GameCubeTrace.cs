@@ -71,17 +71,26 @@ public enum GameCubeTraceChannel : uint
         Graphics | Video | Audio | Input | Storage | Unimplemented | Performance,
 
     /// <summary>
-    /// What a normal play session records: the decisions made once at startup,
-    /// the things that went wrong, and the things that are still missing.
-    /// Keeps <see cref="Registers"/> and <see cref="Cpu"/> even though both can
-    /// be per-instruction: everything either emits at Debug or Verbose and
-    /// stays filtered out at the default level, while the records they carry
-    /// above it — a register that is modelled and still wrong, a wild branch, a
-    /// fetch outside memory — are the ones a session must never lose.
+    /// What a normal play session records: everything, with the level deciding
+    /// the volume.
     /// </summary>
-    Default =
-        Boot | Disc | Executable | Interrupts | Storage | Unimplemented |
-        Performance | Registers | Cpu | Graphics
+    /// <remarks>
+    /// This was a hand-picked subset four times, and four times the omission
+    /// was the bug — the register counters, the wild branch report, the whole
+    /// graphics decoder and the ARAM transfers each went missing from a session
+    /// that was being read to decide what to build next, and each looked
+    /// exactly like "nothing is happening there".
+    /// <para>
+    /// Channels and levels are not two volume controls. The level already
+    /// removes the per-access and per-instruction detail, because that detail is
+    /// emitted at Debug and Verbose; a channel filter on top of it only ever
+    /// removed records that had already passed the test that mattered. Channels
+    /// earn their place when narrowing deliberately — <c>verbose:cpu</c> to
+    /// disassemble a run, <c>debug:dsp</c> to watch one device — and not as a
+    /// guess, made in advance, about which part of the machine will fail.
+    /// </para>
+    /// </remarks>
+    Default = All
 }
 
 /// <summary>

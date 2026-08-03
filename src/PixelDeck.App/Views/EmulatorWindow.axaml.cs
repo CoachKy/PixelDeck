@@ -1322,7 +1322,7 @@ public partial class EmulatorWindow : Window
 
         _gameCubeFrameCounter++;
         _gameCubeMachine.Trace.Frame = _gameCubeFrameCounter;
-        destination.AsSpan(0, MachineWidth * MachineHeight).Clear();
+        ScanOutGameCubeFrame(destination);
 
         if (_gameCubeStopped)
         {
@@ -1365,6 +1365,56 @@ public partial class EmulatorWindow : Window
             $"pc=0x{_gameCubeMachine.Cpu.Pc:X8} " +
             $"collapsed={_gameCubeMachine.Trace.SuppressedCount}");
     }
+
+    /// <summary>
+    /// Puts whatever the video interface is pointed at on the screen, or
+    /// clears it when a game has not programmed a framebuffer yet.
+    /// </summary>
+    /// <remarks>
+    /// Nothing renders into that framebuffer yet, so this will usually show
+    /// black — and showing it is still the point. A blank window and a window
+    /// displaying a genuinely blank framebuffer are different claims, and the
+    /// session panel stays until this can tell them apart honestly.
+    /// </remarks>
+    private void ScanOutGameCubeFrame(uint[] destination)
+    {
+        var pixels = destination.AsSpan(0, MachineWidth * MachineHeight);
+        if (_gameCubeMachine is null)
+        {
+            pixels.Clear();
+            return;
+        }
+
+        var framebuffer = _gameCubeMachine.Memory.Hardware.ExternalFramebuffer;
+        if (framebuffer != _gameCubeFramebuffer)
+        {
+            _gameCubeFramebuffer = framebuffer;
+            _gameCubeMachine.Trace.Write(
+                GameCubeTraceChannel.Video,
+                GameCubeTraceLevel.Information,
+                framebuffer == 0
+                    ? "video interface has no framebuffer programmed"
+                    : $"video interface now scanning out from 0x{framebuffer:X8}");
+        }
+
+        if (!GameCubeVideoOutput.TryScanOut(
+            _gameCubeMachine.Memory,
+            framebuffer,
+            pixels,
+            MachineWidth,
+            MachineHeight))
+        {
+            pixels.Clear();
+        }
+    }
+
+    /// <summary>
+    /// The framebuffer address last scanned out, to report changes. Starts at
+    /// a value no register can hold, so the first frame always reports —
+    /// otherwise "no framebuffer was ever programmed", which is the single most
+    /// important thing this could say, is the one case that says nothing.
+    /// </summary>
+    private uint _gameCubeFramebuffer = uint.MaxValue;
 
     /// <summary>
     /// Notices when the program counter stops moving.
@@ -1418,7 +1468,29 @@ public partial class EmulatorWindow : Window
         // The code it is stuck in, for the same reason a stop dumps it: a
         // spin is diagnosed by reading the loop, and a stall never reaches the
         // stop path that was already printing this.
+        _gameCubeMachine.TraceInterruptState();
+        _gameCubeMachine.Cpu.TraceContext(GameCubeTraceLevel.Warning);
         _gameCubeMachine.TraceDisassemblyAround(pc);
+        _gameCubeMachine.TryWatchStalledLoad(pc);
+
+        // r31 holds the run queue base in the scheduler's idle loop, which is
+        // where this stall always lands.
+        _gameCubeMachine.TraceOperatingSystemState(_gameCubeMachine.Cpu.Gpr[31]);
+
+        // The loop is the symptom; the function it sits in is the diagnosis.
+        // Whatever this code asked for before it started waiting — a transfer,
+        // a callback, another thread — was set up on the way in, above the few
+        // instructions a window around the spin can reach.
+        var calls = _gameCubeMachine.Cpu.CaptureRecentCalls();
+        if (calls.Count > 0)
+        {
+            var entry = calls[^1].To;
+            _gameCubeMachine.Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"  the function it is waiting in, from its entry at 0x{entry:X8}:");
+            _gameCubeMachine.TraceDisassemblyAround(entry, before: 0, after: 80);
+        }
         EmulatorDiagnostics.Write(
             $"PixelCube stalled at 0x{pc:X8} after " +
             $"{_gameCubeMachine.Cpu.InstructionsExecuted:N0} instructions; " +
@@ -1482,7 +1554,12 @@ public partial class EmulatorWindow : Window
                 $"file          {trace.Settings.FilePath}";
         }
 
-        PixelCubeOverlay.IsVisible = true;
+        // The panel exists because a black window and a dead emulator look
+        // identical. The moment the video interface is pointed at a real
+        // framebuffer that stops being true, so the panel gets out of the way
+        // and the picture — whatever it turns out to be — is the output.
+        PixelCubeOverlay.IsVisible = _gameCubeMachine is null ||
+            _gameCubeMachine.Memory.Hardware.ExternalFramebuffer == 0;
         PixelCubeTitleText.Text = title;
         PixelCubeSummaryText.Text = summary;
         PixelCubeTraceText.Text = traceText;

@@ -93,7 +93,9 @@ public sealed class GameCubeMachine : IDisposable
                 $"trace level={log.Level} channels={log.Channels}");
 
             var disc = GameCubeDisc.Open(path, log);
-            return new GameCubeMachine(disc, log, ownsTrace);
+            var machine = new GameCubeMachine(disc, log, ownsTrace);
+            machine.ApplyWatchFromEnvironment();
+            return machine;
         }
         catch (Exception exception)
         {
@@ -194,6 +196,237 @@ public sealed class GameCubeMachine : IDisposable
         }
 
         return result;
+    }
+
+    /// <summary>Names the environment variable that arms a memory watchpoint.</summary>
+    public const string WatchVariable = "PIXELCUBE_WATCH";
+
+    /// <summary>
+    /// Arms a watchpoint from <c>PIXELCUBE_WATCH</c>, given as a hexadecimal
+    /// address with an optional length: <c>8040E800</c> or <c>8040E800:4</c>.
+    /// </summary>
+    /// <remarks>
+    /// Every write to the address is then reported along with the instruction
+    /// that made it. This exists for one question, which keeps coming up and
+    /// has no other answer: a game is spinning on a global waiting for a
+    /// handler to change it, and the only thing worth knowing is whether
+    /// anything writes it at all, and if so from where.
+    /// </remarks>
+    private void ApplyWatchFromEnvironment()
+    {
+        var specification = Environment.GetEnvironmentVariable(WatchVariable);
+        if (string.IsNullOrWhiteSpace(specification))
+        {
+            // Said out loud, because silence here is ambiguous in the worst
+            // way: a watch that was never asked for and a watch that was asked
+            // for and not read produce exactly the same empty log, and the
+            // second one wastes a run.
+            Trace.Write(
+                GameCubeTraceChannel.Boot,
+                GameCubeTraceLevel.Information,
+                $"no memory watch set ({WatchVariable} is empty)");
+            return;
+        }
+
+        var parts = specification.Split(':', 2);
+        if (!uint.TryParse(
+                parts[0].Trim().TrimStart('0', 'x', 'X'),
+                System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var address))
+        {
+            Trace.Write(
+                GameCubeTraceChannel.Boot,
+                GameCubeTraceLevel.Warning,
+                $"{WatchVariable}=\"{specification}\" is not a hexadecimal address; no watch was set");
+            return;
+        }
+
+        var length = parts.Length > 1 && int.TryParse(parts[1].Trim(), out var parsed) ? parsed : 4;
+        Memory.WatchAddress = address;
+        Memory.WatchLength = length;
+        Trace.Write(
+            GameCubeTraceChannel.Boot,
+            GameCubeTraceLevel.Information,
+            $"watching {length} bytes at 0x{address:X8}; every write will be reported with its instruction");
+    }
+
+    /// <summary>
+    /// Finds the address a stalled loop keeps reading and watches it, so every
+    /// later write to it is reported with the instruction that made it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A spin is nearly always a load, a compare and a conditional branch
+    /// waiting for something else to change memory. The address is not in the
+    /// instruction — it is a register plus an offset — so it cannot be known
+    /// before the machine is actually sitting on the loop, which is exactly
+    /// when this runs.
+    /// </para>
+    /// <para>
+    /// Self-arming because the alternative was asking for an address that has
+    /// to be worked out from a register dump first, set by hand, and carried
+    /// into the next run. Anything already watched deliberately wins.
+    /// </para>
+    /// </remarks>
+    public bool TryWatchStalledLoad(uint pc)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (Memory.WatchLength > 0)
+        {
+            return false;
+        }
+
+        // The loop is a handful of instructions, so the load is within a couple
+        // either side of wherever the sample happened to land.
+        for (var delta = -8; delta <= 8; delta += 4)
+        {
+            var at = (uint)((int)pc + delta);
+            if (!Memory.TryReadInstruction(at, out var instruction))
+            {
+                continue;
+            }
+
+            // The D-form loads: lwz, lbz, lhz, lha.
+            var primary = instruction >> 26;
+            if (primary is not (32 or 34 or 40 or 42))
+            {
+                continue;
+            }
+
+            var register = (int)((instruction >> 16) & 0x1F);
+            var address = (register == 0 ? 0u : Cpu.Gpr[register]) +
+                (uint)(short)(instruction & 0xFFFF);
+
+            Memory.WatchAddress = address;
+            Memory.WatchLength = 4;
+            Trace.Write(
+                GameCubeTraceChannel.Memory,
+                GameCubeTraceLevel.Warning,
+                $"  watching 0x{address:X8}, which the loop at 0x{at:X8} keeps reading " +
+                $"({GekkoDisassembler.Describe(instruction, at)}); " +
+                "every write to it will be reported from here on");
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Dumps a run of memory as words, for reading a structure by eye.
+    /// </summary>
+    public void TraceMemory(uint address, int bytes, string label)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        Trace.Write(GameCubeTraceChannel.Memory, GameCubeTraceLevel.Warning, $"  {label}:");
+        for (var offset = 0u; offset < bytes; offset += 16)
+        {
+            var at = address + offset;
+            if (!GameCubeMemory.TryTranslate(at, out _))
+            {
+                return;
+            }
+
+            Trace.Write(
+                GameCubeTraceChannel.Memory,
+                GameCubeTraceLevel.Warning,
+                $"    {at:X8}  {Memory.ReadUInt32(at):X8} {Memory.ReadUInt32(at + 4):X8} " +
+                $"{Memory.ReadUInt32(at + 8):X8} {Memory.ReadUInt32(at + 12):X8}");
+        }
+    }
+
+    /// <summary>
+    /// Dumps the operating system's own bookkeeping: the low-memory thread
+    /// globals, and the run queue the scheduler chooses from.
+    /// </summary>
+    /// <remarks>
+    /// Every device interrupt has now been accounted for and the machine still
+    /// idles, which means the question is no longer "what is not being
+    /// delivered" but "what is every thread waiting for". That is answered by
+    /// the operating system's structures rather than by hardware registers —
+    /// whether any threads exist at all, which queue holds them, and whether
+    /// the scheduler simply has nothing to choose.
+    /// </remarks>
+    public void TraceOperatingSystemState(uint runQueue)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        TraceMemory(0x8000_00C0, 64, "OS thread globals at 0x800000C0");
+        if (runQueue != 0)
+        {
+            TraceMemory(runQueue, 64, $"run queue at 0x{runQueue:X8} (head/tail per priority)");
+        }
+
+        // Every distinct thread or context the globals point at, described. A
+        // thread that is waiting records the queue it is waiting on, and that
+        // pointer is the name of whatever is supposed to wake it — which is the
+        // one thing none of the hardware registers could ever say.
+        var seen = new List<uint>();
+        for (var global = 0x8000_00D4u; global <= 0x8000_00E4u; global += 4)
+        {
+            var thread = Memory.ReadUInt32(global);
+            if (thread == 0 || seen.Contains(thread) || !GameCubeMemory.TryTranslate(thread, out _))
+            {
+                continue;
+            }
+
+            seen.Add(thread);
+            DescribeThread(thread);
+        }
+    }
+
+    /// <summary>
+    /// Reports one thread's scheduling fields, which sit immediately after its
+    /// saved context.
+    /// </summary>
+    private void DescribeThread(uint thread)
+    {
+        var state = Memory.ReadUInt16(thread + 0x2C8);
+        var name = state switch
+        {
+            1 => "READY",
+            2 => "RUNNING",
+            4 => "WAITING",
+            8 => "MORIBUND",
+            _ => "unknown"
+        };
+
+        Trace.Write(
+            GameCubeTraceChannel.Memory,
+            GameCubeTraceLevel.Warning,
+            $"  thread 0x{thread:X8}: state={state} ({name}) " +
+            $"suspend={(int)Memory.ReadUInt32(thread + 0x2CC)} " +
+            $"priority={(int)Memory.ReadUInt32(thread + 0x2D0)} " +
+            $"base={(int)Memory.ReadUInt32(thread + 0x2D4)} " +
+            $"waitingOnQueue=0x{Memory.ReadUInt32(thread + 0x2DC):X8}");
+    }
+
+    /// <summary>
+    /// Reports the three things that all have to be true for an interrupt to
+    /// reach the CPU, so a run that takes none says which one is missing.
+    /// </summary>
+    /// <remarks>
+    /// A device raises its cause, the processor interface has to have that
+    /// device unmasked, and the machine state register has to allow external
+    /// interrupts through. Any one of the three being wrong produces the same
+    /// symptom — a game waiting forever on a flag a handler would have set —
+    /// and none of them is visible from the outside. Guessing which it is has
+    /// already cost two rounds of work aimed at the wrong half of the problem.
+    /// </remarks>
+    public void TraceInterruptState()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var cause = Memory.Hardware.Read(GameCubeHardware.Base + 0x3000, 4);
+        var mask = Memory.Hardware.Read(GameCubeHardware.Base + 0x3004, 4);
+        Trace.Write(
+            GameCubeTraceChannel.Interrupts,
+            GameCubeTraceLevel.Warning,
+            $"  interrupts: msr=0x{Cpu.Msr:X8} external={(Cpu.AreInterruptsEnabled ? "on" : "OFF")} " +
+            $"pi cause=0x{cause:X8} mask=0x{mask:X8} pending={Memory.Hardware.IsInterruptPending} " +
+            $"dec=0x{Cpu.Decrementer:X8} dspCsr=0x{Memory.Hardware.Read(GameCubeHardware.Base + 0x500A, 2):X4}");
     }
 
     /// <summary>

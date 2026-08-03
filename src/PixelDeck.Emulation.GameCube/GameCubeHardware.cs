@@ -111,11 +111,31 @@ public sealed class GameCubeHardware
     private const uint AramDmaAramAddress = DspInterface + 0x24;
     private const uint AramDmaControl = DspInterface + 0x28;
 
+    /// <summary>
+    /// The low half of the size register. Writing it is what starts the
+    /// transfer — the other five halves are only setup.
+    /// </summary>
+    private const uint AramDmaSizeLow = DspInterface + 0x2A;
+
     /// <summary>Set in the count register when the transfer reads out of ARAM.</summary>
     private const uint AramDmaFromAram = 0x8000_0000;
 
     /// <summary>The ARAM completion bit in the DSP control register.</summary>
     private const ushort AramInterrupt = 0x0020;
+
+    /// <summary>
+    /// The three interrupt sources inside the DSP block, each a status bit with
+    /// its enable in the bit immediately above it: audio DMA, ARAM DMA, and the
+    /// DSP itself. Status is cleared by writing a one to it.
+    /// </summary>
+    private const ushort AudioDmaInterrupt = 0x0008;
+    private const ushort AudioDmaInterruptMask = 0x0010;
+    private const ushort AramInterruptMask = 0x0040;
+    private const ushort DspMailInterrupt = 0x0080;
+    private const ushort DspMailInterruptMask = 0x0100;
+
+    /// <summary>The DSP's bit in the processor interface's cause register.</summary>
+    private const uint DspInterruptCause = 0x0000_0040;
 
     /// <summary>The ARAM controller's mode register, at 0xCC00_5016.</summary>
     private const uint AramMode = DspInterface + 0x16;
@@ -167,6 +187,27 @@ public sealed class GameCubeHardware
     private const uint SerialStatus = SerialInterface + 0x38;
 
     /// <summary>
+    /// Controller polling: bits 4 to 7 enable a port each, and the rate is set
+    /// in video lines rather than in time.
+    /// </summary>
+    private const uint SerialPoll = SerialInterface + 0x30;
+    private const uint SerialPollEnabledPorts = 0x0000_00F0;
+
+    /// <summary>
+    /// The two interrupts the serial interface raises, each a status bit with
+    /// its enable below it. Status is cleared by writing a one.
+    /// </summary>
+    private const uint TransferCompleteInterrupt = 1u << 31;
+    private const uint TransferCompleteInterruptMask = 1u << 30;
+    private const uint ReadStatusInterrupt = 1u << 28;
+    private const uint ReadStatusInterruptMask = 1u << 27;
+
+    private const uint SerialInterruptStatus = TransferCompleteInterrupt | ReadStatusInterrupt;
+
+    /// <summary>The serial interface's bit in the processor interface.</summary>
+    private const uint SerialInterruptCause = 0x0000_0008;
+
+    /// <summary>
     /// The control register of each of the three EXI channels. Channels are
     /// twenty bytes apart, and the control register is the fourth word of each.
     /// </summary>
@@ -176,6 +217,34 @@ public sealed class GameCubeHardware
         ExternalInterface + 0x20,
         ExternalInterface + 0x34
     ];
+
+    /// <summary>
+    /// The three external interface channels' status registers. Each channel is
+    /// 0x14 apart, and its control register is 0x0C beyond its status.
+    /// </summary>
+    private static readonly uint[] ExternalStatusRegisters =
+    [
+        ExternalInterface + 0x00,
+        ExternalInterface + 0x14,
+        ExternalInterface + 0x28
+    ];
+
+    /// <summary>
+    /// The three interrupts a channel raises, each a status bit with its enable
+    /// in the bit below it. Status is cleared by writing a one.
+    /// </summary>
+    private const uint ExternalInterruptMask = 1u << 0;
+    private const uint ExternalInterrupt = 1u << 1;
+    private const uint ExternalTransferCompleteMask = 1u << 2;
+    private const uint ExternalTransferComplete = 1u << 3;
+    private const uint ExternalInsertionMask = 1u << 10;
+    private const uint ExternalInsertion = 1u << 11;
+
+    private const uint ExternalInterruptStatus =
+        ExternalInterrupt | ExternalTransferComplete | ExternalInsertion;
+
+    /// <summary>The external interface's bit in the processor interface.</summary>
+    private const uint ExternalInterruptCause = 0x0000_0010;
 
     /// <summary>Bit zero of a transfer control register: start, and busy.</summary>
     private const uint TransferStart = 1;
@@ -194,11 +263,50 @@ public sealed class GameCubeHardware
     private const int DisplayInterruptCount = 4;
     private const uint VerticalPosition = VideoInterface + 0x2C;
 
-    /// <summary>Bit 28 of a display interrupt: it has fired and not been cleared.</summary>
-    private const uint DisplayInterruptFired = 1u << 28;
+    /// <summary>Top and bottom field base addresses of the external framebuffer.</summary>
+    private const uint TopFieldBase = VideoInterface + 0x1C;
+    private const uint BottomFieldBase = VideoInterface + 0x24;
 
-    /// <summary>Bit 31: this display interrupt is armed.</summary>
-    private const uint DisplayInterruptEnabled = 1u << 31;
+    /// <summary>
+    /// Where the video interface is currently reading its picture from, or zero
+    /// if a game has not pointed it anywhere yet.
+    /// </summary>
+    /// <remarks>
+    /// The top field is preferred and the bottom is the fallback, because a
+    /// game running progressively programs only one of them and which one is
+    /// not fixed.
+    /// </remarks>
+    public uint ExternalFramebuffer
+    {
+        get
+        {
+            var top = GameCubeVideoOutput.DecodeFramebufferAddress(ReadRegister32(TopFieldBase));
+            return top != 0
+                ? top
+                : GameCubeVideoOutput.DecodeFramebufferAddress(ReadRegister32(BottomFieldBase));
+        }
+    }
+
+    /// <summary>
+    /// Bit 31 of a display interrupt: it has fired and not been acknowledged.
+    /// Software clears it by writing a one.
+    /// </summary>
+    /// <remarks>
+    /// These two were the wrong way round, and the mistake was invisible from
+    /// every direction. A game arms an interrupt by setting bit 28; PixelCube
+    /// tested bit 31 for "armed", found it clear, and skipped the interrupt as
+    /// disabled — forever. The video interface was configured, unmasked at the
+    /// processor interface, and running against a correct video clock, and
+    /// still never raised anything. YAGCD: "31 i INT - Interrupt Status
+    /// (1=Active) (Write to clear)", "28 e ENB - Interrupt Enable Bit".
+    /// </remarks>
+    private const uint DisplayInterruptFired = 1u << 31;
+
+    /// <summary>Bit 28: this display interrupt is armed.</summary>
+    private const uint DisplayInterruptEnabled = 1u << 28;
+
+    /// <summary>The line a display interrupt fires on, in bits 16 to 25.</summary>
+    private const uint DisplayInterruptLineMask = 0x3FF;
 
     /// <summary>
     /// Lines in one NTSC field, and the core cycles each one takes.
@@ -282,6 +390,10 @@ public sealed class GameCubeHardware
             _verticalLine = _verticalLine >= LinesPerField ? 1 : _verticalLine + 1;
             WriteRegister16(VerticalPosition, (ushort)_verticalLine);
             FireDisplayInterrupts();
+            if (_verticalLine == 1)
+            {
+                PollControllers();
+            }
         }
     }
 
@@ -307,8 +419,8 @@ public sealed class GameCubeHardware
                 continue;
             }
 
-            // The chosen line is stored one-based in bits 16 to 26.
-            var line = (display >> 16) & 0x7FF;
+            // The chosen line is stored one-based in bits 16 to 25.
+            var line = (display >> 16) & DisplayInterruptLineMask;
             if (line != (uint)_verticalLine)
             {
                 continue;
@@ -441,6 +553,60 @@ public sealed class GameCubeHardware
         WriteRegister16(high, (ushort)(value >> 16));
     }
 
+    /// <summary>
+    /// Polls the controllers once a field and says so, which is the one
+    /// interrupt on a GameCube that keeps arriving whether or not a game asks
+    /// for anything.
+    /// </summary>
+    /// <remarks>
+    /// The serial interface reads every enabled port automatically at a rate
+    /// set in video lines, and raises its read-status interrupt each time the
+    /// data is refreshed. Without it the pad library's thread sleeps waiting
+    /// for input that never arrives — and because a blocked thread is invisible
+    /// from the outside, the symptom is an operating system with nothing
+    /// runnable, idling forever, rather than anything that looks like input.
+    /// </remarks>
+    private void PollControllers()
+    {
+        if ((ReadRegister32(SerialPoll) & SerialPollEnabledPorts) == 0)
+        {
+            return;
+        }
+
+        WriteRegister32(
+            SerialCommunicationStatus,
+            ReadRegister32(SerialCommunicationStatus) | ReadStatusInterrupt);
+        RefreshSerialInterrupt();
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Input,
+            GameCubeTraceLevel.Debug,
+            "si/poll",
+            60,
+            $"controllers polled; ports enabled=0x{ReadRegister32(SerialPoll) & SerialPollEnabledPorts:X2}");
+    }
+
+    /// <summary>
+    /// Asserts or drops the serial interface's interrupt from its two
+    /// status-and-enable pairs.
+    /// </summary>
+    private void RefreshSerialInterrupt()
+    {
+        var status = ReadRegister32(SerialCommunicationStatus);
+        var asserted =
+            ((status & TransferCompleteInterrupt) != 0 &&
+             (status & TransferCompleteInterruptMask) != 0) ||
+            ((status & ReadStatusInterrupt) != 0 &&
+             (status & ReadStatusInterruptMask) != 0);
+
+        if (asserted)
+        {
+            RaiseInterrupt(SerialInterruptCause);
+            return;
+        }
+
+        WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) & ~SerialInterruptCause);
+    }
+
     /// <summary>Asserts a device's interrupt cause.</summary>
     private void RaiseInterrupt(uint cause) =>
         WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) | cause);
@@ -511,6 +677,55 @@ public sealed class GameCubeHardware
         if (offset >= WriteGatherPipe)
         {
             WriteToGatherPipe(size, value);
+            Report(offset, "write", size, value);
+            return;
+        }
+
+        // An external interface channel's three status bits are acknowledged by
+        // writing ones, in the same word as their enables and the device select.
+        if (size == 4 && Array.IndexOf(ExternalStatusRegisters, offset) >= 0)
+        {
+            var kept = ReadRegister32(offset) & ExternalInterruptStatus & ~value;
+            WriteRegister32(offset, (value & ~ExternalInterruptStatus) | kept);
+            RefreshExternalInterrupt();
+            Report(offset, "write", size, value);
+            return;
+        }
+
+        // The serial interface's two status bits are acknowledged the same way,
+        // and sit in the same word as the enables and the transfer start bit.
+        if (size == 4 && offset == SerialCommunicationStatus)
+        {
+            var kept = ReadRegister32(offset) & SerialInterruptStatus & ~value;
+            WriteRegister32(offset, (value & ~SerialInterruptStatus) | kept);
+
+            // A transfer finishes before the write that started it returns, so
+            // its completion interrupt is already waiting when software looks.
+            if ((value & 1) != 0)
+            {
+                WriteRegister32(
+                    offset,
+                    (ReadRegister32(offset) & ~1u) | TransferCompleteInterrupt);
+            }
+
+            RefreshSerialInterrupt();
+            Report(offset, "write", size, value);
+            return;
+        }
+
+        // A display interrupt's status bit is acknowledged by writing a one to
+        // it, while every other bit in the same word is ordinary configuration
+        // the game rewrites each time it re-arms. Storing the value wholesale
+        // would set the very bit the write was clearing, so the interrupt would
+        // re-assert the instant its handler returned.
+        if (size == 4 &&
+            offset >= DisplayInterrupt0 &&
+            offset < DisplayInterrupt0 + (DisplayInterruptCount * 4) &&
+            (offset - DisplayInterrupt0) % 4 == 0)
+        {
+            var kept = ReadRegister32(offset) & DisplayInterruptFired & ~value;
+            WriteRegister32(offset, (value & ~DisplayInterruptFired) | kept);
+            RefreshVideoInterrupt();
             Report(offset, "write", size, value);
             return;
         }
@@ -624,17 +839,71 @@ public sealed class GameCubeHardware
         }
     }
 
+    /// <summary>
+    /// Finishes an external interface transfer and says so, which is the half
+    /// that was missing: the transfer already completed instantly, silently.
+    /// </summary>
+    /// <remarks>
+    /// The memory card, the real-time clock and the console's own SRAM all hang
+    /// off this bus, and the card library is asynchronous — it starts a
+    /// transfer, registers a callback and sleeps. Completing without raising
+    /// the interrupt leaves that callback unrun and the thread asleep for good.
+    /// </remarks>
+    private void CompleteExternalTransfer(uint controlOffset)
+    {
+        WriteRegister32(controlOffset, ReadRegister32(controlOffset) & ~TransferStart);
+
+        // The status register sits 0x0C below its channel's control register.
+        var status = controlOffset - 0x0C;
+        WriteRegister32(status, ReadRegister32(status) | ExternalTransferComplete);
+        RefreshExternalInterrupt();
+    }
+
+    /// <summary>
+    /// Asserts or drops the external interface's interrupt from every
+    /// channel's three status-and-enable pairs.
+    /// </summary>
+    private void RefreshExternalInterrupt()
+    {
+        foreach (var channel in ExternalStatusRegisters)
+        {
+            var status = ReadRegister32(channel);
+            if (((status & ExternalInterrupt) != 0 && (status & ExternalInterruptMask) != 0) ||
+                ((status & ExternalTransferComplete) != 0 &&
+                 (status & ExternalTransferCompleteMask) != 0) ||
+                ((status & ExternalInsertion) != 0 && (status & ExternalInsertionMask) != 0))
+            {
+                RaiseInterrupt(ExternalInterruptCause);
+                return;
+            }
+        }
+
+        WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) & ~ExternalInterruptCause);
+    }
+
     private void ApplyWriteSideEffects(uint offset, int size, uint value)
     {
-        if (offset == AramDmaControl && size == 4)
+        // "ARAM DMA is setup by writing to the various DSP_AR_DMA_* registers,
+        // and initiated by writing to DSP_AR_DMA_SIZE_L." Those six halves are
+        // written individually, so triggering only on a 32-bit store to the
+        // size register meant every transfer a game set up half-word at a time
+        // did nothing at all — silently, because the setup writes all landed.
+        if (offset == AramDmaSizeLow || (offset == AramDmaControl && size == 4))
         {
-            PerformAramTransfer(value);
+            PerformAramTransfer();
             return;
         }
 
         if (offset == DvdControl && (value & TransferStart) != 0)
         {
             ExecuteDvdCommand();
+            return;
+        }
+
+        if ((value & TransferStart) != 0 &&
+            Array.IndexOf(ExternalControlRegisters, offset) >= 0)
+        {
+            CompleteExternalTransfer(offset);
             return;
         }
 
@@ -683,7 +952,41 @@ public sealed class GameCubeHardware
             control &= unchecked((ushort)~(DspReset | DspDmaInProgress));
             control &= unchecked((ushort)~(value & DspInterruptStatus));
             WriteRegister16(DspControlStatus, control);
+
+            // Acknowledging a status bit, or changing an enable, can be what
+            // drops the line the processor interface is holding.
+            RefreshDspInterrupt();
         }
+    }
+
+    /// <summary>
+    /// Asserts or drops the DSP's interrupt at the processor interface, from
+    /// the three status-and-enable pairs inside the DSP block.
+    /// </summary>
+    /// <remarks>
+    /// Setting a status bit inside the DSP is only half of an interrupt, and
+    /// PixelCube did only that half. ARAM transfers completed, the ARAM status
+    /// bit went up, and nothing ever reached the CPU — so the operating
+    /// system's handler never ran, the callback never fired, and Super Mario
+    /// Sunshine sat on a two-instruction loop waiting for a global that only
+    /// that callback sets. A device that finishes without saying so is
+    /// indistinguishable from one that never finishes.
+    /// </remarks>
+    private void RefreshDspInterrupt()
+    {
+        var control = ReadRegister16(DspControlStatus);
+        var asserted =
+            ((control & AudioDmaInterrupt) != 0 && (control & AudioDmaInterruptMask) != 0) ||
+            ((control & AramInterrupt) != 0 && (control & AramInterruptMask) != 0) ||
+            ((control & DspMailInterrupt) != 0 && (control & DspMailInterruptMask) != 0);
+
+        if (asserted)
+        {
+            RaiseInterrupt(DspInterruptCause);
+            return;
+        }
+
+        WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) & ~DspInterruptCause);
     }
 
     /// <summary>
@@ -854,40 +1157,68 @@ public sealed class GameCubeHardware
     /// returns and the interrupt is already pending — which is indistinguishable
     /// from a very fast machine, and is what lets ARAM sizing complete.
     /// </remarks>
-    private void PerformAramTransfer(uint control)
+    private void PerformAramTransfer()
     {
+        // Read back rather than taken from the store that triggered it: the
+        // trigger is a sixteen-bit write of the size's low half, which carries
+        // neither the direction bit nor the upper size bits.
+        var control = ReadRegister32(AramDmaControl);
         var length = (int)(control & 0x03FF_FFFF);
-        var mainAddress = ReadRegister32(AramDmaMainAddress) & 0x03FF_FFFF;
-        var aramAddress = ReadRegister32(AramDmaAramAddress) & 0x03FF_FFFF;
+
+        // The low five bits of both addresses are hardwired to zero on
+        // hardware, which forces every transfer onto a 32-byte boundary.
+        var mainAddress = ReadRegister32(AramDmaMainAddress) & 0x03FF_FFE0;
+        var aramAddress = ReadRegister32(AramDmaAramAddress) & 0x03FF_FFE0;
         var fromAram = (control & AramDmaFromAram) != 0;
 
         var main = _memory.MainMemory;
         var auxiliary = _memory.AuxiliaryMemory;
-        if (length > 0 &&
-            mainAddress + length <= (uint)main.Length &&
-            aramAddress + length <= (uint)auxiliary.Length)
+        if (length > 0 && mainAddress + length <= (uint)main.Length)
         {
-            var source = fromAram
-                ? auxiliary.Slice((int)aramAddress, length)
-                : main.Slice((int)mainAddress, length);
-            var destination = fromAram
-                ? main.Slice((int)mainAddress, length)
-                : auxiliary.Slice((int)aramAddress, length);
-            source.CopyTo(destination);
+            // ARAM addresses wrap. A retail console has 16 MB across two banks
+            // addressed contiguously, and the DMA's address register is far
+            // wider than that, so an address past the end comes back round to
+            // the start. That is not a detail — it is how the operating system
+            // measures ARAM: it writes a pattern at 16 MB exactly and checks
+            // whether the bytes at zero changed, and an expansion board is
+            // reported when they did not. Skipping the transfer, which is what
+            // this did, leaves the probe unable to tell the two apart, so a
+            // retail console reports memory it does not have and every audio
+            // allocation afterwards points past the end of it.
+            var moved = 0;
+            while (moved < length)
+            {
+                var aramOffset = (int)((aramAddress + (uint)moved) % (uint)auxiliary.Length);
+                var chunk = Math.Min(length - moved, auxiliary.Length - aramOffset);
+                var fromMain = main.Slice((int)mainAddress + moved, chunk);
+                var inAram = auxiliary.Slice(aramOffset, chunk);
+                if (fromAram)
+                {
+                    inAram.CopyTo(fromMain);
+                }
+                else
+                {
+                    fromMain.CopyTo(inAram);
+                }
+
+                moved += chunk;
+            }
         }
         else if (length > 0)
         {
+            // Only main memory can genuinely be out of range now.
             _trace.WriteOnce(
                 GameCubeTraceChannel.Unimplemented,
                 GameCubeTraceLevel.Warning,
                 "aram/out-of-range",
-                $"ARAM transfer of {length} bytes between 0x{mainAddress:X8} and " +
-                $"0x{aramAddress:X8} falls outside memory and was skipped");
+                $"ARAM transfer of {length} bytes at main memory 0x{mainAddress:X8} " +
+                "falls outside memory and was skipped");
         }
 
         WriteRegister16(
             DspControlStatus,
             (ushort)(ReadRegister16(DspControlStatus) | AramInterrupt));
+        RefreshDspInterrupt();
         _trace.Write(
             GameCubeTraceChannel.Dsp,
             GameCubeTraceLevel.Debug,

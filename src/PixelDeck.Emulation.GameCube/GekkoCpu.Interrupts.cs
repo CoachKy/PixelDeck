@@ -69,6 +69,20 @@ public sealed partial class GekkoCpu
         get => _spr[SprDecrementer];
         set
         {
+            // Reported because the alarm system is the last wake source left
+            // and its behaviour is not observable any other way. What matters
+            // is whether software programs this repeatedly with short values —
+            // an operating system scheduling real alarms — or writes it once
+            // and leaves it, which means nothing is waiting on time at all and
+            // no length of run will ever produce a decrementer interrupt.
+            _trace.WriteEvery(
+                GameCubeTraceChannel.Interrupts,
+                GameCubeTraceLevel.Information,
+                "gekko/decrementer-set",
+                1,
+                $"decrementer set to 0x{value:X8} ({value / 40_500_000.0:F3} s) " +
+                $"from 0x{Pc:X8} at {InstructionsExecuted:N0} instructions");
+
             _spr[SprDecrementer] = value;
             if ((value & 0x8000_0000) == 0)
             {
@@ -123,9 +137,14 @@ public sealed partial class GekkoCpu
                  MsrRecoverableInterrupt);
         Pc = vector;
 
-        _trace.Write(
+        // Keyed and at Information, so the tally answers "did any interrupt
+        // ever reach the CPU" without a debug-level run. That question has been
+        // asked three times today and been unanswerable each time.
+        _trace.WriteEvery(
             GameCubeTraceChannel.Interrupts,
-            GameCubeTraceLevel.Debug,
+            GameCubeTraceLevel.Information,
+            $"interrupt/{description}",
+            4096,
             $"{description} exception: return=0x{_spr[SprSrr0]:X8} saved msr=0x{_spr[SprSrr1]:X8}");
     }
 
