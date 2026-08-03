@@ -58,6 +58,23 @@ public static class GameCubeBootState
     /// <summary>A branch to <c>rfi</c>: the default exception handler body.</summary>
     private const uint ReturnFromInterrupt = 0x4C00_0064;
 
+    /// <summary>
+    /// What the decrementer counts down from before the game programs its own.
+    /// </summary>
+    /// <remarks>
+    /// Zero is the one value that cannot be right. The decrementer raises its
+    /// exception on the step into negative, so a decrementer left at zero goes
+    /// negative on the very first tick and has a request waiting the instant
+    /// the game first sets MSR[EE] — which a game does inside <c>OSInit</c>,
+    /// before its exception handler table is populated. The interrupt is then
+    /// dispatched through a null table slot. A real console has been running
+    /// its boot ROM for seconds by this point and leaves the decrementer
+    /// somewhere arbitrary but positive; the largest positive value is that,
+    /// and it guarantees the first decrementer exception a game sees is one it
+    /// asked for.
+    /// </remarks>
+    private const uint InitialDecrementer = 0x7FFF_FFFF;
+
     /// <summary>The exception vectors a bare handler is installed at.</summary>
     private static readonly uint[] ExceptionVectors =
     [
@@ -120,6 +137,7 @@ public static class GameCubeBootState
         cpu.Lr = 0;
         cpu.Ctr = 0;
         cpu.TimeBase = 0;
+        cpu.Decrementer = InitialDecrementer;
 
         trace.Write(
             GameCubeTraceChannel.Boot,
@@ -129,37 +147,53 @@ public static class GameCubeBootState
     }
 
     /// <summary>
-    /// Marks the bottom of the free memory the game may allocate from: the end
-    /// of everything the executable occupies.
+    /// Leaves the bottom of the free memory at zero, which is what a real
+    /// handoff leaves, because the game is the only thing that knows the answer.
     /// </summary>
     /// <remarks>
-    /// Leaving this at zero is not a harmless omission. The operating system
-    /// hands out memory from here upward, so a game that allocates gets
-    /// addresses starting at zero — it then writes its own structures over the
-    /// low-memory globals, including the pointer to the running thread, and
-    /// the scheduler starts following a pointer into nowhere. The symptom
-    /// appears hundreds of millions of instructions later and looks nothing
-    /// like its cause.
+    /// <para>
+    /// This looks like an omission and is the opposite of one. YAGCD's low
+    /// memory map marks <c>ArenaLo</c> at 0x80000030 as changed *after* an
+    /// <c>OSInit</c> call and gives its value at handoff as zero: neither the
+    /// boot ROM nor the apploader sets it. <c>OSInit</c> computes it from a
+    /// linker symbol in the game's own image.
+    /// </para>
+    /// <para>
+    /// That distinction is not academic, because the linker places the stack in
+    /// space the DOL does not declare — immediately above the last section, and
+    /// invisible to anything reading the executable. PixelCube previously
+    /// derived the arena from the end of the image and handed that over, which
+    /// put the low water mark exactly on <c>_stack_addr</c>. Super Mario
+    /// Sunshine then cleared the arena it had been given and erased the stack it
+    /// was standing on, memset's own return address included, and returned to
+    /// address zero six and a half million instructions in.
+    /// </para>
+    /// <para>
+    /// A value invented here can only ever be a guess at something the game
+    /// already knows. Leaving it as hardware leaves it lets the game answer.
+    /// </para>
     /// </remarks>
     private static void InstallArena(
         GameCubeMemory memory,
         GameCubeExecutable executable,
         GameCubeTraceLog trace)
     {
+        memory.WriteUInt32(0x8000_0030, 0);
+
+        // The image extent is still worth reporting even though it is no longer
+        // used as the bound: it is the number to compare the game's own choice
+        // against, and the gap between them is the stack.
         var top = executable.BssAddress + executable.BssSize;
         foreach (var section in executable.Sections)
         {
             top = Math.Max(top, section.EndAddress);
         }
 
-        // Rounded up to a cache line, as the apploader leaves it.
-        var arenaLow = (top + 31) & ~31u;
-        memory.WriteUInt32(0x8000_0030, arenaLow);
-
         trace.Write(
             GameCubeTraceChannel.Boot,
-            GameCubeTraceLevel.Debug,
-            $"arena low set to 0x{arenaLow:X8}, past the executable's last section and BSS");
+            GameCubeTraceLevel.Information,
+            $"arena low left at 0 for OSInit to set; the executable ends at " +
+            $"0x{(top + 31) & ~31u:X8} and the stack sits above it");
     }
 
     /// <summary>
@@ -203,7 +237,7 @@ public static class GameCubeBootState
 
         trace.Write(
             GameCubeTraceChannel.Boot,
-            GameCubeTraceLevel.Debug,
+            GameCubeTraceLevel.Information,
             $"file table at 0x{address:X8}+0x{size:X}, disc information at " +
             $"0x{informationAddress:X8}, arena high 0x{address:X8}");
     }

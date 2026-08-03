@@ -303,6 +303,33 @@ public sealed class GekkoCpuTests
     }
 
     [Fact]
+    public void ABranchThroughAZeroedRegister_StopsAtTheBranchNotAtAddressZero()
+    {
+        using var machine = new CpuFixture();
+
+        // A call, then a branch through CTR while CTR is still zero. Address
+        // zero is mapped, so without the guard this would run whatever bytes
+        // live there and report an address the game never meant to reach.
+        var call = IForm(18, 8, lk: true);
+        machine.Write(CodeBase, call);
+        machine.Write(CodeBase + 8, XlForm(19, 20, 0, 528)); // bctr
+        machine.Cpu.Pc = CodeBase;
+
+        var result = machine.Cpu.Run(8);
+
+        Assert.Equal(GekkoOutcome.WildBranch, result.Outcome);
+        Assert.Equal(1, result.InstructionsExecuted);
+        Assert.Equal(CodeBase + 8, machine.Cpu.Pc);
+        Assert.Equal(0u, machine.Cpu.LastBranchTarget);
+
+        // The path that led there is what turns the report into a diagnosis.
+        var transfers = machine.Cpu.CaptureRecentTransfers();
+        Assert.Equal((CodeBase, CodeBase + 8, call), transfers[0]);
+        Assert.Equal(CodeBase + 8, transfers[^1].From);
+        Assert.Equal(0u, transfers[^1].To);
+    }
+
+    [Fact]
     public void PollingAnUnimplementedRegister_ProducesOneLineAndACount()
     {
         // The shape of the real finding: Super Mario Sunshine polls one

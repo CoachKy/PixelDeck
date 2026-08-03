@@ -15,6 +15,13 @@ public enum GekkoOutcome
     /// <summary>Instruction fetch left mapped memory.</summary>
     FetchFault,
 
+    /// <summary>
+    /// A branch targeted an address no code can live at — almost always a
+    /// register holding zero. Stopping here names the branch; carrying on
+    /// would name whatever byte pattern failed to decode afterwards.
+    /// </summary>
+    WildBranch,
+
     /// <summary>Execution was stopped by <see cref="GekkoCpu.Halt"/>.</summary>
     Halted
 }
@@ -222,11 +229,23 @@ public sealed partial class GekkoCpu
             GameCubeTraceLevel.Verbose,
             $"{Pc:X8}  {instruction:X8}  {GekkoDisassembler.Describe(instruction, Pc)}");
 
-        var nextPc = Pc + 4;
+        var sequential = Pc + 4;
+        var nextPc = sequential;
         var executed = Execute(instruction, ref nextPc);
         if (!executed)
         {
             return ReportUnimplemented(instruction);
+        }
+
+        if (nextPc != sequential)
+        {
+            RecordTransfer(Pc, nextPc, instruction);
+            if (StopOnWildBranch && !IsPlausibleCodeAddress(nextPc))
+            {
+                // Pc is left at the branch, not at the target, so the reported
+                // state is the state at the obstacle.
+                return ReportWildBranch(instruction, nextPc);
+            }
         }
 
         Pc = nextPc;
@@ -446,20 +465,28 @@ public sealed partial class GekkoCpu
                 return true;
             }
 
+            // Every floating point form checks the unit is switched on first.
+            // The exception is synchronous: when it is taken the instruction
+            // does not run, and rfi will bring control back to retry it.
             case 4:
-                return ExecutePairedSingle(instruction, d, a, b, rc);
+                return TryTakeFloatingPointUnavailable(ref nextPc) ||
+                    ExecutePairedSingle(instruction, d, a, b, rc);
 
             case >= 48 and <= 55: // lfs/lfsu/lfd/lfdu/stfs/stfsu/stfd/stfdu
-                return ExecuteFloatMemory(primary, d, a, simm);
+                return TryTakeFloatingPointUnavailable(ref nextPc) ||
+                    ExecuteFloatMemory(primary, d, a, simm);
 
             case 56 or 57 or 60 or 61: // psq_l/psq_lu/psq_st/psq_stu
-                return ExecuteQuantisedMemory(instruction, primary, d, a);
+                return TryTakeFloatingPointUnavailable(ref nextPc) ||
+                    ExecuteQuantisedMemory(instruction, primary, d, a);
 
             case 59:
-                return ExecuteSingleFloat(instruction, d, a, b, rc);
+                return TryTakeFloatingPointUnavailable(ref nextPc) ||
+                    ExecuteSingleFloat(instruction, d, a, b, rc);
 
             case 63:
-                return ExecuteDoubleFloat(instruction, d, a, b, rc);
+                return TryTakeFloatingPointUnavailable(ref nextPc) ||
+                    ExecuteDoubleFloat(instruction, d, a, b, rc);
 
             case 17: // sc — enter the system call handler
                 _spr[SprSrr0] = Pc + 4;
@@ -1038,6 +1065,10 @@ public sealed partial class GekkoCpu
                 return;
             case SprWriteTbu:
                 TimeBase = (TimeBase & 0xFFFF_FFFF) | ((ulong)value << 32);
+                return;
+            case SprDecrementer:
+                // Through the property, which cancels an untaken request.
+                Decrementer = value;
                 return;
         }
 

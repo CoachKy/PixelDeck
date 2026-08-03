@@ -119,8 +119,11 @@ That list is the work queue for whatever gets implemented next.
 | Disassembler, including instructions that cannot run | Complete |
 | OS low-memory globals and initial CPU state | Complete |
 | DSP reset, EXI/SI/DI transfer completion, ARAM DMA | Modelled enough to boot past |
-| DSP microcode past the boot handshake | Absent |
-| ARAM mode/status bits | Absent — the current wall |
+| ARAM mode and status bits | Complete |
+| DVD command and DMA transfer | Complete |
+| PI interrupts, decrementer, external interrupt vector | Complete |
+| Wild-branch guard and control-transfer ring | Complete |
+| DSP microcode past the boot handshake | Absent — the current wall |
 | Graphics, video, audio, input, save states | Absent |
 
 ## Launching a disc
@@ -405,29 +408,105 @@ cause silently cleared every device's. Found by a test, not by a game.
 ## Where both games now stand
 
 Super Mario Sunshine and Metroid Prime now fail *identically*, within nine
-thousand instructions of each other, at around 6.6 million: a branch through a
-count register holding zero, landing on address zero, with the stack pointer
-also zero. Two unrelated games converging on one failure is a statement about
+thousand instructions of each other, at around 6.6 million, landing on address
+zero. Two unrelated games converging on one failure is a statement about
 PixelCube rather than about either game.
+
+The register state at the fault, once the guard could report it, corrected two
+things this section originally said. The stack pointer is **not** zero — it is
+`0x804277B8`, a healthy stack allocated out of the arena — so the machine is in
+good order right up to the branch. And it is a link register, not a count
+register: `lr=0` and `ctr=0` both, but the instruction is `blr`.
+
+The other thing the register dump showed was `msr=0x00000032`, where the boot
+state starts it at `0x00002032`. Bit `0x2000` is MSR[FP], and it has been
+cleared and not restored. That matters because the operating system switches
+floating point context lazily: a thread runs with the unit off until it first
+touches it, takes a floating point unavailable exception at `0x80000800`, and
+the handler swaps that thread's registers in. PixelCube has no such vector and
+executes the instruction anyway, so threads share whatever was last loaded.
+Whether Sunshine relies on it is now counted rather than assumed —
+`gekko/fp-unavailable` in the tally answers it either way.
+
+## The branch that reported the wrong address
+
+Both games stopped with `unimplemented instruction 00000000 at 0x00000008`,
+which names an address neither game ever meant to reach and an instruction
+neither game wrote. Address zero is mapped and full of bytes — the boot state
+copies the disc header there, because that is where `DVDInit` reads the game ID
+from — so a branch to zero does not fault. It fetches `GMSE`, decodes it as a
+system call, decodes the next word as an `addic`, and dies on the third word,
+eight bytes downstream of the actual fault.
+
+The guard now stops at the branch itself. Any control transfer to a physical
+offset below `0x100` — the OS low-memory globals, which are data and never a
+branch target — halts the run with `WildBranch`, leaving the program counter on
+the branching instruction so the reported state is the state at the obstacle.
+Alongside it goes a ring of the last thirty-two control transfers, each
+disassembled, which is the call path: the branch, its caller, and the code that
+loaded the bad pointer.
+
+The `Cpu` channel had to join the default set for any of that to be visible.
+It was excluded because it carries the per-instruction disassembly — but that
+is emitted at `Verbose` and filtered by *level*, so excluding the whole channel
+also discarded the fetch-fault error and the "execution stopped" warning that
+were supposed to explain a dead run. Two filters, and only one of them was the
+one worth applying.
+
+## A decrementer that had already expired
+
+The boot state zeroed every special register, the decrementer included. The
+decrementer raises its exception on the step *into* negative, so one starting at
+zero goes negative on its very first tick and has a request waiting from then
+on. The instant a game first sets `MSR[EE]` — which happens inside `OSInit`,
+before the exception handler table is populated — that request is delivered and
+dispatched through a null table slot. `mtctr` a zero, `bctr`, address zero.
+
+Zero is the one value the decrementer cannot have on a real console: the boot
+ROM has been running for seconds by then. It now starts at the largest positive
+value, so the first decrementer exception a game sees is one it asked for. A
+write of a non-negative value also cancels an untaken request, which is what the
+750 does and what the operating system relies on when it programs the
+decrementer before enabling interrupts.
+
+It was not the cause. The run stopped at 6,612,245 instructions with and
+without it — the same wall, to the instruction. The fix stays because a
+decrementer at zero is an artefact of clearing an array rather than a state
+hardware produces, and because it was the only interrupt source in PixelCube not
+gated behind a register the game itself programs. But the prediction was wrong,
+and the guard said so in one run rather than after a day of building on it.
+
+## What the guard actually found
+
+```
+execution stopped after 6,612,245 instructions: WildBranch at 0x8000312C (blr)
+  came from 0x8000312C -> 0x00000000  blr
+  came from 0x800031DC -> 0x80003118  beqlr
+  came from 0x800031C0 -> 0x800031D0  beq
+  ... 0x800031B8 -> 0x80003194  bne    (a loop, some twenty-eight times)
+```
+
+Not a `bctr` through a null handler slot at all — a `blr` through a link
+register holding zero, which is the value the boot state starts it at. Read
+backwards: something called a function from `0x80003114`, that function ran a
+loop and returned via `beqlr` to `0x80003118`, and five instructions later the
+function *containing* that call reached its own epilogue, restored a saved link
+register of zero, and returned off the top of the world.
+
+`0x80003118` is in the DOL's first text section, which loads at `0x80003100` —
+below the entry point at `0x8000522C`. That is runtime startup code, not game
+code. Whether it is a function that should never have been entered, or one whose
+caller never set a link register, is the next thing to disassemble.
 
 ## Next
 
-PixelCube has **no interrupt delivery of any kind**. No processor-interface
-cause and mask registers, no external interrupt at vector `0x80000500`, no
-decrementer, no vertical blank. Every one of those is something the GameCube's
-operating system builds on: threads sleep waiting to be woken, alarms fire off
-the decrementer, and `VIWaitForRetrace` blocks until the video interface says a
-field has finished.
+The wild-branch report names the function that took the branch. Until a run
+produces one, everything past this point is a guess.
 
-A scheduler with nothing to wake it is exactly what that spinning enqueue looks
-like. That is the next subsystem, and it is also the one that leads to a
-framebuffer — the video interface is where a picture would eventually come
-from. This is not another stub: the game has
-uploaded microcode and is waiting for the DSP to reply, so answering honestly
-means either a DSP interpreter or an HLE layer that recognises what the
-microcode was asked to do. Faking a reply would let the game believe its audio
-system is running, and every trace after that would describe a machine that
-does not exist — the precise failure the counters exist to catch.
-
-Paired singles are the other known gap, and will appear the moment anything
-past startup runs.
+Beyond it, the known gaps are unchanged and in order: the **DSP microcode**,
+where the game has uploaded a program and is waiting for a reply that only a DSP
+interpreter or a task-level HLE layer can honestly give; and **video**, which is
+where a picture would come from and which nothing has needed yet. Faking the DSP
+reply would let the game believe its audio system is running, and every trace
+after that would describe a machine that does not exist — the precise failure
+the counters exist to catch.

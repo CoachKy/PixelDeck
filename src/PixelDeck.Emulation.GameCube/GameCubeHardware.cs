@@ -48,6 +48,25 @@ public sealed class GameCubeHardware
     private const uint ExternalInterface = 0x6800;
     private const uint AudioInterface = 0x6C00;
 
+    /// <summary>
+    /// The write-gather pipe: everything a game draws is written here, one
+    /// burst at a time, and lands in the FIFO in main memory.
+    /// </summary>
+    private const uint WriteGatherPipe = 0x8000;
+
+    // The command processor's FIFO, in pairs of sixteen-bit halves because
+    // that is how the hardware exposes a 32-bit address.
+    private const uint FifoBaseLow = CommandProcessor + 0x20;
+    private const uint FifoBaseHigh = CommandProcessor + 0x22;
+    private const uint FifoEndLow = CommandProcessor + 0x24;
+    private const uint FifoEndHigh = CommandProcessor + 0x26;
+    private const uint FifoDistanceLow = CommandProcessor + 0x30;
+    private const uint FifoDistanceHigh = CommandProcessor + 0x32;
+    private const uint FifoWritePointerLow = CommandProcessor + 0x34;
+    private const uint FifoWritePointerHigh = CommandProcessor + 0x36;
+    private const uint FifoReadPointerLow = CommandProcessor + 0x38;
+    private const uint FifoReadPointerHigh = CommandProcessor + 0x3A;
+
     /// <summary>The CPU-to-DSP mailbox, written high word first.</summary>
     private const uint DspMailToDspHigh = DspInterface + 0x00;
     private const uint DspMailToDspLow = DspInterface + 0x02;
@@ -222,14 +241,21 @@ public sealed class GameCubeHardware
     private ushort _mailToDspHigh;
     private bool _dspInitInProgress;
 
+    /// <summary>How many gather pipe writes have been reported verbatim.</summary>
+    private int _gatherPipeWrites;
+
     public GameCubeHardware(GameCubeTraceLog trace, GameCubeMemory memory)
     {
         ArgumentNullException.ThrowIfNull(trace);
         ArgumentNullException.ThrowIfNull(memory);
         _trace = trace;
         _memory = memory;
+        Graphics = new GameCubeCommandProcessor(memory, trace);
         Reset();
     }
+
+    /// <summary>The command processor, which decodes what the FIFO carries.</summary>
+    public GameCubeCommandProcessor Graphics { get; }
 
     /// <summary>
     /// Whether any device is asserting an interrupt the CPU has not masked
@@ -299,6 +325,122 @@ public sealed class GameCubeHardware
         }
     }
 
+    // ------------------------------------------------------------- graphics
+
+    /// <summary>
+    /// Takes a write to the write-gather pipe and puts it in the FIFO, then
+    /// lets the command processor read as much of the FIFO as is complete.
+    /// </summary>
+    /// <remarks>
+    /// On hardware these are two independent parties: the CPU bursts thirty-two
+    /// bytes at a time into a ring in main memory, and the graphics processor
+    /// consumes it at its own pace, with the gap between the two pointers being
+    /// what a game watches to know whether it may send more. PixelCube consumes
+    /// immediately, so the gap is always zero and a game is never made to wait —
+    /// which is the right way round to be wrong. A FIFO that reported itself
+    /// full would stall a game against hardware that is not actually busy.
+    /// </remarks>
+    private void WriteToGatherPipe(int size, uint value)
+    {
+        var start = ReadPointer(FifoBaseLow, FifoBaseHigh);
+        var end = ReadPointer(FifoEndLow, FifoEndHigh);
+        if (end <= start)
+        {
+            _trace.WriteOnce(
+                GameCubeTraceChannel.Graphics,
+                GameCubeTraceLevel.Warning,
+                "gx/fifo-unconfigured",
+                $"write-gather pipe used before the FIFO was set up " +
+                $"(base=0x{start:X8} end=0x{end:X8}); the write is dropped");
+            return;
+        }
+
+        var write = ReadPointer(FifoWritePointerLow, FifoWritePointerHigh);
+        var reset = write < start || write >= end;
+        if (reset)
+        {
+            write = start;
+        }
+
+        // Every write for the first stretch, verbatim. The command stream is
+        // built a byte or a word at a time, and the only way to tell a decoder
+        // bug from a plumbing bug is to see what was actually pushed and where
+        // it landed. Bounded, so this cannot become the session.
+        if (_gatherPipeWrites < 64)
+        {
+            _gatherPipeWrites++;
+            _trace.Write(
+                GameCubeTraceChannel.Graphics,
+                GameCubeTraceLevel.Information,
+                $"gather pipe #{_gatherPipeWrites}: {size}-byte 0x{value:X8} -> 0x{write:X8}" +
+                (reset ? " (write pointer was out of bounds and was reset to base)" : string.Empty));
+        }
+
+        for (var shift = (size - 1) * 8; shift >= 0; shift -= 8)
+        {
+            _memory.WriteByte(write, (byte)(value >> shift));
+            if (++write >= end)
+            {
+                write = start;
+            }
+        }
+
+        WritePointer(FifoWritePointerLow, FifoWritePointerHigh, write);
+        Graphics.NoteFifoConfiguration(
+            start,
+            end,
+            ReadPointer(FifoReadPointerLow, FifoReadPointerHigh),
+            write);
+        DrainFifo(start, end, write);
+    }
+
+    /// <summary>
+    /// Decodes everything between the read and write pointers, in two runs when
+    /// the ring has wrapped between them.
+    /// </summary>
+    private void DrainFifo(uint start, uint end, uint write)
+    {
+        var read = ReadPointer(FifoReadPointerLow, FifoReadPointerHigh);
+        if (read < start || read >= end)
+        {
+            read = start;
+        }
+
+        if (read > write)
+        {
+            // A command that straddles the wrap is left alone until the
+            // pointers are the simple way round again; decoding the tail of the
+            // ring as though the head followed it would produce exactly the
+            // resynchronisation this decoder refuses to do.
+            read = Graphics.Decode(read, end);
+            if (read >= end)
+            {
+                read = start;
+            }
+        }
+
+        if (read <= write)
+        {
+            read = Graphics.Decode(read, write);
+        }
+
+        WritePointer(FifoReadPointerLow, FifoReadPointerHigh, read);
+        WritePointer(
+            FifoDistanceLow,
+            FifoDistanceHigh,
+            write >= read ? write - read : end - read + (write - start));
+    }
+
+    /// <summary>Reads one of the FIFO's split 32-bit pointers.</summary>
+    private uint ReadPointer(uint low, uint high) =>
+        ((uint)ReadRegister16(high) << 16) | ReadRegister16(low);
+
+    private void WritePointer(uint low, uint high, uint value)
+    {
+        WriteRegister16(low, (ushort)value);
+        WriteRegister16(high, (ushort)(value >> 16));
+    }
+
     /// <summary>Asserts a device's interrupt cause.</summary>
     private void RaiseInterrupt(uint cause) =>
         WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) | cause);
@@ -333,6 +475,8 @@ public sealed class GameCubeHardware
     public void Reset()
     {
         Array.Clear(_registers);
+        Graphics.Reset();
+        _gatherPipeWrites = 0;
 
         // The DVD drive reports itself present and configured; nothing else
         // starts life with a value a game would notice.
@@ -358,6 +502,18 @@ public sealed class GameCubeHardware
     public void Write(uint address, int size, uint value)
     {
         var offset = address & (Size - 1);
+
+        // The write-gather pipe is not a register. It is a hole that everything
+        // written to it falls through into the FIFO, so it must be handled
+        // before the register store — writing it into the register file would
+        // both lose the command and leave a byte of graphics data pretending to
+        // be hardware state.
+        if (offset >= WriteGatherPipe)
+        {
+            WriteToGatherPipe(size, value);
+            Report(offset, "write", size, value);
+            return;
+        }
 
         // Acknowledgement, not assignment — and handled before the store,
         // because storing first would destroy the very causes being
@@ -802,6 +958,15 @@ public sealed class GameCubeHardware
         InterruptCause or InterruptMask or VerticalPosition => true,
         >= DisplayInterrupt0 and < DisplayInterrupt0 + (DisplayInterruptCount * 4) => true,
         SerialCommunicationStatus or SerialStatus => true,
+
+        // The FIFO's bounds and pointers, and the write-gather pipe they are
+        // fed through. These drive the command processor rather than merely
+        // reading back, so calling them unimplemented would be the wrong way
+        // round — but they stay counted, because "modelled" has been wrong
+        // before and a count is the only thing that tells the two apart.
+        >= FifoBaseLow and <= FifoReadPointerHigh => true,
+        >= WriteGatherPipe => true,
+
         _ => Array.IndexOf(ExternalControlRegisters, offset) >= 0
     };
 

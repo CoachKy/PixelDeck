@@ -57,10 +57,24 @@ public sealed partial class GekkoCpu
     private bool _decrementerPending;
 
     /// <summary>The decrementer, which counts down and then interrupts.</summary>
+    /// <remarks>
+    /// Writing a value that is not already negative cancels a request that has
+    /// not been taken yet. The 750 raises the decrementer exception on the
+    /// transition into negative, not while it is negative, so software that
+    /// reprograms the decrementer before interrupts are enabled must not then
+    /// be interrupted for the value it replaced.
+    /// </remarks>
     public uint Decrementer
     {
         get => _spr[SprDecrementer];
-        set => _spr[SprDecrementer] = value;
+        set
+        {
+            _spr[SprDecrementer] = value;
+            if ((value & 0x8000_0000) == 0)
+            {
+                _decrementerPending = false;
+            }
+        }
     }
 
     /// <summary>Whether the machine state register allows interrupts through.</summary>
@@ -143,6 +157,57 @@ public sealed partial class GekkoCpu
             _memory.Hardware.Advance(_instructionsSinceHardwareUpdate);
             _instructionsSinceHardwareUpdate = 0;
         }
+    }
+
+    /// <summary>Where a floating point unavailable exception transfers control.</summary>
+    private const uint FloatingPointUnavailableVector = 0x8000_0800;
+
+    /// <summary>
+    /// Takes the floating point unavailable exception when a floating point
+    /// instruction runs with the unit switched off, and reports that it did.
+    /// Returns true when the exception was taken, in which case the
+    /// instruction must not execute.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the hook the operating system switches floating point context
+    /// on. A thread runs with the unit disabled until it first touches it; the
+    /// handler then saves whichever thread's registers are loaded, loads this
+    /// thread's, sets MSR[FP], and returns to the instruction that faulted so
+    /// it can run for real. That is why the saved address is the faulting
+    /// instruction rather than the one after it — the exception is synchronous,
+    /// and <c>rfi</c> is meant to retry it.
+    /// </para>
+    /// <para>
+    /// Executing the instruction anyway, which is what PixelCube did before,
+    /// means the operating system never gets the chance to swap. Threads then
+    /// share whichever floating point registers happened to be loaded last, and
+    /// the result is arithmetic that is wrong without being obviously wrong.
+    /// The counter said this happens 162 times before Super Mario Sunshine
+    /// reaches its first frame, so it was never going to stay harmless.
+    /// </para>
+    /// </remarks>
+    private bool TryTakeFloatingPointUnavailable(ref uint nextPc)
+    {
+        if ((Msr & MsrFloatingPointAvailable) != 0)
+        {
+            return false;
+        }
+
+        _spr[SprSrr0] = Pc;
+        _spr[SprSrr1] = Msr;
+        Msr &= ~(MsrExternalInterruptEnable | MsrProblemState | MsrRecoverableInterrupt);
+        nextPc = FloatingPointUnavailableVector;
+
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Interrupts,
+            GameCubeTraceLevel.Debug,
+            "gekko/fp-unavailable",
+            64,
+            $"floating point unavailable at 0x{Pc:X8}; the operating system is " +
+            "being given the chance to swap this thread's floating point context in");
+
+        return true;
     }
 
     /// <summary>Supervisor state: cleared when an exception is taken.</summary>

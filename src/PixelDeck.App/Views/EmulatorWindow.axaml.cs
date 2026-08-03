@@ -1414,6 +1414,11 @@ public partial class EmulatorWindow : Window
             GameCubeTraceLevel.Warning,
             $"execution has made no progress for {GameCubeStallFrames} frames at " +
             $"0x{pc:X8}; busiest key is {busiest.Key} at {busiest.Count:N0}");
+
+        // The code it is stuck in, for the same reason a stop dumps it: a
+        // spin is diagnosed by reading the loop, and a stall never reaches the
+        // stop path that was already printing this.
+        _gameCubeMachine.TraceDisassemblyAround(pc);
         EmulatorDiagnostics.Write(
             $"PixelCube stalled at 0x{pc:X8} after " +
             $"{_gameCubeMachine.Cpu.InstructionsExecuted:N0} instructions; " +

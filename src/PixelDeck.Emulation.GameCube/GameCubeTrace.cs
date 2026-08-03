@@ -73,14 +73,15 @@ public enum GameCubeTraceChannel : uint
     /// <summary>
     /// What a normal play session records: the decisions made once at startup,
     /// the things that went wrong, and the things that are still missing.
-    /// Excludes the per-instruction channels, but keeps
-    /// <see cref="Registers"/> — its per-access detail is at Debug and stays
-    /// filtered out, while its counters are what reveal a register that is
-    /// modelled and still wrong.
+    /// Keeps <see cref="Registers"/> and <see cref="Cpu"/> even though both can
+    /// be per-instruction: everything either emits at Debug or Verbose and
+    /// stays filtered out at the default level, while the records they carry
+    /// above it — a register that is modelled and still wrong, a wild branch, a
+    /// fetch outside memory — are the ones a session must never lose.
     /// </summary>
     Default =
         Boot | Disc | Executable | Interrupts | Storage | Unimplemented |
-        Performance | Registers
+        Performance | Registers | Cpu | Graphics
 }
 
 /// <summary>

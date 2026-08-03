@@ -180,9 +180,55 @@ public sealed class GameCubeMachine : IDisposable
                 $"execution stopped after {Cpu.InstructionsExecuted:N0} instructions: " +
                 $"{result.Outcome} at 0x{result.Pc:X8} " +
                 $"({GekkoDisassembler.Describe(result.Instruction, result.Pc)})");
+
+            // What the game made of the arena, rather than what it was handed.
+            // OSInit owns these two words, so their value at a fault says
+            // whether the game got as far as claiming its own memory.
+            Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"  os globals: arenaLo=0x{Memory.ReadUInt32(0x8000_0030):X8} " +
+                $"arenaHi=0x{Memory.ReadUInt32(0x8000_0034):X8} " +
+                $"currentThread=0x{Memory.ReadUInt32(0x8000_00E4):X8}");
+            TraceDisassemblyAround(result.Pc);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Disassembles the code either side of an address that stopped a run.
+    /// </summary>
+    /// <remarks>
+    /// The single instruction that failed is rarely the one worth reading. A
+    /// branch through an empty register is set up somewhere above it, and the
+    /// function it belongs to is what names the fault — so the report has to
+    /// carry the code around it, not just the instruction at it. Emitted where
+    /// the stop itself is recorded, because the alternative is a second tool
+    /// and a second run to see the thing the first run was already sitting on.
+    /// </remarks>
+    public void TraceDisassemblyAround(uint address, int before = 16, int after = 16)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // Aligned and clamped: an address near zero would otherwise wrap.
+        var start = address & ~3u;
+        start = start < (uint)(before * 4) ? 0 : start - (uint)(before * 4);
+
+        for (var index = 0; index < before + after; index++)
+        {
+            var at = start + (uint)(index * 4);
+            if (!Memory.TryReadInstruction(at, out var instruction))
+            {
+                continue;
+            }
+
+            Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"  {(at == address ? "->" : "  ")} {at:X8}  {instruction:X8}  " +
+                $"{GekkoDisassembler.Describe(instruction, at)}");
+        }
     }
 
     /// <summary>

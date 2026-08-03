@@ -43,6 +43,15 @@ public ref struct GameCubeTraceInterpolatedStringHandler
     /// occurrence of <paramref name="key"/> whether or not the message is
     /// kept, so the suppressed total stays accurate.
     /// </summary>
+    /// <remarks>
+    /// The counting call comes before the level test and not after it, which is
+    /// the whole point. Testing first short-circuits the count away, so a key
+    /// logged below the current level is never tallied — and the tally is what
+    /// the next piece of work is chosen from. That made every Debug-level key
+    /// invisible in exactly the situation the tally exists for: the graphics
+    /// decoder was reading commands correctly and reporting nothing, because
+    /// its counters were one level below the threshold.
+    /// </remarks>
     public GameCubeTraceInterpolatedStringHandler(
         int literalLength,
         int formattedCount,
@@ -54,7 +63,7 @@ public ref struct GameCubeTraceInterpolatedStringHandler
         : this(
             literalLength,
             formattedCount,
-            log is not null && log.IsEnabled(channel, level) && log.CountOccurrence(key) == 1,
+            log is not null && log.CountOccurrence(key) == 1 && log.IsEnabled(channel, level),
             out shouldAppend)
     {
     }
@@ -76,7 +85,7 @@ public ref struct GameCubeTraceInterpolatedStringHandler
         : this(
             literalLength,
             formattedCount,
-            log is not null && log.IsEnabled(channel, level) && IsDue(log.CountOccurrence(key), interval),
+            log is not null && IsDue(log.CountOccurrence(key), interval) && log.IsEnabled(channel, level),
             out shouldAppend)
     {
     }
