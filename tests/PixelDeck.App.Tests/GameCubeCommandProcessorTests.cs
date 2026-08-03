@@ -181,17 +181,12 @@ public class GameCubeCommandProcessorTests
         stream.LoadCpRegister(0x80, attributeB);
         stream.LoadCpRegister(0x90, attributeC);
 
-        var primitiveAt = stream.Address;
-        stream.Byte(0x90);      // triangles, format zero
-        stream.UInt16(1);
-        stream.Pad(64);         // room for whatever one vertex turns out to be
-
-        var stopped = fixture.Processor.Decode(StreamBase, stream.Address);
-
-        // The decoder stops when the run ends, so what it consumed past the
-        // primitive header is exactly one vertex.
-        Assert.Equal(1, fixture.Processor.VerticesSeen);
-        return (int)(stopped - primitiveAt) - 3;
+        // Decode only the descriptor loads, then ask what a vertex measures.
+        // Measuring how far the decoder travels does not work: leftover bytes
+        // are zero, zero is a valid instruction, and it walks through padding
+        // to the end of the run every time.
+        fixture.Processor.Decode(StreamBase, stream.Address);
+        return fixture.Processor.VertexSize(0);
     }
 
     private sealed class ProcessorFixture : IDisposable

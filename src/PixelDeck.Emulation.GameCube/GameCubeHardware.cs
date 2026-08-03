@@ -166,7 +166,28 @@ public sealed class GameCubeHardware
     private const uint DvdControl = DvdInterface + 0x1C;
 
     /// <summary>Transfer complete, in the drive's status register.</summary>
-    private const uint DvdTransferComplete = 0x0000_0004;
+    /// <summary>
+    /// The drive's three interrupts, each a status bit with its enable in the
+    /// bit below it. Status is cleared by writing a one.
+    /// </summary>
+    /// <remarks>
+    /// Transfer complete is bit 4. It was bit 2 here, which is the device error
+    /// flag — so every successful read reported a drive fault instead of a
+    /// completed transfer, and the one bit software actually waits on was never
+    /// set at all.
+    /// </remarks>
+    private const uint DvdDeviceErrorMask = 1u << 1;
+    private const uint DvdDeviceError = 1u << 2;
+    private const uint DvdTransferCompleteMask = 1u << 3;
+    private const uint DvdTransferComplete = 1u << 4;
+    private const uint DvdBreakCompleteMask = 1u << 5;
+    private const uint DvdBreakComplete = 1u << 6;
+
+    private const uint DvdInterruptStatus =
+        DvdDeviceError | DvdTransferComplete | DvdBreakComplete;
+
+    /// <summary>The drive's bit in the processor interface.</summary>
+    private const uint DvdInterruptCause = 1u << 2;
 
     /// <summary>Read data from the disc into main memory.</summary>
     private const uint DvdReadCommand = 0xA8;
@@ -245,6 +266,81 @@ public sealed class GameCubeHardware
 
     /// <summary>The external interface's bit in the processor interface.</summary>
     private const uint ExternalInterruptCause = 0x0000_0010;
+
+    /// <summary>
+    /// The pixel engine's interrupt register, and the token a game reads back
+    /// after one. Two independent interrupts share the word: a token, which a
+    /// game plants in the command stream to find out when the graphics
+    /// processor has reached that point, and finish, which means the whole
+    /// drawing list is done.
+    /// </summary>
+    private const uint PixelEngineInterrupt = PixelEngine + 0x0A;
+    private const uint PixelEngineToken = PixelEngine + 0x0E;
+
+    private const ushort PixelEngineTokenEnable = 1 << 0;
+    private const ushort PixelEngineFinishEnable = 1 << 1;
+    private const ushort PixelEngineTokenStatus = 1 << 2;
+    private const ushort PixelEngineFinishStatus = 1 << 3;
+
+    private const ushort PixelEngineStatus = PixelEngineTokenStatus | PixelEngineFinishStatus;
+
+    /// <summary>The pixel engine's two bits in the processor interface.</summary>
+    private const uint PixelEngineTokenCause = 1u << 9;
+    private const uint PixelEngineFinishCause = 1u << 10;
+
+    /// <summary>
+    /// The audio interface's control register, its free-running sample counter,
+    /// and the count an interrupt is wanted at.
+    /// </summary>
+    private const uint AudioControl = AudioInterface + 0x00;
+    private const uint AudioSampleCounter = AudioInterface + 0x08;
+    private const uint AudioInterruptTiming = AudioInterface + 0x0C;
+
+    private const uint AudioPlaying = 1u << 0;
+
+    /// <summary>
+    /// The streaming rate select. Set means 48 kHz and clear means 32 kHz,
+    /// which is the opposite of what YAGCD states.
+    /// </summary>
+    /// <remarks>
+    /// The documentation has this bit's sense backwards, and it is the kind of
+    /// error only an implementation that has been run against real games would
+    /// record. Reading it the documented way makes the streaming clock run at
+    /// two-thirds speed exactly when a game asks for full speed, and the only
+    /// caller that notices is the routine which times the clock deliberately.
+    /// </remarks>
+    private const uint AudioRate48kHz = 1u << 1;
+    private const uint AudioInterruptMask = 1u << 2;
+    private const uint AudioInterruptStatus = 1u << 3;
+    private const uint AudioInterruptHeld = 1u << 4;
+    private const uint AudioCounterReset = 1u << 5;
+
+    /// <summary>The audio interface's bit in the processor interface.</summary>
+    private const uint AudioInterruptCause = 1u << 5;
+
+    /// <summary>
+    /// Core cycles between stereo samples, at the two rates the streaming
+    /// clock actually runs at.
+    /// </summary>
+    /// <remarks>
+    /// Expressed as the divisors the hardware actually uses — 2250 and 3375
+    /// against a 108 MHz reference — rather than as a frequency, because that
+    /// is what the period is derived from and it divides exactly. The often
+    /// quoted figure of 48,043 Hz describes what a real console puts out of its
+    /// analogue stage; it is not the divisor, and using it as one moves the
+    /// period by ten cycles in the wrong direction.
+    /// </remarks>
+    private const int AudioReferenceClock = 108_000_000;
+    private const int AudioDivisor48kHz = 2250;
+    private const int AudioDivisor32kHz = 3375;
+
+    private const int CoreCyclesPerSample48kHz =
+        (int)(486_000_000L * AudioDivisor48kHz / AudioReferenceClock);
+
+    private const int CoreCyclesPerSample32kHz =
+        (int)(486_000_000L * AudioDivisor32kHz / AudioReferenceClock);
+
+    private long _audioCycles;
 
     /// <summary>Bit zero of a transfer control register: start, and busy.</summary>
     private const uint TransferStart = 1;
@@ -344,8 +440,29 @@ public sealed class GameCubeHardware
     public GameCubeDisc? Disc { get; set; }
 
     /// <summary>The message the DSP has waiting for the CPU, if any.</summary>
-    private uint _mailToCpu;
-    private bool _mailToCpuWaiting;
+    /// <summary>
+    /// Messages the DSP has sent that the CPU has not taken yet.
+    /// </summary>
+    /// <remarks>
+    /// A queue, not a slot. Three messages are sent within a few microseconds
+    /// of each other while a game is starting its audio system, and with one
+    /// slot each overwrote the last before anything read it — the machine
+    /// announced its boot ROM, announced its microcode, and announced its boot
+    /// ROM again, and a game listening carefully heard only the third. Two
+    /// thirds of the conversation was being destroyed by the act of continuing
+    /// it.
+    /// </remarks>
+    private readonly Queue<uint> _mailToCpuQueue = new();
+
+    /// <summary>Whether each queued message interrupts when it reaches the front.</summary>
+    private readonly Queue<bool> _mailInterrupts = new();
+
+    /// <summary>
+    /// The message last taken. It stays readable after its "waiting" flag is
+    /// dropped, because software reads the two halves separately and the value
+    /// must survive between them.
+    /// </summary>
+    private uint _lastMailToCpu;
     private ushort _mailToDspHigh;
     private bool _dspInitInProgress;
 
@@ -373,6 +490,36 @@ public sealed class GameCubeHardware
         (ReadRegister32(InterruptCause) & ReadRegister32(InterruptMask)) != 0;
 
     /// <summary>
+    /// Names the devices currently asserting an unmasked interrupt, so a
+    /// delivery can be attributed rather than merely counted.
+    /// </summary>
+    public string PendingInterruptName
+    {
+        get
+        {
+            var asserted = ReadRegister32(InterruptCause) & ReadRegister32(InterruptMask);
+            var names = new List<string>();
+            for (var bit = 0; bit < InterruptNames.Length; bit++)
+            {
+                if ((asserted & (1u << bit)) != 0)
+                {
+                    names.Add(InterruptNames[bit]);
+                }
+            }
+
+            return names.Count == 0 ? "none" : string.Join("+", names);
+        }
+    }
+
+    /// <summary>The processor interface's interrupt sources, in bit order.</summary>
+    private static readonly string[] InterruptNames =
+    [
+        "error", "reset", "dvd", "serial", "external-interface", "audio",
+        "dsp", "memory", "video", "pe-token", "pe-finish", "command-fifo",
+        "debug", "high-speed-port"
+    ];
+
+    /// <summary>
     /// Advances the video clock by the core cycles that have passed, firing
     /// any display interrupt whose line the beam has reached.
     /// </summary>
@@ -382,6 +529,11 @@ public sealed class GameCubeHardware
         {
             return;
         }
+
+        AdvanceAudio(coreCycles);
+        AdvanceMail(coreCycles);
+        AdvanceDvd(coreCycles);
+        AdvanceDspInit(coreCycles);
 
         _videoCycles += coreCycles;
         while (_videoCycles >= CoreCyclesPerLine)
@@ -607,6 +759,153 @@ public sealed class GameCubeHardware
         WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) & ~SerialInterruptCause);
     }
 
+    /// <summary>
+    /// Reports that the graphics processor has finished the drawing list it
+    /// was given, which is what <c>GXDrawDone</c> waits for.
+    /// </summary>
+    /// <remarks>
+    /// This is the interrupt Super Mario Sunshine's main thread sleeps on. It
+    /// pushes an end-of-list marker through the command stream and calls
+    /// <c>OSSleepThread</c>; the pixel engine's finish interrupt is the only
+    /// thing that ever wakes it. Without it the game is not stuck and not
+    /// crashed — it is waiting, correctly, for hardware that never answers, and
+    /// the operating system idles because that thread is the one with work to do.
+    /// </remarks>
+    public void SignalPixelEngineFinish()
+    {
+        WriteRegister16(
+            PixelEngineInterrupt,
+            (ushort)(ReadRegister16(PixelEngineInterrupt) | PixelEngineFinishStatus));
+        RefreshPixelEngineInterrupt();
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Graphics,
+            GameCubeTraceLevel.Debug,
+            "pe/finish",
+            120,
+            "drawing list finished");
+    }
+
+    /// <summary>
+    /// Reports that the graphics processor has passed a token a game planted
+    /// in the command stream, and records which one.
+    /// </summary>
+    public void SignalPixelEngineToken(ushort token, bool raisesInterrupt)
+    {
+        WriteRegister16(PixelEngineToken, token);
+        if (!raisesInterrupt)
+        {
+            return;
+        }
+
+        WriteRegister16(
+            PixelEngineInterrupt,
+            (ushort)(ReadRegister16(PixelEngineInterrupt) | PixelEngineTokenStatus));
+        RefreshPixelEngineInterrupt();
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Graphics,
+            GameCubeTraceLevel.Debug,
+            "pe/token",
+            120,
+            $"token 0x{token:X4} passed");
+    }
+
+    /// <summary>
+    /// Asserts or drops the pixel engine's two interrupts, each a status bit
+    /// with its own enable.
+    /// </summary>
+    private void RefreshPixelEngineInterrupt()
+    {
+        var status = ReadRegister16(PixelEngineInterrupt);
+        var cause = ReadRegister32(InterruptCause);
+
+        cause = (status & PixelEngineTokenStatus) != 0 && (status & PixelEngineTokenEnable) != 0
+            ? cause | PixelEngineTokenCause
+            : cause & ~PixelEngineTokenCause;
+
+        cause = (status & PixelEngineFinishStatus) != 0 && (status & PixelEngineFinishEnable) != 0
+            ? cause | PixelEngineFinishCause
+            : cause & ~PixelEngineFinishCause;
+
+        WriteRegister32(InterruptCause, cause);
+    }
+
+    /// <summary>
+    /// Advances the audio sample counter and raises the audio interrupt when it
+    /// reaches the count software asked to be told about.
+    /// </summary>
+    /// <remarks>
+    /// This counter is the clock the whole audio system is built on. It counts
+    /// stereo samples actually output, so it moves whether or not anything is
+    /// listening, and a game reads it to know where playback has reached. Left
+    /// at zero it says the machine has produced no sound since it was switched
+    /// on, which is a claim a game will wait on indefinitely rather than
+    /// disbelieve — thirty-nine million reads of it in one run, and nothing
+    /// else happening at all.
+    /// </remarks>
+    private void AdvanceAudio(long coreCycles)
+    {
+        var control = ReadRegister32(AudioControl);
+
+        // Free-running, and deliberately not gated on the playing bit. That bit
+        // decides whether samples reach the speakers; the counter is driven by
+        // the audio oscillator and keeps time regardless. Gating it produced a
+        // game reading the same value twenty-eight million times — it uses this
+        // as a clock, and a stopped clock is not a quiet one, it is a broken one.
+        var period = (control & AudioRate48kHz) != 0
+            ? CoreCyclesPerSample48kHz
+            : CoreCyclesPerSample32kHz;
+
+        _audioCycles += coreCycles;
+        if (_audioCycles < period)
+        {
+            return;
+        }
+
+        var samples = (uint)(_audioCycles / period);
+        _audioCycles -= (long)samples * period;
+
+        var before = ReadRegister32(AudioSampleCounter);
+        var after = before + samples;
+        WriteRegister32(AudioSampleCounter, after);
+
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Audio,
+            GameCubeTraceLevel.Information,
+            "ai/sample-counter",
+            2000,
+            $"sample counter {before} -> {after} (control 0x{control:X8}, " +
+            $"{period} cycles per sample)");
+
+        // The interrupt is raised when the counter reaches the requested value.
+        // Compared as a range rather than for equality: many samples can pass
+        // between two looks at the clock, and an equality test would step over
+        // the one that mattered and never fire again.
+        var wanted = ReadRegister32(AudioInterruptTiming);
+        if (wanted == 0 || (control & AudioInterruptHeld) != 0 || before >= wanted || after < wanted)
+        {
+            return;
+        }
+
+        WriteRegister32(AudioControl, control | AudioInterruptStatus);
+        RefreshAudioInterrupt();
+    }
+
+    /// <summary>
+    /// Asserts or drops the audio interface's interrupt from its status bit and
+    /// enable.
+    /// </summary>
+    private void RefreshAudioInterrupt()
+    {
+        var control = ReadRegister32(AudioControl);
+        if ((control & AudioInterruptStatus) != 0 && (control & AudioInterruptMask) != 0)
+        {
+            RaiseInterrupt(AudioInterruptCause);
+            return;
+        }
+
+        WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) & ~AudioInterruptCause);
+    }
+
     /// <summary>Asserts a device's interrupt cause.</summary>
     private void RaiseInterrupt(uint cause) =>
         WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) | cause);
@@ -643,6 +942,9 @@ public sealed class GameCubeHardware
         Array.Clear(_registers);
         Graphics.Reset();
         _gatherPipeWrites = 0;
+        _mailToCpuQueue.Clear();
+        _lastMailToCpu = 0;
+        _mailTakenPending = false;
 
         // The DVD drive reports itself present and configured; nothing else
         // starts life with a value a game would notice.
@@ -661,6 +963,10 @@ public sealed class GameCubeHardware
             _ => BinaryPrimitives.ReadUInt32BigEndian(_registers.AsSpan((int)offset, 4))
         };
 
+        // Anything a read consumed takes effect now that its value has been
+        // taken, not before it.
+        CompleteMailTake();
+
         Report(offset, "read", size, value);
         return value;
     }
@@ -677,6 +983,47 @@ public sealed class GameCubeHardware
         if (offset >= WriteGatherPipe)
         {
             WriteToGatherPipe(size, value);
+            Report(offset, "write", size, value);
+            return;
+        }
+
+        // The audio control register holds its interrupt status alongside the
+        // enables, the rate and a counter reset that is a command rather than a
+        // stored bit.
+        if (size == 4 && offset == AudioControl)
+        {
+            var kept = ReadRegister32(offset) & AudioInterruptStatus & ~value;
+            WriteRegister32(offset, ((value & ~AudioInterruptStatus) | kept) & ~AudioCounterReset);
+            if ((value & AudioCounterReset) != 0)
+            {
+                WriteRegister32(AudioSampleCounter, 0);
+                _audioCycles = 0;
+            }
+
+            RefreshAudioInterrupt();
+            Report(offset, "write", size, value);
+            return;
+        }
+
+        // The drive's three status bits are acknowledged by writing ones, in the
+        // same word as their enables and the break request.
+        if (size == 4 && offset == DvdStatus)
+        {
+            var kept = ReadRegister32(offset) & DvdInterruptStatus & ~value;
+            WriteRegister32(offset, (value & ~DvdInterruptStatus) | kept);
+            RefreshDvdInterrupt();
+            Report(offset, "write", size, value);
+            return;
+        }
+
+        // The pixel engine's two status bits are acknowledged the same way, and
+        // share their word with the two enables.
+        if (size == 2 && offset == PixelEngineInterrupt)
+        {
+            var current = ReadRegister16(PixelEngineInterrupt);
+            var kept = (ushort)(current & PixelEngineStatus & ~value);
+            WriteRegister16(PixelEngineInterrupt, (ushort)((value & ~PixelEngineStatus) | kept));
+            RefreshPixelEngineInterrupt();
             Report(offset, "write", size, value);
             return;
         }
@@ -771,7 +1118,7 @@ public sealed class GameCubeHardware
                 // A 32-bit read takes the whole message at once; a 16-bit read
                 // takes the high word and leaves the message waiting until the
                 // low word is read.
-                WriteRegister32(DspMailToCpuHigh, _mailToCpuWaiting ? _mailToCpu : 0);
+                WriteRegister32(DspMailToCpuHigh, FrontMailToCpu());
                 if (size == 4)
                 {
                     TakeMailToCpu();
@@ -783,14 +1130,20 @@ public sealed class GameCubeHardware
             case DspMailToCpuLow:
                 WriteRegister16(
                     DspMailToCpuLow,
-                    _mailToCpuWaiting ? (ushort)_mailToCpu : (ushort)0);
+                    (ushort)FrontMailToCpu());
                 TakeMailToCpu();
                 break;
 
             case DspMailToDspHigh:
-                // The DSP consumes anything sent to it immediately, so the
-                // "still unread" flag is never set when the CPU looks.
-                WriteRegister16(DspMailToDspHigh, _mailToDspHigh);
+                // The top bit means "the DSP has not taken this yet", and it is
+                // what software polls after sending. Nothing here takes time, so
+                // the message is already consumed by the time anyone looks and
+                // the bit must read back clear — handing back the value that was
+                // written returns the caller's own "unread" flag to it, which is
+                // a poll that can never end.
+                WriteRegister16(
+                    DspMailToDspHigh,
+                    (ushort)(_mailToDspHigh & ~MailWaiting));
                 break;
 
             case DspControlStatus or DspControlStatus - 1:
@@ -917,6 +1270,19 @@ public sealed class GameCubeHardware
         switch (offset)
         {
             case DspMailToDspHigh:
+                // A thirty-two bit store covers both halves and is a complete
+                // message. Treating it as the high half alone keeps the low
+                // sixteen bits of the value, throws the rest away, and never
+                // sends anything — so every command written that way vanishes
+                // and the sender waits for a reply to a message the machine
+                // never received.
+                if (size == 4)
+                {
+                    _mailToDspHigh = (ushort)(value >> 16);
+                    HandleMailToDsp(value);
+                    return;
+                }
+
                 _mailToDspHigh = (ushort)value;
                 return;
 
@@ -937,13 +1303,43 @@ public sealed class GameCubeHardware
             // microcode it loads out of ARAM, which announces itself. This is
             // the second half of the handshake: without it the CPU takes the
             // ROM's greeting and then waits forever for the microcode's.
+            // Clearing the initialise bit starts the audio system's own
+            // microcode, and it announces itself. This is a separate event from
+            // a microcode uploaded through the boot ROM, and both happen: a
+            // game brings its audio system up first and loads its mixing code
+            // afterwards, so both announcements are real and both are expected.
+            //
+            // Setting the initialise bit starts the audio system's microcode,
+            // and the *hardware* clears the bit again once it is up — software
+            // asks and then waits to be told, it does not clear the bit itself.
+            // Waiting for software to clear it means waiting for something that
+            // never happens, and a game polling for the machine to answer polls
+            // forever.
             var initNow = (value & DspInitInProgress) != 0;
+            if (initNow && !_dspInitInProgress)
+            {
+                _dspInitCycles = DspInitDelayCycles;
+            }
+
             if (_dspInitInProgress && !initNow)
             {
-                PostMailToCpu(DspInitUCodeReadyMail, "init-audio-system microcode ready");
+                PostMailToCpuPolled(DspInitUCodeReadyMail, "init-audio-system microcode ready");
+                _dspInitCycles = 0;
             }
 
             _dspInitInProgress = initNow;
+
+            // Resetting puts the boot ROM back in charge. Without this the
+            // machine stays in whatever microcode was last started, so a game
+            // that resets the processor and uploads a second microcode has its
+            // parameters answered as though they were commands to the first
+            // one — and never boots anything again.
+            if ((value & DspReset) != 0)
+            {
+                _microcodeRunning = false;
+                _expectedBootParameter = 0;
+                _expectingCommandListAddress = false;
+            }
 
             var control = ReadRegister16(DspControlStatus);
 
@@ -1031,8 +1427,94 @@ public sealed class GameCubeHardware
                 break;
         }
 
+        // The data has moved, but the drive has not finished. Reporting
+        // completion from inside the store that started the transfer is not
+        // merely optimistic, it is impossible: the interrupt arrives before the
+        // routine that asked for the read has returned, so it lands in code
+        // that has not yet installed the handler meant to receive it. The
+        // operating system finds an interrupt nobody owns and halts the
+        // machine. A real drive takes milliseconds; the only thing that has to
+        // be true here is that it takes longer than a function call.
+        _dvdCompletionCycles = DvdCompletionDelayCycles;
+    }
+
+    /// <summary>
+    /// How long a disc transfer takes to report itself finished.
+    /// </summary>
+    /// <remarks>
+    /// Six hundred microseconds, which is what a read costs on a real drive
+    /// before any data moves — the command has to be accepted and the head has
+    /// to get there. The drive never answers sooner than three hundred even for
+    /// a command that does nothing. These are the figures Dolphin uses, and the
+    /// point of matching them is not fidelity for its own sake: an interrupt
+    /// that arrives before the routine which requested it has returned lands in
+    /// code that has not yet installed the handler for it.
+    /// </remarks>
+    private const long CoreCyclesPerMicrosecond = 486;
+    private const long DvdCompletionDelayCycles = 600 * CoreCyclesPerMicrosecond;
+
+    private long _dvdCompletionCycles;
+
+    /// <summary>
+    /// Finishes a disc transfer once its time is up: the transfer registers
+    /// report what moved, and the completion interrupt is raised.
+    /// </summary>
+    private void AdvanceDvd(long coreCycles)
+    {
+        if (_dvdCompletionCycles <= 0)
+        {
+            return;
+        }
+
+        _dvdCompletionCycles -= coreCycles;
+        if (_dvdCompletionCycles > 0)
+        {
+            return;
+        }
+
+        _dvdCompletionCycles = 0;
+
+        // Length counts down as data moves and reads zero when the transfer is
+        // finished, and the address advances past what was written. Software
+        // checks both to decide whether a read succeeded, so a drive that
+        // reports completion while its own registers say nothing moved is read
+        // as a failure and retried forever.
+        var moved = ReadRegister32(DvdDmaLength);
+        WriteRegister32(DvdDmaAddress, ReadRegister32(DvdDmaAddress) + moved);
+        WriteRegister32(DvdDmaLength, 0);
+
         WriteRegister32(DvdControl, ReadRegister32(DvdControl) & ~TransferStart);
         WriteRegister32(DvdStatus, ReadRegister32(DvdStatus) | DvdTransferComplete);
+        RefreshDvdInterrupt();
+    }
+
+    /// <summary>
+    /// Asserts or drops the drive's interrupt from its three status-and-enable
+    /// pairs.
+    /// </summary>
+    /// <remarks>
+    /// Reading from a disc is asynchronous: software starts a transfer,
+    /// registers a callback and sleeps, and the completion interrupt is what
+    /// runs that callback and wakes it. Finishing the transfer without saying
+    /// so leaves the callback unrun — the same half of an interrupt that was
+    /// missing on ARAM, and with the same symptom of a game that is waiting
+    /// rather than broken.
+    /// </remarks>
+    private void RefreshDvdInterrupt()
+    {
+        var status = ReadRegister32(DvdStatus);
+        var asserted =
+            ((status & DvdTransferComplete) != 0 && (status & DvdTransferCompleteMask) != 0) ||
+            ((status & DvdDeviceError) != 0 && (status & DvdDeviceErrorMask) != 0) ||
+            ((status & DvdBreakComplete) != 0 && (status & DvdBreakCompleteMask) != 0);
+
+        if (asserted)
+        {
+            RaiseInterrupt(DvdInterruptCause);
+            return;
+        }
+
+        WriteRegister32(InterruptCause, ReadRegister32(InterruptCause) & ~DvdInterruptCause);
     }
 
     private void PerformDvdRead(long discOffset, int length, uint destination)
@@ -1087,30 +1569,211 @@ public sealed class GameCubeHardware
     private void ResetDsp()
     {
         _mailToDspHigh = 0;
-        PostMailToCpu(DspRomReadyMail, "boot ROM ready");
+        PostMailToCpuPolled(DspRomReadyMail, "boot ROM ready");
     }
 
     /// <summary>Makes a message available to the CPU.</summary>
-    private void PostMailToCpu(uint mail, string description)
-    {
-        _mailToCpu = mail;
-        _mailToCpuWaiting = true;
-        _trace.Write(
-            GameCubeTraceChannel.Dsp,
-            GameCubeTraceLevel.Debug,
-            $"DSP -> CPU mail 0x{mail:X8} ({description})");
-    }
+    /// <summary>
+    /// How long a microcode takes to answer. Dolphin uses this same delay and
+    /// says why: replying instantly breaks games.
+    /// </summary>
+    /// <remarks>
+    /// A reply posted from inside the store instruction that sent the request
+    /// arrives before the sending code has finished running. The interrupt then
+    /// lands in the middle of a routine that has not yet published the state its
+    /// own handler is about to read. Real hardware cannot do this, because a
+    /// real DSP takes time.
+    /// </remarks>
+    private const long MicrocodeReplyCycles = 2500;
 
-    private void TakeMailToCpu()
+    private uint _pendingMail;
+    private string? _pendingMailDescription;
+    private long _pendingMailCycles;
+
+    /// <summary>
+    /// Delivers a message that was posted with a delay, once the delay is up.
+    /// </summary>
+    private void AdvanceMail(long coreCycles)
     {
-        if (!_mailToCpuWaiting)
+        if (_pendingMailDescription is null)
         {
             return;
         }
 
-        _mailToCpuWaiting = false;
-        WriteRegister32(DspMailToCpuHigh, _mailToCpu & ~0x8000_0000u);
+        _pendingMailCycles -= coreCycles;
+        if (_pendingMailCycles > 0)
+        {
+            return;
+        }
+
+        var mail = _pendingMail;
+        var description = _pendingMailDescription;
+        _pendingMailDescription = null;
+        DeliverMailToCpu(mail, description);
     }
+
+    private void PostMailToCpu(uint mail, string description) =>
+        DeliverMailToCpu(mail, description);
+
+    /// <summary>
+    /// Leaves a message for software that is already reading the mailbox, and
+    /// does not interrupt the processor.
+    /// </summary>
+    /// <remarks>
+    /// The boot ROM's greeting, the audio system's greeting and a refusal are
+    /// all answers to something software just did and is waiting on, so it is
+    /// looking at the box already. Ringing the bell as well raises a device
+    /// interrupt during startup — before the operating system has installed a
+    /// handler for that device — and it halts the machine rather than ignore
+    /// one it cannot explain.
+    /// </remarks>
+    private void PostMailToCpuPolled(uint mail, string description) =>
+        DeliverMailToCpu(mail, description, raisesInterrupt: false);
+
+    /// <summary>
+    /// Queues a reply for delivery after the time a microcode would have taken.
+    /// </summary>
+    private void PostMailToCpuLater(uint mail, string description)
+    {
+        _pendingMail = mail;
+        _pendingMailDescription = description;
+        _pendingMailCycles = MicrocodeReplyCycles;
+    }
+
+    /// <summary>
+    /// The message at the front of the queue, with the bit that says one is
+    /// waiting; or the last one taken, with that bit gone.
+    /// </summary>
+    private uint FrontMailToCpu() =>
+        _mailToCpuQueue.Count > 0
+            ? _mailToCpuQueue.Peek() | 0x8000_0000u
+            : _lastMailToCpu & ~0x8000_0000u;
+
+    private void DeliverMailToCpu(uint mail, string description) =>
+        DeliverMailToCpu(mail, description, raisesInterrupt: true);
+
+    /// <summary>
+    /// Puts a message in the mailbox, optionally interrupting the processor.
+    /// </summary>
+    /// <remarks>
+    /// Whether a message interrupts is a property of the message, not of the
+    /// mailbox. The boot ROM's greeting is not announced with one — software
+    /// resets the processor and then reads the box, so it is already looking.
+    /// Interrupting anyway raises a device interrupt during startup, before the
+    /// operating system has a handler for that device, and it stops the machine
+    /// rather than ignore it.
+    /// </remarks>
+    private void DeliverMailToCpu(uint mail, string description, bool raisesInterrupt)
+    {
+        var wasEmpty = _mailToCpuQueue.Count == 0;
+        _mailToCpuQueue.Enqueue(mail);
+        _mailInterrupts.Enqueue(raisesInterrupt);
+
+        // Sending mail interrupts the processor, but only when the message has
+        // reached the front of the queue. Software does not sit reading the
+        // mailbox waiting for a reply — it registers a handler and gets on with
+        // something else, and that handler is what runs the callback a game's
+        // audio system is actually waiting on. A message queued behind another
+        // rings its bell when its turn comes, not before.
+        if (wasEmpty && raisesInterrupt)
+        {
+            RaiseMailInterrupt();
+        }
+
+        // Information, not Debug. There are a few dozen of these in a whole
+        // session and they are the entire conversation a game's audio system
+        // waits on — hiding them below the level a normal run records has meant
+        // repeatedly inferring both halves of an exchange that was being
+        // written down and thrown away.
+        _trace.Write(
+            GameCubeTraceChannel.Dsp,
+            GameCubeTraceLevel.Information,
+            $"DSP -> CPU mail 0x{mail:X8} ({description})");
+    }
+
+    /// <summary>
+    /// How long the audio system's microcode takes to come up before the
+    /// machine clears the initialise bit and announces it.
+    /// </summary>
+    private const long DspInitDelayCycles = 130 * 12;
+
+    private long _dspInitCycles;
+
+    /// <summary>
+    /// Clears the initialise bit once the microcode it asked for is up, and
+    /// announces it — both of which the machine does for itself.
+    /// </summary>
+    private void AdvanceDspInit(long coreCycles)
+    {
+        if (_dspInitCycles <= 0)
+        {
+            return;
+        }
+
+        _dspInitCycles -= coreCycles;
+        if (_dspInitCycles > 0)
+        {
+            return;
+        }
+
+        _dspInitCycles = 0;
+        _dspInitInProgress = false;
+        WriteRegister16(
+            DspControlStatus,
+            (ushort)(ReadRegister16(DspControlStatus) & ~DspInitInProgress));
+        PostMailToCpuPolled(DspInitUCodeReadyMail, "init-audio-system microcode ready");
+    }
+
+    /// <summary>Rings the bell for whatever is now at the front of the queue.</summary>
+    private void RaiseMailInterrupt()
+    {
+        WriteRegister16(
+            DspControlStatus,
+            (ushort)(ReadRegister16(DspControlStatus) | DspMailInterrupt));
+        RefreshDspInterrupt();
+    }
+
+    private void TakeMailToCpu()
+    {
+        if (_mailToCpuQueue.Count == 0)
+        {
+            return;
+        }
+
+        // The message stays readable; only the flag saying one is waiting goes
+        // away, and it goes away for the *next* look rather than this one.
+        // Clearing it here would hand the reader a message with the bit that
+        // announces it already removed — which is the one bit software tests to
+        // decide whether it received anything at all.
+        _lastMailToCpu = _mailToCpuQueue.Dequeue();
+        if (_mailInterrupts.Count > 0)
+        {
+            _mailInterrupts.Dequeue();
+        }
+
+        _mailTakenPending = true;
+    }
+
+    /// <summary>
+    /// Drops the mail-waiting flag once the read that consumed it has returned,
+    /// and rings again for whatever was queued behind it.
+    /// </summary>
+    private void CompleteMailTake()
+    {
+        if (!_mailTakenPending)
+        {
+            return;
+        }
+
+        _mailTakenPending = false;
+        WriteRegister32(DspMailToCpuHigh, FrontMailToCpu());
+        if (_mailToCpuQueue.Count > 0 && _mailInterrupts.Count > 0 && _mailInterrupts.Peek())
+        {
+            RaiseMailInterrupt();
+        }
+    }
+
+    private bool _mailTakenPending;
 
     /// <summary>
     /// Receives a message the CPU sent the DSP.
@@ -1123,14 +1786,300 @@ public sealed class GameCubeHardware
     /// invented words would be worse than silence: the game would carry on
     /// believing its audio system had started.
     /// </remarks>
+    /// <summary>
+    /// The boot ROM's protocol for loading a microcode: a parameter is named by
+    /// one message and given by the next, five pairs in all, and the last pair
+    /// starts the uploaded code.
+    /// </summary>
+    private const uint BootParameterPrefix = 0x80F3_0000;
+    private const uint BootSourceAddress = 0x80F3_A001;
+    private const uint BootCodeLength = 0x80F3_A002;
+    private const uint BootDataLength = 0x80F3_B002;
+    private const uint BootCodeDestination = 0x80F3_C002;
+    private const uint BootStartAddress = 0x80F3_D001;
+
+    /// <summary>
+    /// What a running microcode says when it comes up. Every message from a
+    /// microcode carries 0xDCD1 in its top half; this is the first of them.
+    /// </summary>
+    private const uint MicrocodeInitialised = 0xDCD1_0000;
+
+    /// <summary>
+    /// A command list is announced with this in its top half, its size in the
+    /// bottom, and its address in the message after.
+    /// </summary>
+    private const uint CommandListPrefix = 0xBABE_0000;
+    private const uint MailPrefixMask = 0xFFFF_0000;
+
+    /// <summary>
+    /// Task control from the CPU. The two directions are deliberately mirrored:
+    /// the processor sends 0xCDD1 and the microcode answers 0xDCD1.
+    /// </summary>
+    private const uint TaskControlPrefix = 0xCDD1_0000;
+
+    private const uint MicrocodeResumed = 0xDCD1_0001;
+    private const uint MicrocodeYielded = 0xDCD1_0002;
+
+    /// <summary>The parameter the next message will supply, or zero.</summary>
+    private uint _expectedBootParameter;
+
+    /// <summary>Whether an uploaded microcode has been started.</summary>
+    private bool _microcodeRunning;
+
+    /// <summary>Whether the next message carries a command list's address.</summary>
+    private bool _expectingCommandListAddress;
+
+    private uint _microcodeSource;
+    private uint _microcodeLength;
+    private uint _microcodeDestination;
+    private uint _microcodeStart;
+
+    /// <summary>
+    /// Answers the CPU as the DSP's boot ROM does while a microcode is being
+    /// uploaded, and announces the microcode once it has been started.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is high-level emulation: no DSP instruction is executed, and the
+    /// microcode's own work is not performed. What is emulated is the
+    /// conversation, because the conversation is what a game waits on. It
+    /// uploads its audio microcode into memory, tells the boot ROM where to
+    /// find it and where to put it, and then blocks until the code it uploaded
+    /// reports that it is running.
+    /// </para>
+    /// <para>
+    /// Messages arrive in pairs — one naming a parameter, the next carrying its
+    /// value — and anything that does not begin with the expected prefix is
+    /// rejected the way the ROM rejects it, by echoing the offending half back
+    /// under 0xFEEE. Getting that wrong matters: software checks the refusal.
+    /// </para>
+    /// </remarks>
     private void HandleMailToDsp(uint mail)
     {
-        _trace.WriteOnce(
-            GameCubeTraceChannel.Unimplemented,
+        // Once a microcode is running the boot ROM is gone, and with it the
+        // rule that anything unrecognised gets refused. Staying in ROM mode
+        // means answering every command a game sends its own audio code with a
+        // rejection, which is worse than not answering at all.
+        if (_microcodeRunning)
+        {
+            HandleMicrocodeMail(mail);
+            return;
+        }
+
+        if (_expectedBootParameter == 0)
+        {
+            if ((mail & 0xFFFF_0000) != BootParameterPrefix)
+            {
+                PostMailToCpuPolled(0xFEEE_0000 | (mail & 0xFFFF), $"refusing mail 0x{mail:X8}");
+                return;
+            }
+
+            _expectedBootParameter = mail;
+            return;
+        }
+
+        var parameter = _expectedBootParameter;
+        _expectedBootParameter = 0;
+
+        switch (parameter)
+        {
+            case BootSourceAddress:
+                _microcodeSource = mail;
+                return;
+
+            case BootCodeLength:
+                _microcodeLength = mail & 0xFFFF;
+                return;
+
+            case BootDataLength:
+                return;
+
+            case BootCodeDestination:
+                _microcodeDestination = mail & 0xFFFF;
+                return;
+
+            case BootStartAddress:
+                _microcodeStart = mail & 0xFFFF;
+                StartMicrocode();
+                return;
+
+            default:
+                _trace.WriteOnce(
+                    GameCubeTraceChannel.Dsp,
+                    GameCubeTraceLevel.Warning,
+                    MailKey(parameter),
+                    $"unknown boot parameter 0x{parameter:X8}; its value 0x{mail:X8} is ignored");
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Identifies an uploaded microcode by hashing it, the way every emulator
+    /// that has ever run one does.
+    /// </summary>
+    /// <remarks>
+    /// Exclusive-or each byte into a running value and rotate that value left
+    /// by three. It is not a good hash and was never meant to be; it is simply
+    /// the one everybody agreed on, so the published values for each known
+    /// microcode are values this produces.
+    /// </remarks>
+    private static uint HashMicrocode(ReadOnlySpan<byte> code)
+    {
+        var hash = 0u;
+        foreach (var value in code)
+        {
+            hash ^= value;
+            hash = (hash << 3) | (hash >> 29);
+        }
+
+        return hash;
+    }
+
+    /// <summary>The published hashes of the microcodes worth telling apart.</summary>
+    private static string DescribeMicrocode(uint hash) => hash switch
+    {
+        0x65D6_CC6F => "memory card",
+        0xDD7E_72D5 => "game boy advance",
+        0x3AD3_B7AC or 0x4E8A_8B21 or 0x07F8_8145 or 0xE213_6399 or 0x3389_A79E => "AX audio",
+        0x8684_0740 or 0x6CA3_3A6D => "Zelda audio",
+        _ => "unrecognised"
+    };
+
+    /// <summary>
+    /// Reports that the uploaded microcode is now running.
+    /// </summary>
+    private void StartMicrocode()
+    {
+        // Identify what was uploaded before announcing anything, because the
+        // announcement depends on it. Which microcode is running has been
+        // guessed at three times and changed three times; a hash of the bytes
+        // that actually arrived settles it.
+        var hash = 0u;
+        var source = _microcodeSource & 0x03FF_FFFF;
+        if (_microcodeLength > 0 && source + _microcodeLength <= (uint)_memory.MainMemory.Length)
+        {
+            hash = HashMicrocode(_memory.MainMemory.Slice((int)source, (int)_microcodeLength));
+        }
+
+        _trace.Write(
+            GameCubeTraceChannel.Dsp,
             GameCubeTraceLevel.Information,
+            $"microcode uploaded from 0x{_microcodeSource:X8}, {_microcodeLength} bytes, " +
+            $"to instruction memory 0x{_microcodeDestination:X4}, starting at 0x{_microcodeStart:X4}; " +
+            $"hash 0x{hash:X8} ({DescribeMicrocode(hash)})");
+
+        _microcodeRunning = true;
+        _expectingCommandListAddress = false;
+
+        // What a microcode says on starting depends on which one it is. The
+        // mixing microcodes announce themselves with the task family's opening
+        // word; the audio system's own microcode has a word of its own. The
+        // hash is what tells them apart, and this game's does not match any
+        // published one — so the choice rests on what the game does next, which
+        // is to wait to be told its audio system is up and to send nothing at
+        // all until it hears that. A microcode that only ever replies cannot
+        // satisfy a caller that never asks.
+        // Anything not recognised as one of the special microcodes is treated
+        // as a mixing microcode, because that is what a game uploads through
+        // the boot ROM. The audio system's own announcement belongs to the
+        // initialise bit and is sent there; repeating it here says the same
+        // thing twice and the operating system's task manager halts.
+        var announcement = DescribeMicrocode(hash) is "memory card" or "game boy advance"
+            ? DspInitUCodeReadyMail
+            : MicrocodeInitialised;
+
+        PostMailToCpuLater(announcement, $"microcode running (0x{hash:X8})");
+    }
+
+    /// <summary>
+    /// Answers the CPU on behalf of a running microcode.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A game drives its audio microcode by handing it a list of commands: one
+    /// message announces the list and its size, the next gives its address, and
+    /// the microcode reports when it has worked through it. Nothing here reads
+    /// that list — no samples are mixed and no sound is produced — but the
+    /// exchange is completed, because a game does not merely send the list, it
+    /// waits to be told the list is done before preparing the next one.
+    /// </para>
+    /// <para>
+    /// Sound will need the commands to actually be carried out. Progress does
+    /// not, and the two are worth separating: a machine that answers honestly
+    /// and produces silence is a different thing from one that never answers.
+    /// </para>
+    /// </remarks>
+    private void HandleMicrocodeMail(uint mail)
+    {
+        // Every message, not just the unrecognised ones. A conversation that
+        // stalls is diagnosed by reading both halves of it, and until now only
+        // the replies were on the record.
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Dsp,
+            GameCubeTraceLevel.Information,
+            "dsp/cpu-mail",
+            64,
+            $"CPU -> microcode 0x{mail:X8}");
+
+        if (_expectingCommandListAddress)
+        {
+            _expectingCommandListAddress = false;
+            _trace.WriteEvery(
+                GameCubeTraceChannel.Dsp,
+                GameCubeTraceLevel.Debug,
+                "dsp/command-list",
+                240,
+                $"command list at 0x{mail:X8} accepted and reported finished");
+            PostMailToCpuLater(MicrocodeYielded, "command list finished");
+            return;
+        }
+
+        if ((mail & MailPrefixMask) == CommandListPrefix)
+        {
+            _expectingCommandListAddress = true;
+            return;
+        }
+
+        if ((mail & MailPrefixMask) == TaskControlPrefix)
+        {
+            switch (mail & 0xFFFF)
+            {
+                case 0x0001:
+                    // Load another microcode. A running microcode can be told
+                    // to hand over, and what follows is the boot ROM's own
+                    // parameter sequence again — so the machine has to go back
+                    // to listening for it, or the parameters are answered as
+                    // though they were commands and nothing ever loads.
+                    _microcodeRunning = false;
+                    _expectedBootParameter = 0;
+                    _expectingCommandListAddress = false;
+                    return;
+
+                case 0x0002:
+                    // Give up and go back to the boot ROM, which announces
+                    // itself again on arrival.
+                    _microcodeRunning = false;
+                    _expectedBootParameter = 0;
+                    _expectingCommandListAddress = false;
+                    PostMailToCpuLater(DspRomReadyMail, "returned to the boot ROM");
+                    return;
+
+                case 0x0003:
+                    // Carry on with the next command list, without an
+                    // acknowledgement.
+                    return;
+
+                default:
+                    PostMailToCpuLater(MicrocodeResumed, $"task control 0x{mail:X8} acknowledged");
+                    return;
+            }
+        }
+
+        _trace.WriteOnce(
+            GameCubeTraceChannel.Dsp,
+            GameCubeTraceLevel.Warning,
             MailKey(mail),
-            $"CPU -> DSP mail 0x{mail:X8} has no reply; PixelCube emulates the DSP's boot ROM " +
-            "announcement only");
+            $"microcode mail 0x{mail:X8} is not understood and went unanswered");
     }
 
     private string MailKey(uint mail)
@@ -1297,6 +2246,17 @@ public sealed class GameCubeHardware
         // before and a count is the only thing that tells the two apart.
         >= FifoBaseLow and <= FifoReadPointerHigh => true,
         >= WriteGatherPipe => true,
+
+        // Everything below drives real behaviour now. Leaving them on the
+        // unimplemented list is not harmless: that list is what the next piece
+        // of work gets chosen from, and a dozen entries describing things that
+        // already work is what a genuine gap hides behind.
+        AudioControl or AudioSampleCounter or AudioInterruptTiming => true,
+        AudioInterface + 0x04 => true,
+        >= DvdInterface and < SerialInterface => true,
+        >= ExternalInterface and < AudioInterface => true,
+        PixelEngineInterrupt or PixelEngineToken => true,
+        SerialPoll => true,
 
         _ => Array.IndexOf(ExternalControlRegisters, offset) >= 0
     };

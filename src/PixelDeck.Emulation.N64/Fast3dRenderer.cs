@@ -177,7 +177,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     public uint? FirstUnsupportedListHeaderAddress { get; private set; }
 
-    public void Execute(N64RspTask task)
+    public void Execute(N64RspTask task, N64GraphicsTaskProfile? profile = null)
     {
         Array.Clear(_segments);
         Array.Clear(_vertices);
@@ -198,9 +198,12 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         _textureImageWidth = 1;
         _primitiveColor = Vector4.One;
         _primitiveLodFraction = 0;
-        MicrocodeBanner = ReadMicrocodeBanner(task);
-        MicrocodeCrc32 = CalculateMicrocodeCrc32(task);
-        _microcode = ClassifyMicrocode(MicrocodeBanner, MicrocodeCrc32, _microcode);
+        profile ??= N64GraphicsTaskProfile.FromTask(_memory, task, _microcode.ToString());
+        MicrocodeBanner = profile.MicrocodeBanner;
+        MicrocodeCrc32 = profile.MicrocodeCrc32;
+        _microcode = Enum.TryParse<N64Microcode>(profile.DetectedMicrocodeName, ignoreCase: false, out var detected)
+            ? detected
+            : N64Microcode.Fast3d;
         DetectedMicrocode = _microcode;
         var remainingBudget = MaximumCommandsPerTask;
         if (_microcode == N64Microcode.F5Rogue)
@@ -566,58 +569,12 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
         uint crc32,
         N64Microcode current = N64Microcode.Fast3d)
     {
-        // Factor 5's Rogue Squadron microcode has no ordinary Fast3D banner
-        // and changes both opcode meanings and command lengths.
-        if (crc32 == 0xDA51CCDB)
-        {
-            return N64Microcode.F5Rogue;
-        }
-
-        // Early Fast3D beta uses five-times vertex indices and a different
-        // G_VTX layout. Shadows of the Empire ships this exact text image.
-        if (crc32 is 0x94C4C833 or 0xD17906E2)
-        {
-            return N64Microcode.F3dBeta;
-        }
-
-        if (banner is null)
-        {
-            // An unreadable banner is a failed detection, not evidence of
-            // legacy Fast3D. Asserting Fast3D here makes the renderer decode
-            // an F3DEX2 display list against the wrong opcode table: WWF
-            // WrestleMania 2000 flips to Fast3D roughly 25 seconds in, logs
-            // 28,845 unsupported commands, and stops drawing entirely. Hold
-            // whatever the cartridge was last positively identified as.
-            return current;
-        }
-
-        if (banner.Contains("F3DZEX", StringComparison.Ordinal) ||
-            (banner.Contains("F3DEX", StringComparison.Ordinal) &&
-             banner.Contains(" 2.", StringComparison.Ordinal)))
-        {
-            return N64Microcode.F3dex2;
-        }
-
-        return banner.Contains("F3DEX", StringComparison.Ordinal)
-            ? N64Microcode.F3dex
-            : N64Microcode.Fast3d;
+        return Enum.Parse<N64Microcode>(N64GraphicsTaskProfile.ClassifyMicrocodeName(banner, crc32, current.ToString()));
     }
 
     private uint CalculateMicrocodeCrc32(N64RspTask task)
     {
-        const int microcodeTextLength = 4096;
-        var address = task.MicrocodePointer & 0x7FFFFF;
-        if (address + microcodeTextLength > N64Memory.RdramSize)
-        {
-            return 0;
-        }
-
-        // Published graphics-microcode CRCs are computed from the traditional
-        // N64 plugin memory layout, where bytes inside each 32-bit RDRAM word
-        // are host-order reversed. Pixel64 keeps canonical big-endian RDRAM,
-        // so feed each word to the CRC in that historical byte order.
-        return ComputeStrictWordSwappedCrc32(
-            _memory.Rdram.AsSpan((int)address, microcodeTextLength));
+        return N64GraphicsTaskProfile.FromTask(_memory, task).MicrocodeCrc32;
     }
 
     internal static uint ComputeStrictCrc32(ReadOnlySpan<byte> data)
@@ -672,29 +629,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
 
     private string? ReadMicrocodeBanner(N64RspTask task)
     {
-        var address = task.MicrocodeDataPointer & 0x7FFFFF;
-        var length = (int)Math.Min(task.MicrocodeDataSize, 2048);
-        if (length <= 0 || address + length > N64Memory.RdramSize)
-        {
-            return null;
-        }
-
-        var data = _memory.Rdram.AsSpan((int)address, length);
-        ReadOnlySpan<byte> marker = "RSP Gfx ucode"u8;
-        var start = data.IndexOf(marker);
-        if (start < 0)
-        {
-            return null;
-        }
-
-        var text = data[start..];
-        var end = 0;
-        while (end < text.Length && end < 96 && text[end] is >= 0x20 and <= 0x7E)
-        {
-            end++;
-        }
-
-        return System.Text.Encoding.ASCII.GetString(text[..end]);
+        return N64GraphicsTaskProfile.FromTask(_memory, task).MicrocodeBanner;
     }
 
     private void SetTexture(uint word0, uint word1)
@@ -1791,11 +1726,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
             ComputeClipFlags(clipPosition),
             float.IsFinite(screen.X) &&
             float.IsFinite(screen.Y) &&
-            float.IsFinite(screen.Z) &&
-            // Vertices at or behind the eye cannot be perspective-corrected.
-            // Rasterizing them pins geometry to the viewport centre and fills
-            // the frame with a wedge, which reads as an impassable wall.
-            clipPosition.W > 0.000001f);
+            float.IsFinite(screen.Z));
     }
 
     internal static Vector3 ProjectClipToScreen(
@@ -2517,6 +2448,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     ? ReadTmemByte(bitOffset >> 3) >> 4
                     : ReadTmemByte(bitOffset >> 3) & 0xF)),
             (2, 1) => DecodePaletteTexel(ReadTmemByte(bitOffset >> 3)),
+            (2, 2) => DecodePaletteTexel(ReadTmemUInt16(bitOffset >> 3)),
             (3, 0) => DecodeIntensityAlpha4(
                 ReadTmemByte(bitOffset >> 3),
                 x),
@@ -2526,6 +2458,7 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                 ReadTmemByte(bitOffset >> 3),
                 x),
             (4, 1) => DecodeIntensity8(ReadTmemByte(bitOffset >> 3)),
+            (4, 2) => DecodeIntensity16(ReadTmemUInt16(bitOffset >> 3)),
             _ => Vector4.One
         };
     }
@@ -2604,8 +2537,8 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     {
         var supported = (format, size) switch
         {
-            (0, 0) or (0, 1) or (0, 2) or (0, 3) or (2, 0) or (2, 1) => true,
-            (3, 0) or (3, 1) or (3, 2) or (4, 0) or (4, 1) => true,
+            (0, 0) or (0, 1) or (0, 2) or (0, 3) or (2, 0) or (2, 1) or (2, 2) => true,
+            (3, 0) or (3, 1) or (3, 2) or (4, 0) or (4, 1) or (4, 2) => true,
             _ => false
         };
         if (!supported)
@@ -3048,6 +2981,12 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
     private static Vector4 DecodeIntensity8(byte pixel)
     {
         var value = pixel / 255f;
+        return new Vector4(value, value, value, value);
+    }
+
+    internal static Vector4 DecodeIntensity16(ushort pixel)
+    {
+        var value = pixel / 65535f;
         return new Vector4(value, value, value, value);
     }
 

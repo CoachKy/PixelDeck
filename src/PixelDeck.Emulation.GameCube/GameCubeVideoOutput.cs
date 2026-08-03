@@ -80,14 +80,27 @@ public static class GameCubeVideoOutput
         }
 
         var stride = width * 2;
-        if (offset + (stride * height) > GameCubeMemory.MainMemorySize ||
-            destination.Length < width * height)
+        if (destination.Length < width * height)
         {
             return false;
         }
 
+        // Only as many lines as the framebuffer actually holds. A game picks
+        // its own picture height and the window is a fixed size, so the rest is
+        // left black rather than decoded out of whatever follows in memory.
+        var lines = Math.Min(height, (int)((GameCubeMemory.MainMemorySize - offset) / stride));
+        if (lines <= 0)
+        {
+            return false;
+        }
+
+        if (lines < height)
+        {
+            destination.Slice(lines * width, (height - lines) * width).Clear();
+        }
+
         var source = memory.MainMemory;
-        for (var y = 0; y < height; y++)
+        for (var y = 0; y < lines; y++)
         {
             var line = offset + (y * stride);
             var row = y * width;

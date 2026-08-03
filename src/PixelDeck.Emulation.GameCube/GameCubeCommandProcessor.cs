@@ -81,6 +81,20 @@ public sealed class GameCubeCommandProcessor
     private uint _lastFifoStart;
     private uint _lastFifoEnd;
 
+    /// <summary>The blitting processor's registers, kept so a copy can read them.</summary>
+    private readonly uint[] _blitting = new uint[256];
+
+    /// <summary>
+    /// Where each indexed attribute's array starts and how far apart its
+    /// entries are. A vertex that names an index rather than carrying its data
+    /// is read from here: base plus index times stride.
+    /// </summary>
+    private readonly uint[] _arrayBase = new uint[16];
+    private readonly uint[] _arrayStride = new uint[16];
+
+    /// <summary>The embedded framebuffer and the code that draws into it.</summary>
+    public GameCubeRasterizer Rasterizer { get; } = new();
+
     public GameCubeCommandProcessor(GameCubeMemory memory, GameCubeTraceLog trace)
     {
         ArgumentNullException.ThrowIfNull(memory);
@@ -88,6 +102,14 @@ public sealed class GameCubeCommandProcessor
         _memory = memory;
         _trace = trace;
     }
+
+    /// <summary>
+    /// The size of the picture the last display copy produced, or zero before
+    /// one has happened.
+    /// </summary>
+    public int DisplayWidth { get; private set; }
+
+    public int DisplayHeight { get; private set; }
 
     /// <summary>How many FIFO commands have been decoded since reset.</summary>
     public long CommandsDecoded => _commandsDecoded;
@@ -106,6 +128,9 @@ public sealed class GameCubeCommandProcessor
         _verticesSeen = 0;
         _lastFifoStart = 0;
         _lastFifoEnd = 0;
+        Array.Clear(_blitting);
+        Array.Clear(_arrayBase);
+        Array.Clear(_arrayStride);
     }
 
     /// <summary>
@@ -224,23 +249,62 @@ public sealed class GameCubeCommandProcessor
             case OpLoadBpRegister:
             {
                 var packed = _memory.ReadUInt32(address + 1);
+                var register = packed >> 24;
+                var value = packed & 0x00FF_FFFF;
+                _blitting[register & 0xFF] = value;
                 _trace.WriteOnce(
                     GameCubeTraceChannel.Graphics,
                     GameCubeTraceLevel.Debug,
-                    $"gx/bp/0x{packed >> 24:X2}",
-                    $"blitting processor register 0x{packed >> 24:X2} = 0x{packed & 0xFF_FFFF:X6}");
+                    $"gx/bp/0x{register:X2}",
+                    $"blitting processor register 0x{register:X2} = 0x{value:X6}");
+
+                switch (register)
+                {
+                    case BpTriggerCopy:
+                        ExecuteDisplayCopy(value);
+                        break;
+
+                    // Which faces to discard lives in bits 14 and 15 of the
+                    // general mode register.
+                    case BpGeneralMode:
+                        Rasterizer.Cull = (GameCubeRasterizer.Culling)((value >> 14) & 3);
+                        break;
+
+                    // End of the drawing list. The bit matters: this register
+                    // is written for other reasons too, and only bit one means
+                    // a game is waiting to be told the list is done.
+                    case BpSetDrawDone when (value & 2) != 0:
+                        _memory.Hardware.SignalPixelEngineFinish();
+                        break;
+
+                    case BpPixelEngineToken:
+                        _memory.Hardware.SignalPixelEngineToken((ushort)value, false);
+                        break;
+
+                    case BpPixelEngineTokenInterrupt:
+                        _memory.Hardware.SignalPixelEngineToken((ushort)value, true);
+                        break;
+                }
+
                 return;
             }
 
             case OpLoadXfRegister:
             {
+                var count = (_memory.ReadUInt16(address + 1) & 0xF) + 1;
                 var target = _memory.ReadUInt16(address + 3);
+                for (var word = 0; word < count; word++)
+                {
+                    Rasterizer.SetTransformRegister(
+                        (uint)(target + word),
+                        _memory.ReadUInt32(address + 5 + (uint)(word * 4)));
+                }
+
                 _trace.WriteOnce(
                     GameCubeTraceChannel.Graphics,
                     GameCubeTraceLevel.Debug,
                     $"gx/xf/0x{target:X4}",
-                    $"transform unit register 0x{target:X4}, " +
-                    $"{(_memory.ReadUInt16(address + 1) & 0xF) + 1} words");
+                    $"transform unit register 0x{target:X4}, {count} words");
                 return;
             }
 
@@ -264,16 +328,29 @@ public sealed class GameCubeCommandProcessor
 
             default:
             {
+                // Only the primitives reach here legitimately. An opcode that
+                // was already reported as unrecognised is skipped a byte at a
+                // time, and arrives here too — treating it as a primitive
+                // indexes off the front of the table and throws, turning a
+                // stream that is merely out of step into a crash.
+                if (opcode < OpPrimitiveFirst)
+                {
+                    return;
+                }
+
                 var vertices = _memory.ReadUInt16(address + 1);
                 _verticesSeen += vertices;
                 var kind = PrimitiveNames[(opcode - OpPrimitiveFirst) / 8];
+                var format = opcode & 7;
+                var size = VertexSize(format);
                 _trace.WriteEvery(
                     GameCubeTraceChannel.Graphics,
                     GameCubeTraceLevel.Debug,
                     $"gx/primitive/{kind}",
                     256,
-                    $"{kind}: {vertices} vertices, format {opcode & 7}, " +
-                    $"{VertexSize(opcode & 7)} bytes each");
+                    $"{kind}: {vertices} vertices, format {format}, {size} bytes each");
+
+                DrawPrimitive((opcode - OpPrimitiveFirst) / 8, address + 3, vertices, format, size);
                 return;
             }
         }
@@ -322,6 +399,17 @@ public sealed class GameCubeCommandProcessor
             case 0x60:
                 _vertexDescriptorHigh = value;
                 break;
+            // Where the indexed attributes live, and how far apart their
+            // entries are. Array zero is position, one is normal, two and three
+            // the colours, four to eleven the texture coordinates.
+            case >= 0xA0 and <= 0xAF:
+                _arrayBase[register & 0xF] = value;
+                break;
+
+            case >= 0xB0 and <= 0xBF:
+                _arrayStride[register & 0xF] = value;
+                break;
+
             case >= 0x70 and <= 0x77:
                 _attributeA[register & 7] = value;
                 break;
@@ -341,13 +429,190 @@ public sealed class GameCubeCommandProcessor
         }
     }
 
+    /// <summary>
+    /// Reads a run of vertices out of the command stream and draws them.
+    /// </summary>
+    /// <remarks>
+    /// Only the position and the first colour are read. Everything else in a
+    /// vertex — normals, texture coordinates, matrix indices — is measured so
+    /// the stream stays in step and then skipped, because nothing downstream
+    /// consumes it yet. Positions given by index rather than inline are not
+    /// followed either: that needs the vertex arrays the transform unit reads
+    /// separately, and a run containing them is reported rather than drawn
+    /// wrongly.
+    /// </remarks>
+    private void DrawPrimitive(int kind, uint address, int count, int format, int size)
+    {
+        if (count <= 0 || size <= 0)
+        {
+            return;
+        }
+
+        var positionReference = (_vertexDescriptorLow >> 9) & 3;
+        if (positionReference == 0)
+        {
+            return;
+        }
+
+        var attributes = _attributeA[format];
+        var components = (attributes & 1) != 0 ? 3 : 2;
+        var positionFormat = (attributes >> 1) & 7;
+        var fraction = (int)((attributes >> 4) & 0x1F);
+        var colourReference = (_vertexDescriptorLow >> 13) & 3;
+        var colourFormat = (attributes >> 14) & 7;
+
+        // The matrix indices sit ahead of the position when present.
+        var lead = (int)(_vertexDescriptorLow & 1);
+        for (var texture = 0; texture < 8; texture++)
+        {
+            lead += (int)((_vertexDescriptorLow >> (1 + texture)) & 1);
+        }
+
+        var vertices = new GameCubeRasterizer.Vertex[count];
+        for (var index = 0; index < count; index++)
+        {
+            var cursor = address + (uint)(index * size) + (uint)lead;
+
+            // Position: either carried here, or an index into an array the
+            // transform unit reads separately. Indexed geometry is the common
+            // case for anything a game draws more than once, so skipping it
+            // means skipping most of a scene.
+            var at = Resolve(ref cursor, positionReference, PositionArray);
+            var x = ReadComponent(at, positionFormat, fraction, 0);
+            var y = ReadComponent(at, positionFormat, fraction, 1);
+            var z = components == 3 ? ReadComponent(at, positionFormat, fraction, 2) : 0f;
+
+            if (positionReference == 1)
+            {
+                cursor += (uint)(components * ComponentSizes[Math.Min(positionFormat, 4)]);
+            }
+
+            // Anything between position and colour is measured and stepped
+            // over: normals are not lit yet and texture coordinates have
+            // nothing to sample.
+            SkipAttribute(ref cursor, (_vertexDescriptorLow >> 11) & 3,
+                ((attributes >> 9) & 1) != 0 ? 9 : 3, (attributes >> 10) & 7);
+
+            var colour = 0xFFFF_FFFFu;
+            if (colourReference != 0)
+            {
+                var colourAt = Resolve(ref cursor, colourReference, Colour0Array);
+                colour = ReadColour(colourAt, colourFormat);
+            }
+
+            vertices[index] = new GameCubeRasterizer.Vertex(x, y, z, colour);
+        }
+
+        Rasterizer.Draw(kind, vertices);
+    }
+
+    /// <summary>The arrays an indexed attribute can be read from.</summary>
+    private const int PositionArray = 0;
+    private const int Colour0Array = 2;
+
+    /// <summary>
+    /// Works out where an attribute's data actually is, and advances the cursor
+    /// past whatever the vertex carried for it.
+    /// </summary>
+    /// <remarks>
+    /// A vertex either carries an attribute inline, or names an entry in an
+    /// array by index — one byte or two, however large the entry itself is.
+    /// Both forms are ordinary and a game uses whichever costs less to send.
+    /// </remarks>
+    private uint Resolve(ref uint cursor, uint reference, int array)
+    {
+        switch (reference)
+        {
+            case 2:
+            {
+                var index = _memory.ReadByte(cursor);
+                cursor += 1;
+                return _arrayBase[array] + (index * _arrayStride[array]);
+            }
+
+            case 3:
+            {
+                var index = _memory.ReadUInt16(cursor);
+                cursor += 2;
+                return _arrayBase[array] + (index * _arrayStride[array]);
+            }
+
+            default:
+                return cursor;
+        }
+    }
+
+    /// <summary>
+    /// Steps the cursor past an attribute nothing downstream reads yet, which
+    /// still has to be measured exactly or every later attribute is misread.
+    /// </summary>
+    private static void SkipAttribute(ref uint cursor, uint reference, int components, uint format) =>
+        cursor += (uint)AttributeSize(reference, format, components);
+
+    /// <summary>
+    /// One component of a position, in whichever numeric format the attribute
+    /// table names. The integer forms carry an implied binary point.
+    /// </summary>
+    private float ReadComponent(uint address, uint format, int fraction, int component)
+    {
+        var scale = 1f / (1 << fraction);
+        switch (format)
+        {
+            case 0:
+                return _memory.ReadByte(address + (uint)component) * scale;
+            case 1:
+                return (sbyte)_memory.ReadByte(address + (uint)component) * scale;
+            case 2:
+                return _memory.ReadUInt16(address + (uint)(component * 2)) * scale;
+            case 3:
+                return (short)_memory.ReadUInt16(address + (uint)(component * 2)) * scale;
+            default:
+                return BitConverter.UInt32BitsToSingle(
+                    _memory.ReadUInt32(address + (uint)(component * 4)));
+        }
+    }
+
+    /// <summary>One colour, in whichever of the six packed forms is in use.</summary>
+    private uint ReadColour(uint address, uint format) => format switch
+    {
+        0 => Expand565(_memory.ReadUInt16(address)),
+        1 or 2 => 0xFF00_0000u |
+            ((uint)_memory.ReadByte(address) << 16) |
+            ((uint)_memory.ReadByte(address + 1) << 8) |
+            _memory.ReadByte(address + 2),
+        3 => Expand4444(_memory.ReadUInt16(address)),
+        _ => 0xFF00_0000u |
+            ((uint)_memory.ReadByte(address) << 16) |
+            ((uint)_memory.ReadByte(address + 1) << 8) |
+            _memory.ReadByte(address + 2)
+    };
+
+    private static uint Expand565(ushort packed) =>
+        0xFF00_0000u |
+        ((uint)(((packed >> 11) & 0x1F) * 255 / 31) << 16) |
+        ((uint)(((packed >> 5) & 0x3F) * 255 / 63) << 8) |
+        (uint)((packed & 0x1F) * 255 / 31);
+
+    private static uint Expand4444(ushort packed) =>
+        0xFF00_0000u |
+        ((uint)(((packed >> 12) & 0xF) * 17) << 16) |
+        ((uint)(((packed >> 8) & 0xF) * 17) << 8) |
+        (uint)(((packed >> 4) & 0xF) * 17);
+
     // ------------------------------------------------------------ vertex size
 
     /// <summary>
     /// How many bytes one vertex occupies under the current descriptor and the
     /// given attribute format index. This is what keeps the decoder in step.
     /// </summary>
-    private int VertexSize(int format)
+    /// <remarks>
+    /// Public so it can be measured directly. It cannot be inferred from how
+    /// far the decoder gets, because anything left over in a command stream is
+    /// zero and zero is a valid instruction — the decoder walks through padding
+    /// happily and always reaches the end, so a test that measures the distance
+    /// travelled measures the padding rather than the vertex.
+    /// </remarks>
+    public int VertexSize(int format)
     {
         var low = _vertexDescriptorLow;
         var high = _vertexDescriptorHigh;
@@ -383,12 +648,12 @@ public sealed class GameCubeCommandProcessor
         size += ColourAttributeSize((low >> 15) & 3, (a >> 18) & 7);
 
         // Texture coordinates zero to seven: one or two components each.
-        // Coordinate zero lives in attribute word A; one to four in B; five to
-        // seven in C. The packing is not uniform — word C starts five bits in,
-        // because coordinate four's fractional bits were left behind there when
-        // its element and format bits ran out of room at the top of B. Only the
-        // element and format fields matter for size, so the stray fraction is
-        // skipped rather than modelled.
+        // Coordinate zero lives in attribute word A; one to four in B at bits
+        // 0, 9, 18 and 27; five to seven in C at bits 5, 14 and 23. Word C
+        // starts five bits in because coordinate four's fractional bits were
+        // left behind there when its element and format fields ran out of room
+        // at the top of B. Only element and format affect size, so the stray
+        // fraction is skipped rather than modelled.
         size += AttributeSize(high & 3, (a >> 22) & 7, ((a >> 21) & 1) != 0 ? 2 : 1);
         for (var texture = 1; texture < 8; texture++)
         {
@@ -421,6 +686,172 @@ public sealed class GameCubeCommandProcessor
             2 => 1,
             _ => 2
         };
+
+    // The blitting processor registers that describe a copy out of the embedded
+    // framebuffer, and the one that performs it.
+    private const uint BpCopySource = 0x49;
+    private const uint BpCopySize = 0x4A;
+    private const uint BpCopyDestination = 0x4B;
+    private const uint BpCopyStride = 0x4D;
+    private const uint BpClearAlphaRed = 0x4F;
+    private const uint BpClearGreenBlue = 0x50;
+    private const uint BpTriggerCopy = 0x52;
+
+    /// <summary>
+    /// The end-of-list marker and the two token registers, which are how the
+    /// graphics processor reports progress back to a waiting game.
+    /// </summary>
+    /// <summary>General mode, which carries the culling selection.</summary>
+    private const uint BpGeneralMode = 0x00;
+
+    private const uint BpSetDrawDone = 0x45;
+    private const uint BpPixelEngineToken = 0x47;
+    private const uint BpPixelEngineTokenInterrupt = 0x48;
+
+    private const uint CopyClears = 1u << 11;
+    private const uint CopyToExternalFramebuffer = 1u << 14;
+
+    /// <summary>
+    /// Performs a copy out of the embedded framebuffer into the external one,
+    /// which is the step that makes anything visible at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is no embedded framebuffer to copy from yet — nothing rasterises —
+    /// so what this writes is the clear colour the game asked for, across the
+    /// region it asked to copy. That is not a placeholder for its own sake: a
+    /// game clears the framebuffer to a known colour before drawing, and the
+    /// copy is what puts it on the television. Getting the addressing, the
+    /// dimensions and the colour conversion right against the real registers is
+    /// most of the work, and every triangle that ever gets drawn arrives through
+    /// this same path.
+    /// </para>
+    /// <para>
+    /// Register numbers verified against documentation rather than recalled:
+    /// destination 0x4B, source rectangle 0x49 and 0x4A packed as ten-bit x and
+    /// y, clear colour 0x4F and 0x50, and bit 14 of the trigger meaning the copy
+    /// is bound for the external framebuffer rather than a texture.
+    /// </para>
+    /// </remarks>
+    private void ExecuteDisplayCopy(uint trigger)
+    {
+        if ((trigger & CopyToExternalFramebuffer) == 0)
+        {
+            _trace.WriteOnce(
+                GameCubeTraceChannel.Graphics,
+                GameCubeTraceLevel.Debug,
+                "gx/copy-to-texture",
+                "a copy to texture was requested; only copies to the external " +
+                "framebuffer are performed");
+            return;
+        }
+
+        // The destination is stored shifted right by five, as a physical address.
+        var destination = _blitting[BpCopyDestination] << 5;
+        var size = _blitting[BpCopySize];
+        var width = (int)(size & 0x3FF) + 1;
+        var height = (int)((size >> 10) & 0x3FF) + 1;
+
+        // The stride is in units of 32 bytes and describes the destination.
+        var stride = (int)(_blitting[BpCopyStride] & 0x3FF) * 32;
+        if (stride <= 0)
+        {
+            stride = width * 2;
+        }
+
+        var alphaRed = _blitting[BpClearAlphaRed];
+        var greenBlue = _blitting[BpClearGreenBlue];
+        var red = (byte)(alphaRed & 0xFF);
+        var green = (byte)((greenBlue >> 8) & 0xFF);
+        var blue = (byte)(greenBlue & 0xFF);
+
+        // Remembered so scan-out reads back exactly what was written. A game
+        // chooses its own picture height — 448 lines here, not 480 — and
+        // reading past the end shows whatever the memory happened to hold,
+        // which in this encoding is a vivid green rather than anything subtle.
+        DisplayWidth = width;
+        DisplayHeight = height;
+
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Graphics,
+            GameCubeTraceLevel.Information,
+            "gx/display-copy",
+            120,
+            $"copy to external framebuffer 0x{destination:X8}, {width}x{height}, " +
+            $"stride {stride}, clear=({red},{green},{blue})" +
+            $"{((trigger & CopyClears) != 0 ? ", clearing" : string.Empty)}");
+
+        CopyEmbeddedFramebuffer(destination, width, height, stride, red, green, blue);
+
+        // Clearing happens as part of the copy, not before it: the image being
+        // sent to the television is the one that was there, and the clear is
+        // what prepares the next frame.
+        if ((trigger & CopyClears) != 0)
+        {
+            Rasterizer.Clear(red, green, blue);
+        }
+    }
+
+    /// <summary>
+    /// Moves the embedded framebuffer to the external one, converting to the
+    /// encoding the video interface reads back.
+    /// </summary>
+    /// <remarks>
+    /// Two pixels share one pair of colour samples, so they are converted
+    /// together and their colour averaged — which is what the hardware's copy
+    /// filter does, and why a copy is where a picture loses chroma resolution
+    /// rather than where it gains it.
+    /// </remarks>
+    private void CopyEmbeddedFramebuffer(
+        uint destination,
+        int width,
+        int height,
+        int stride,
+        byte red,
+        byte green,
+        byte blue)
+    {
+        var clear = 0xFF00_0000u | ((uint)red << 16) | ((uint)green << 8) | blue;
+
+        for (var y = 0; y < height; y++)
+        {
+            var line = destination + (uint)(y * stride);
+            for (var x = 0; x < width; x += 2)
+            {
+                var left = Sample(x, y, width, height, clear);
+                var right = Sample(x + 1, y, width, height, clear);
+
+                var lumaLeft = Luma(left);
+                var lumaRight = Luma(right);
+                var averageRed = (((left >> 16) & 0xFF) + ((right >> 16) & 0xFF)) / 2;
+                var averageGreen = (((left >> 8) & 0xFF) + ((right >> 8) & 0xFF)) / 2;
+                var averageBlue = ((left & 0xFF) + (right & 0xFF)) / 2;
+
+                var at = line + (uint)(x * 2);
+                _memory.WriteByte(at, lumaLeft);
+                _memory.WriteByte(at + 1, ChromaBlue(averageRed, averageGreen, averageBlue));
+                _memory.WriteByte(at + 2, lumaRight);
+                _memory.WriteByte(at + 3, ChromaRed(averageRed, averageGreen, averageBlue));
+            }
+        }
+    }
+
+    private uint Sample(int x, int y, int width, int height, uint fallback) =>
+        x < GameCubeRasterizer.Width && y < GameCubeRasterizer.Height && x < width && y < height
+            ? Rasterizer.Pixel(x, y)
+            : fallback;
+
+    private static byte Luma(uint colour) => (byte)Math.Clamp(
+        (0.257 * ((colour >> 16) & 0xFF)) + (0.504 * ((colour >> 8) & 0xFF)) +
+        (0.098 * (colour & 0xFF)) + 16,
+        0,
+        255);
+
+    private static byte ChromaBlue(uint red, uint green, uint blue) => (byte)Math.Clamp(
+        (-0.148 * red) - (0.291 * green) + (0.439 * blue) + 128, 0, 255);
+
+    private static byte ChromaRed(uint red, uint green, uint blue) => (byte)Math.Clamp(
+        (0.439 * red) - (0.368 * green) - (0.071 * blue) + 128, 0, 255);
 
     /// <summary>Formats a run of memory as hex, for reading a stream by eye.</summary>
     private string DescribeBytes(uint address, int count)

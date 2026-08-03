@@ -347,6 +347,42 @@ public sealed class N64MachineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void GraphicsTaskProfileClassifiesMicrocodeFromRspTaskMetadata()
+    {
+        var memory = new N64Memory(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));
+        var banner = "RSP Gfx ucode F3DEX.NoN fifo 2.08"u8.ToArray();
+        var dataPointer = 0x6000;
+        var microcodePointer = 0x2000;
+
+        memory.Rdram.AsSpan(dataPointer, banner.Length).Clear();
+        banner.CopyTo(memory.Rdram.AsSpan(dataPointer, banner.Length));
+
+        memory.Rdram.AsSpan(microcodePointer, 4096).Clear();
+
+        var task = new N64RspTask(
+            1, 0,
+            0, 0,
+            (uint)microcodePointer, 4096,
+            (uint)dataPointer, (uint)banner.Length,
+            0, 0,
+            0, 0,
+            0, 0,
+            0, 0);
+
+        var profile = N64GraphicsTaskProfile.FromTask(memory, task);
+
+        Assert.Equal("RSP Gfx ucode F3DEX.NoN fifo 2.08", profile.MicrocodeBanner);
+        Assert.Equal("F3dex2", profile.DetectedMicrocodeName);
+    }
+
+    [Fact]
+    public void Fast3dRendererTextureDecodersHandleCi16AndIntensity16()
+    {
+        Assert.Equal(new Vector4(0x1234 / 65535f), Fast3dRenderer.DecodeIntensity16(0x1234));
+        Assert.Equal(new Vector4(0x8000 / 65535f), Fast3dRenderer.DecodeIntensity16(0x8000));
+    }
+
+    [Fact]
     public void VideoResolutionKeepsTheLastValidSizeWhileTheInterfaceIsUnprogrammed()
     {
         var machine = N64Machine.Create(N64Cartridge.FromBytes(N64TestSupport.CreateCartridgeImage()));

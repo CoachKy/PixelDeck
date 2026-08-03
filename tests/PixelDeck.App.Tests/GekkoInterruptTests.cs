@@ -11,6 +11,17 @@ public sealed class GekkoInterruptTests
     private const uint InterruptMask = 0xCC00_3004;
     private const uint DisplayInterrupt0 = 0xCC00_2030;
 
+    /// <summary>
+    /// A display interrupt is armed by bit 28 and reports having fired in bit
+    /// 31, which is the opposite of what these tests originally assumed. The
+    /// documentation is explicit — "31 INT - Interrupt Status (write to clear)",
+    /// "28 ENB - Interrupt Enable" — and the emulator had the two the wrong way
+    /// round, so every display interrupt was skipped as disabled and no
+    /// interrupt of any kind was ever delivered to a game.
+    /// </summary>
+    private const uint DisplayEnable = 1u << 28;
+    private const uint DisplayFired = 1u << 31;
+
     /// <summary>A bare <c>rfi</c>, as the boot state installs at every vector.</summary>
     private const uint ReturnFromInterrupt = 0x4C00_0064;
 
@@ -127,7 +138,7 @@ public sealed class GekkoInterruptTests
         // of these and sleeps, and this is the only thing that wakes it.
         using var fixture = new CpuFixture();
         const uint Line = 5;
-        fixture.Memory.WriteUInt32(DisplayInterrupt0, 0x8000_0000 | (Line << 16));
+        fixture.Memory.WriteUInt32(DisplayInterrupt0, DisplayEnable | (Line << 16));
         fixture.Memory.WriteUInt32(InterruptMask, 0x0000_0100);
 
         Assert.False(fixture.Memory.Hardware.IsInterruptPending);
@@ -136,7 +147,7 @@ public sealed class GekkoInterruptTests
         fixture.Memory.Hardware.Advance(30_830 * (Line + 1));
 
         Assert.True(fixture.Memory.Hardware.IsInterruptPending);
-        Assert.NotEqual(0u, fixture.Memory.ReadUInt32(DisplayInterrupt0) & (1u << 28));
+        Assert.NotEqual(0u, fixture.Memory.ReadUInt32(DisplayInterrupt0) & DisplayFired);
     }
 
     [Fact]
@@ -155,13 +166,18 @@ public sealed class GekkoInterruptTests
     public void AcknowledgingEveryDisplayInterruptDropsTheVideoCause()
     {
         using var fixture = new CpuFixture();
-        fixture.Memory.WriteUInt32(DisplayInterrupt0, 0x8000_0000 | (3u << 16));
+        fixture.Memory.WriteUInt32(DisplayInterrupt0, DisplayEnable | (3u << 16));
         fixture.Memory.WriteUInt32(InterruptMask, 0x0000_0100);
         fixture.Memory.Hardware.Advance(30_830 * 4);
         Assert.True(fixture.Memory.Hardware.IsInterruptPending);
 
-        // Software clears the fired flag by writing the register back without it.
-        fixture.Memory.WriteUInt32(DisplayInterrupt0, 0x8000_0000 | (3u << 16));
+        // Acknowledged by writing a one over the fired flag, not by writing the
+        // register back without it. Writing a zero there leaves it standing, so
+        // a handler that rewrites its configuration without the flag set never
+        // clears the interrupt and is entered again the moment it returns.
+        fixture.Memory.WriteUInt32(
+            DisplayInterrupt0,
+            DisplayFired | DisplayEnable | (3u << 16));
 
         Assert.False(fixture.Memory.Hardware.IsInterruptPending);
     }
@@ -194,7 +210,7 @@ public sealed class GekkoInterruptTests
             // Line three rather than one: the beam starts on line one and
             // advances before it compares, so line one is only reached after a
             // whole field has gone by.
-            Memory.WriteUInt32(DisplayInterrupt0, 0x8000_0000 | (3u << 16));
+            Memory.WriteUInt32(DisplayInterrupt0, DisplayEnable | (3u << 16));
             Memory.Hardware.Advance(30_830 * 4);
         }
 

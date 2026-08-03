@@ -198,6 +198,9 @@ public sealed class GameCubeMachine : IDisposable
         return result;
     }
 
+    /// <summary>Functions already described, so a shared routine is reported once.</summary>
+    private readonly HashSet<uint> _describedFunctions = [];
+
     /// <summary>Names the environment variable that arms a memory watchpoint.</summary>
     public const string WatchVariable = "PIXELCUBE_WATCH";
 
@@ -314,6 +317,96 @@ public sealed class GameCubeMachine : IDisposable
     }
 
     /// <summary>
+    /// Reports any register pointing at readable text.
+    /// </summary>
+    /// <remarks>
+    /// When a game gives up it says why. The operating system's panic path
+    /// formats a message and a stack traceback and sends them to a debug
+    /// console that retail hardware does not have and an emulator therefore
+    /// throws away — so the one artefact that states the problem in words is
+    /// the one artefact routinely lost. The strings are still in memory and
+    /// still pointed at by the registers that were about to print them.
+    /// </remarks>
+    public void TraceStringsInRegisters()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        for (var register = 0; register < 32; register++)
+        {
+            var text = ReadText(Cpu.Gpr[register]);
+            if (text is not null)
+            {
+                Trace.Write(
+                    GameCubeTraceChannel.Cpu,
+                    GameCubeTraceLevel.Warning,
+                    $"  r{register} -> \"{text}\"");
+            }
+        }
+
+        // The panic handler keeps its format strings at offsets from a base it
+        // holds, so the pointer itself is not one of them.
+        for (var offset = 0u; offset <= 128; offset += 8)
+        {
+            var text = ReadText(Cpu.Gpr[31] + offset);
+            if (text is not null)
+            {
+                Trace.Write(
+                    GameCubeTraceChannel.Cpu,
+                    GameCubeTraceLevel.Warning,
+                    $"  r31+{offset} -> \"{text}\"");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads a null-terminated run of printable characters, or null when the
+    /// address does not hold one.
+    /// </summary>
+    private string? ReadText(uint address)
+    {
+        if (address < 0x8000_0000 || !GameCubeMemory.TryTranslate(address, out _))
+        {
+            return null;
+        }
+
+        var text = new System.Text.StringBuilder();
+        var printable = 0;
+        for (var index = 0u; index < 160; index++)
+        {
+            if (!GameCubeMemory.TryTranslate(address + index, out _))
+            {
+                return null;
+            }
+
+            var value = Memory.ReadByte(address + index);
+            if (value == 0)
+            {
+                break;
+            }
+
+            // Control characters other than the whitespace a message legitimately
+            // contains mean this is not text.
+            if (value is < 0x20 and not 0x0A and not 0x0D and not 0x09)
+            {
+                return null;
+            }
+
+            // Anything above ASCII is kept rather than rejected. These messages
+            // are Shift-JIS on a Japanese-developed game, so demanding pure
+            // ASCII throws away exactly the panic text worth reading; the bytes
+            // are shown as dots so the surrounding English still reads.
+            text.Append(value <= 0x7E ? (char)value : '.');
+            printable += value <= 0x7E ? 1 : 0;
+        }
+
+        // Short runs, and runs that are mostly high bytes, are coincidence
+        // rather than a message.
+        return text.Length >= 6 && printable * 2 >= text.Length
+            ? text.ToString().TrimEnd('\n', '\r')
+            : null;
+    }
+
+    /// <summary>
     /// Dumps a run of memory as words, for reading a structure by eye.
     /// </summary>
     public void TraceMemory(uint address, int bytes, string label)
@@ -374,6 +467,272 @@ public sealed class GameCubeMachine : IDisposable
 
             seen.Add(thread);
             DescribeThread(thread);
+        }
+
+        // And for each queue a thread is asleep on, the code that touches it.
+        var queues = new List<uint>();
+        foreach (var thread in seen)
+        {
+            var queue = Memory.ReadUInt32(thread + 0x2DC);
+            if (queue != 0 &&
+                !queues.Contains(queue) &&
+                Memory.ReadUInt16(thread + 0x2C8) == 4)
+            {
+                queues.Add(queue);
+                TraceReferencesTo(queue, "the queue a thread is asleep on");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Finds and reports every instruction that refers to <paramref name="address"/>
+    /// through the small data area register, which is how the operating system
+    /// and a game reach their globals.
+    /// </summary>
+    /// <remarks>
+    /// A thread asleep on a queue records the queue's address and nothing else.
+    /// The queue has no name, no owner and no type — but the code that signals
+    /// it must compute that same address, and there are only a handful of such
+    /// instructions in the whole executable. Finding them names the subsystem
+    /// that owes the wakeup, which is the last thing this investigation needs
+    /// and the only way left to get it.
+    /// </remarks>
+    public void TraceReferencesTo(uint address, string label)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        Trace.Write(
+            GameCubeTraceChannel.Cpu,
+            GameCubeTraceLevel.Warning,
+            $"  code referring to {label} 0x{address:X8}:");
+
+        // The two ways a global is reached. A small-data reference is one
+        // instruction off r13 or r2; anything outside that window is built from
+        // a high half and a low half in a pair, and the pair has to be matched
+        // because neither instruction alone names the address.
+        var small = new Dictionary<int, ushort>();
+        foreach (var register in (int[])[2, 13])
+        {
+            var delta = (long)address - Cpu.Gpr[register];
+            if (delta is >= short.MinValue and <= short.MaxValue)
+            {
+                small[register] = (ushort)(short)delta;
+            }
+        }
+
+        var high = (ushort)((address + 0x8000) >> 16);
+        var low = (ushort)address;
+
+        var found = 0;
+        for (var at = 0x8000_3100u; at < 0x8042_0000u && found < 24; at += 4)
+        {
+            if (!Memory.TryReadInstruction(at, out var instruction))
+            {
+                continue;
+            }
+
+            var primary = instruction >> 26;
+            var a = (int)((instruction >> 16) & 0x1F);
+
+            // Taking the address, or reading and writing the thing itself.
+            if (primary is 14 or (>= 32 and <= 45) &&
+                small.TryGetValue(a, out var offset) &&
+                (ushort)instruction == offset)
+            {
+                found++;
+                Trace.Write(
+                    GameCubeTraceChannel.Cpu,
+                    GameCubeTraceLevel.Warning,
+                    $"    {at:X8}  {GekkoDisassembler.Describe(instruction, at)}");
+                TraceCallAfter(at);
+                continue;
+            }
+
+            // lis rD, high — then the matching low half within a few
+            // instructions, on the same register.
+            if (primary != 15 || a != 0 || (ushort)instruction != high)
+            {
+                continue;
+            }
+
+            var destination = (int)((instruction >> 21) & 0x1F);
+            for (var ahead = 4u; ahead <= 16; ahead += 4)
+            {
+                if (!Memory.TryReadInstruction(at + ahead, out var second))
+                {
+                    break;
+                }
+
+                var secondPrimary = second >> 26;
+                if (secondPrimary is not (14 or 24 or (>= 32 and <= 45)) ||
+                    (int)((second >> 16) & 0x1F) != destination ||
+                    (ushort)second != low)
+                {
+                    continue;
+                }
+
+                found++;
+                Trace.Write(
+                    GameCubeTraceChannel.Cpu,
+                    GameCubeTraceLevel.Warning,
+                    $"    {at:X8}  {GekkoDisassembler.Describe(instruction, at)} / " +
+                    $"{at + ahead:X8}  {GekkoDisassembler.Describe(second, at + ahead)}");
+                break;
+            }
+        }
+
+        if (found == 0)
+        {
+            Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                "    nothing refers to it directly — it is reached through a pointer");
+        }
+    }
+
+    /// <summary>
+    /// Reports the call that follows an address being taken, which is what
+    /// distinguishes a thread going to sleep on a queue from something waking
+    /// it up: both compute the same address, and only the call says which.
+    /// </summary>
+    private void TraceCallAfter(uint address)
+    {
+        for (var ahead = 4u; ahead <= 20; ahead += 4)
+        {
+            if (!Memory.TryReadInstruction(address + ahead, out var instruction))
+            {
+                return;
+            }
+
+            // A relative branch that sets the link register: the call itself.
+            if (instruction >> 26 != 18 || (instruction & 1) == 0)
+            {
+                continue;
+            }
+
+            var displacement = (int)(instruction & 0x03FF_FFFC);
+            if ((displacement & 0x0200_0000) != 0)
+            {
+                displacement -= 0x0400_0000;
+            }
+
+            var callTarget = (uint)((int)(address + ahead) + displacement);
+            Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"        -> calls 0x{callTarget:X8}");
+
+            // Follow it one more step. The function this site sits in either
+            // sleeps on the queue or signals it, and in both cases its callers
+            // are what name the subsystem. Which is which is obvious from the
+            // code once it is on the page, and cheaper than deciding here.
+            var enclosing = FindFunctionEntry(address);
+            if (enclosing != 0 && _describedFunctions.Add(enclosing))
+            {
+                TraceCallersOf(enclosing, "the routine holding this site");
+            }
+
+            // The code around the call, because the caller is the thing worth
+            // identifying. A wake site belongs to whichever subsystem owes the
+            // wakeup, and the hardware addresses it touches a few instructions
+            // earlier are what name it.
+            for (var back = 10; back >= -2; back--)
+            {
+                var at = (uint)((int)address - (back * 4));
+                if (!Memory.TryReadInstruction(at, out var nearby))
+                {
+                    continue;
+                }
+
+                Trace.Write(
+                    GameCubeTraceChannel.Cpu,
+                    GameCubeTraceLevel.Warning,
+                    $"        {(at == address ? "*" : " ")} {at:X8}  " +
+                    $"{GekkoDisassembler.Describe(nearby, at)}");
+            }
+
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Walks back from an address to the start of the function containing it,
+    /// recognised by the prologue every compiled function begins with.
+    /// </summary>
+    private uint FindFunctionEntry(uint address)
+    {
+        for (var back = 0u; back < 256; back += 4)
+        {
+            var at = address - back;
+            if (!Memory.TryReadInstruction(at, out var instruction) ||
+                instruction != 0x7C0802A6 ||
+                !Memory.TryReadInstruction(at + 4, out var next) ||
+                next != 0x90010004)
+            {
+                continue;
+            }
+
+            return at;
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Reports every call to a given function.
+    /// </summary>
+    /// <remarks>
+    /// The end of the chain. A thread sleeps on a queue; one function wakes
+    /// that queue; and whoever calls that function is the subsystem which owes
+    /// the wakeup. Each step is a search rather than a guess, and this is the
+    /// last one — the callers are handlers and completion routines, and their
+    /// addresses say which piece of hardware PixelCube is failing to drive.
+    /// </remarks>
+    public void TraceCallersOf(uint target, string label)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        Trace.Write(
+            GameCubeTraceChannel.Cpu,
+            GameCubeTraceLevel.Warning,
+            $"  callers of {label} 0x{target:X8}:");
+
+        var found = 0;
+        for (var at = 0x8000_3100u; at < 0x8042_0000u && found < 16; at += 4)
+        {
+            if (!Memory.TryReadInstruction(at, out var instruction) ||
+                instruction >> 26 != 18 ||
+                (instruction & 1) == 0)
+            {
+                continue;
+            }
+
+            var displacement = (int)(instruction & 0x03FF_FFFC);
+            if ((displacement & 0x0200_0000) != 0)
+            {
+                displacement -= 0x0400_0000;
+            }
+
+            if ((uint)((int)at + displacement) != target)
+            {
+                continue;
+            }
+
+            found++;
+            var caller = FindFunctionEntry(at);
+            Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"    called from 0x{at:X8}" +
+                (caller != 0 ? $", inside the function at 0x{caller:X8}" : string.Empty));
+        }
+
+        if (found == 0)
+        {
+            Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                "    nothing calls it directly — it is reached through a pointer");
         }
     }
 

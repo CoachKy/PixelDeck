@@ -169,7 +169,9 @@ public sealed class GekkoPairedSingleTests
         {
             Trace = new GameCubeTraceLog(GameCubeTraceSettings.Disabled);
             Memory = new GameCubeMemory(Trace);
-            Cpu = new GekkoCpu(Memory, Trace) { Pc = CodeBase };
+            // Floating point available, as a running machine has it: paired
+            // singles are floating point instructions and trap without it.
+            Cpu = new GekkoCpu(Memory, Trace) { Pc = CodeBase, Msr = 0x2000 };
         }
 
         public GameCubeTraceLog Trace { get; }

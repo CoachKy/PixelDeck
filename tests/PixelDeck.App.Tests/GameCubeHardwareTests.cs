@@ -143,7 +143,8 @@ public sealed class GameCubeHardwareTests
     {
         // The second half of the handshake. Without it the CPU takes the boot
         // ROM's greeting and then waits forever for the microcode's — which is
-        // how it presented: twenty-four million reads of one register.
+        // how it presented: twenty-four million reads of one register, and on
+        // removing it again, a hundred and twenty-four million.
         using var fixture = new MemoryFixture();
 
         fixture.Memory.WriteUInt16(DspControlStatus, 0x0801); // reset, init in progress
@@ -156,19 +157,47 @@ public sealed class GameCubeHardwareTests
     }
 
     [Fact]
-    public void AMessageSentToTheDspIsRecordedRatherThanAnswered()
+    public void AMessageTheBootRomCannotUnderstandIsRefusedRatherThanIgnored()
     {
-        // Everything past the boot handshake needs a real DSP. Inventing a
-        // reply would let a game believe its microcode is running, and every
-        // trace after that would describe a machine that does not exist.
+        // Refusing is part of the protocol, not a courtesy. While the boot ROM
+        // is waiting to be told where a microcode lives, anything that does not
+        // begin with its parameter prefix is echoed back under 0xFEEE, and
+        // software checks for that answer. Saying nothing at all is a different
+        // message from saying no.
         using var fixture = new MemoryFixture();
 
         fixture.Memory.WriteUInt16(0xCC00_5000, 0xABCD);
         fixture.Memory.WriteUInt16(0xCC00_5002, 0x1234);
 
-        Assert.Contains(
-            fixture.Trace.CaptureCounters(),
-            counter => counter.Key == "dsp/mail/0xABCD1234");
+        // The reply is waiting in the mailbox, with the top bit set to say so.
+        var reply = fixture.Memory.ReadUInt32(0xCC00_5004);
+        Assert.Equal(0xFEEE_1234u, reply);
+    }
+
+    [Fact]
+    public void TheBootRomCollectsAMicrocodeDescriptionAndStartsIt()
+    {
+        // Five parameters, each named by one message and given by the next.
+        // The last pair starts the uploaded code, and the microcode then
+        // announces itself — which is the message a game blocks on.
+        using var fixture = new MemoryFixture();
+
+        foreach (var (selector, value) in ((uint, uint)[])
+            [(0x80F3_A001, 0x0100_0000), (0x80F3_A002, 0x1000),
+             (0x80F3_B002, 0x0800), (0x80F3_C002, 0x0000), (0x80F3_D001, 0x0010)])
+        {
+            fixture.Memory.WriteUInt16(0xCC00_5000, (ushort)(selector >> 16));
+            fixture.Memory.WriteUInt16(0xCC00_5002, (ushort)selector);
+            fixture.Memory.WriteUInt16(0xCC00_5000, (ushort)(value >> 16));
+            fixture.Memory.WriteUInt16(0xCC00_5002, (ushort)value);
+        }
+
+        // The announcement is deliberately not immediate: a reply that arrives
+        // inside the store which sent the request lands before the sending
+        // routine has returned.
+        Assert.Equal(0u, fixture.Memory.ReadUInt32(0xCC00_5004) & 0x8000_0000);
+        fixture.Memory.Hardware.Advance(4000);
+        Assert.NotEqual(0u, fixture.Memory.ReadUInt32(0xCC00_5004) & 0x8000_0000);
     }
 
     [Fact]

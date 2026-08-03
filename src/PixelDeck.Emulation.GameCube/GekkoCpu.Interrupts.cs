@@ -47,10 +47,22 @@ public sealed partial class GekkoCpu
 
     /// <summary>
     /// How often the rest of the machine is told how much time has passed.
-    /// Far shorter than a scanline, so video timing is not visibly quantised,
-    /// and long enough that the call is not part of the instruction cost.
     /// </summary>
-    private const int InstructionsPerHardwareUpdate = 128;
+    /// <remarks>
+    /// This was 128, chosen against the scanline — far shorter than one, so
+    /// video timing could not be visibly quantised. But it also quantises the
+    /// audio sample counter, and one audio sample is only about ten thousand
+    /// cycles, so a measurement of a single sample carried an error of over one
+    /// percent. That is invisible to anything averaging over a frame and fatal
+    /// to the one routine that times a single sample against the processor's
+    /// time base and checks the result against a tolerance: it can never be
+    /// satisfied, however correct the average rate is.
+    /// <para>
+    /// Sixteen brings the error under a fifth of a percent while still keeping
+    /// the call out of the per-instruction cost.
+    /// </para>
+    /// </remarks>
+    private const int InstructionsPerHardwareUpdate = 16;
 
     private int _instructionsUntilTick = InstructionsPerTimeBaseTick;
     private int _instructionsSinceHardwareUpdate;
@@ -109,7 +121,14 @@ public sealed partial class GekkoCpu
         // External interrupts outrank the decrementer.
         if (_memory.Hardware.IsInterruptPending)
         {
-            DeliverException(ExternalInterruptVector, "external");
+            // Named by the device asserting it, not just as "external". Every
+            // device's interrupt arrives through this one vector, so a single
+            // counter cannot distinguish a video retrace from a device whose
+            // handler a game never registered — and the second kind is what
+            // makes an operating system give up and halt.
+            DeliverException(
+                ExternalInterruptVector,
+                $"external/{_memory.Hardware.PendingInterruptName}");
             return true;
         }
 

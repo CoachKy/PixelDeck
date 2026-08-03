@@ -559,7 +559,8 @@ public sealed class N64Machine
                 }
 
                 var graphicsStarted = Stopwatch.GetTimestamp();
-                _graphicsBackend.Execute(task);
+                var graphicsProfile = N64GraphicsTaskProfile.FromTask(Memory, task, _renderer.DetectedMicrocode.ToString());
+                _graphicsBackend.Execute(task, graphicsProfile);
                 _graphicsExecutionTicks += Stopwatch.GetTimestamp() - graphicsStarted;
 
                 Memory.CompleteRspTask();

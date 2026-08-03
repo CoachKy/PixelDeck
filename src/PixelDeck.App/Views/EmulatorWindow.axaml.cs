@@ -54,6 +54,16 @@ public partial class EmulatorWindow : Window
     private long _gameCubeStallBusiestCount;
 
     /// <summary>
+    /// How many reads of one register in a single frame count as a poll rather
+    /// than work. A frame is about forty-five million instructions here, so a
+    /// million reads of one address is a loop doing nothing else.
+    /// </summary>
+    private const long PollingPerFrameLimit = 1_000_000;
+
+    private long _gameCubePreviousBusiest;
+    private bool _gameCubeReportedPolling;
+
+    /// <summary>
     /// How many frames of no forward progress count as a stall rather than a
     /// slow patch. Half a second: long enough that ordinary polling for a
     /// device that will answer does not trip it.
@@ -1172,6 +1182,8 @@ public partial class EmulatorWindow : Window
         _gameCubeResult = default;
         _gameCubeLastPc = 0;
         _gameCubeStallFrames = 0;
+        _gameCubePreviousBusiest = 0;
+        _gameCubeReportedPolling = false;
         _loggedN64Width = 0;
         _loggedN64Height = 0;
         _loggedN64Control = 0;
@@ -1397,12 +1409,24 @@ public partial class EmulatorWindow : Window
                     : $"video interface now scanning out from 0x{framebuffer:X8}");
         }
 
+        // The picture is whatever size the game copied out, letterboxed into
+        // the window rather than stretched — reading 480 lines out of a 448
+        // line framebuffer is what put a green band on the screen, because
+        // zeroed memory decodes to a strong green in this colour space.
+        var copied = _gameCubeMachine.Memory.Hardware.Graphics.DisplayHeight;
+        var height = copied > 0 && copied <= MachineHeight ? copied : MachineHeight;
+
+        if (height < MachineHeight)
+        {
+            pixels.Slice(height * MachineWidth).Clear();
+        }
+
         if (!GameCubeVideoOutput.TryScanOut(
             _gameCubeMachine.Memory,
             framebuffer,
             pixels,
             MachineWidth,
-            MachineHeight))
+            height))
         {
             pixels.Clear();
         }
@@ -1446,6 +1470,31 @@ public partial class EmulatorWindow : Window
             return;
         }
 
+        // A loop that reads one hardware register a million times in a frame is
+        // stuck, whether or not its program counter sits still. Waiting for the
+        // counter to stop moving misses exactly the case where a game polls a
+        // register from inside a larger loop — which looks like healthy
+        // progress from outside and is the shape every remaining wall has had.
+        var polling = _gameCubeMachine.Trace.BusiestCounter();
+        if (!_gameCubeReportedPolling &&
+            polling.Count - _gameCubePreviousBusiest > PollingPerFrameLimit &&
+            !polling.Key.StartsWith(GameCubeTraceLog.ObserverKeyPrefix, StringComparison.Ordinal))
+        {
+            _gameCubeReportedPolling = true;
+            _gameCubeMachine.Trace.Write(
+                GameCubeTraceChannel.Performance,
+                GameCubeTraceLevel.Warning,
+                $"reading {polling.Key} {polling.Count - _gameCubePreviousBusiest:N0} times in one " +
+                $"frame at 0x{_gameCubeMachine.Cpu.Pc:X8}; this is a poll, not progress");
+            _gameCubeMachine.Cpu.TraceContext(GameCubeTraceLevel.Warning);
+            _gameCubeMachine.TraceDisassemblyAround(
+                _gameCubeMachine.Cpu.Pc,
+                before: 24,
+                after: 24);
+        }
+
+        _gameCubePreviousBusiest = polling.Count;
+
         _gameCubeStallFrames++;
         if (_gameCubeStallFrames != GameCubeStallFrames)
         {
@@ -1470,12 +1519,40 @@ public partial class EmulatorWindow : Window
         // stop path that was already printing this.
         _gameCubeMachine.TraceInterruptState();
         _gameCubeMachine.Cpu.TraceContext(GameCubeTraceLevel.Warning);
-        _gameCubeMachine.TraceDisassemblyAround(pc);
+        _gameCubeMachine.TraceStringsInRegisters();
+        // A wide window on purpose. A spin is a handful of instructions but the
+        // decision that keeps re-entering it is not — it is the comparison and
+        // the branch after the loop exits, and a window that stops at the loop
+        // shows the symptom every time and the cause never.
+        _gameCubeMachine.TraceDisassemblyAround(pc, before: 32, after: 64);
         _gameCubeMachine.TryWatchStalledLoad(pc);
+
+        // The small data area around the globals a stalled loop is reading.
+        // Registers only show one moment of a loop and cannot be paired across
+        // iterations; the globals themselves are stable, so the constants a
+        // comparison is built from can be read directly rather than inferred.
+        var sda = _gameCubeMachine.Cpu.Gpr[13];
+        if (sda > 0x6000)
+        {
+            _gameCubeMachine.TraceMemory(sda - 0x5900, 128, "small data area at r13-0x5900");
+        }
 
         // r31 holds the run queue base in the scheduler's idle loop, which is
         // where this stall always lands.
         _gameCubeMachine.TraceOperatingSystemState(_gameCubeMachine.Cpu.Gpr[31]);
+
+        // Where the current function was called from. A loop given impossible
+        // arguments is working correctly and the fault is entirely in whoever
+        // supplied them, so the return address is the only thing worth reading.
+        var caller = _gameCubeMachine.Cpu.Lr;
+        if (caller > 0x8000_0000)
+        {
+            _gameCubeMachine.Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"  the caller, around the return address 0x{caller:X8}:");
+            _gameCubeMachine.TraceDisassemblyAround(caller, before: 24, after: 8);
+        }
 
         // The loop is the symptom; the function it sits in is the diagnosis.
         // Whatever this code asked for before it started waiting — a transfer,
@@ -1490,6 +1567,17 @@ public partial class EmulatorWindow : Window
                 GameCubeTraceLevel.Warning,
                 $"  the function it is waiting in, from its entry at 0x{entry:X8}:");
             _gameCubeMachine.TraceDisassemblyAround(entry, before: 0, after: 80);
+
+            // And the code that called it. When a run ends in a deliberate halt
+            // the callee is just the halt itself, which explains nothing; the
+            // caller is the routine that decided to stop, and what it was
+            // holding when it did is the actual diagnosis.
+            var site = calls[^1].From;
+            _gameCubeMachine.Trace.Write(
+                GameCubeTraceChannel.Cpu,
+                GameCubeTraceLevel.Warning,
+                $"  the code that called it, around 0x{site:X8}:");
+            _gameCubeMachine.TraceDisassemblyAround(site, before: 24, after: 8);
         }
         EmulatorDiagnostics.Write(
             $"PixelCube stalled at 0x{pc:X8} after " +
@@ -1554,12 +1642,12 @@ public partial class EmulatorWindow : Window
                 $"file          {trace.Settings.FilePath}";
         }
 
-        // The panel exists because a black window and a dead emulator look
-        // identical. The moment the video interface is pointed at a real
-        // framebuffer that stops being true, so the panel gets out of the way
-        // and the picture — whatever it turns out to be — is the output.
-        PixelCubeOverlay.IsVisible = _gameCubeMachine is null ||
-            _gameCubeMachine.Memory.Hardware.ExternalFramebuffer == 0;
+        // Off. The panel was the output while there was no video path at all;
+        // there is one now, so the screen shows the machine's own picture and
+        // the trace file carries everything the panel used to say. It is only
+        // brought back when a session has stopped, where a still black window
+        // would be the one thing that cannot explain itself.
+        PixelCubeOverlay.IsVisible = _gameCubeStopped;
         PixelCubeTitleText.Text = title;
         PixelCubeSummaryText.Text = summary;
         PixelCubeTraceText.Text = traceText;

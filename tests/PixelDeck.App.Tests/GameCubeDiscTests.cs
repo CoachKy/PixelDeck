@@ -269,17 +269,17 @@ public sealed class GameCubeDiscTests
         Assert.Equal((uint)'G' << 24 | (uint)'T' << 16 | (uint)'S' << 8 | 'E',
             machine.Memory.ReadUInt32(0x8000_0000));
 
-        // Free memory starts past everything the executable occupies. Left at
-        // zero, the operating system hands out addresses from the bottom of
-        // memory and the game writes its own structures over these globals —
-        // including the current thread pointer, after which the scheduler
-        // follows a pointer into nowhere, hundreds of millions of instructions
-        // later and looking nothing like its cause.
-        var arenaLow = machine.Memory.ReadUInt32(0x8000_0030);
-        Assert.True(
-            arenaLow >= GameCubeTestSupport.DataLoadAddress,
-            $"arena low 0x{arenaLow:X8} overlaps the executable");
-        Assert.Equal(0u, arenaLow & 31);
+        // Free memory is left at zero on purpose, because that is what a real
+        // handoff leaves: the low water mark is documented as being set by the
+        // game's own OSInit, from a linker symbol in its own image. Supplying a
+        // value here can only be a guess at something the game already knows,
+        // and the guess was wrong in a way nothing could see — the linker puts
+        // the stack in space the executable does not declare, immediately above
+        // its last section, so "past the executable" landed exactly on it. The
+        // game then cleared the arena it had been given and erased its own
+        // stack, returning to address zero six and a half million instructions
+        // in.
+        Assert.Equal(0u, machine.Memory.ReadUInt32(0x8000_0030));
 
         Assert.Equal(GameCubeBootState.InitialMsr, machine.Cpu.Msr);
         Assert.Equal(GameCubeTestSupport.EntryPoint, machine.Cpu.Pc);
@@ -313,9 +313,20 @@ public sealed class GameCubeDiscTests
             0x57,
             machine.Memory.ReadByte(Destination + GameCubeTestSupport.RootFileLength - 1));
 
-        // The transfer reports itself finished and clears its own start bit.
+        // The drive takes time. Six hundred microseconds is what a read costs
+        // before any data moves, and reporting completion sooner than the
+        // routine that asked for it can return puts the interrupt into code
+        // that has not yet installed a handler for it.
+        machine.Memory.Hardware.Advance(600 * 486);
+
+        // Transfer complete is bit 4. Bit 2 is the device error flag, which is
+        // what this register used to be told to raise on every successful read.
         Assert.Equal(0u, machine.Memory.ReadUInt32(0xCC00_601C) & 1);
-        Assert.NotEqual(0u, machine.Memory.ReadUInt32(0xCC00_6000) & 4);
+        Assert.NotEqual(0u, machine.Memory.ReadUInt32(0xCC00_6000) & 0x10);
+        Assert.Equal(0u, machine.Memory.ReadUInt32(0xCC00_6000) & 0x04);
+
+        // And it says how much it moved: length counts down to zero.
+        Assert.Equal(0u, machine.Memory.ReadUInt32(0xCC00_6018));
     }
 
     [Fact]

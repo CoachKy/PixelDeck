@@ -29,6 +29,9 @@ public static class GameCubeBootState
     /// <summary>The retail console's 24 MB of main memory.</summary>
     public const uint PhysicalMemorySize = 0x0180_0000;
 
+    /// <summary>Sixteen megabytes of audio memory, as a retail console has.</summary>
+    public const uint AudioMemorySize = 0x0100_0000;
+
     /// <summary>Console type: a retail production board.</summary>
     public const uint ConsoleType = 0x0000_0003;
 
@@ -121,9 +124,25 @@ public static class GameCubeBootState
         memory.WriteUInt32(0x8000_0024, 1);
         memory.WriteUInt32(0x8000_0028, PhysicalMemorySize);
         memory.WriteUInt32(0x8000_002C, ConsoleType);
+        // Which video standard the machine came up in. Zero is the sixty hertz
+        // one, and a game reads this rather than working it out.
+        memory.WriteUInt32(0x8000_00CC, 0);
+
+        // How much audio memory there is. The operating system reads this
+        // before it measures anything, and a zero here describes a console with
+        // no audio memory at all — which is not a state the audio system has
+        // any way to make sense of.
+        memory.WriteUInt32(0x8000_00D0, AudioMemorySize);
+
         memory.WriteUInt32(0x8000_00F0, PhysicalMemorySize);
         memory.WriteUInt32(0x8000_00F8, BusClockSpeed);
         memory.WriteUInt32(0x8000_00FC, CoreClockSpeed);
+
+        // The time of day, as a count of bus ticks. Software reads this to set
+        // its clock, and subtracts it from the time base to measure elapsed
+        // time — so leaving it at zero makes every interval since boot appear
+        // to be the whole time since the console was designed.
+        memory.WriteUInt32(0x8000_30D8, 0);
 
         InstallArena(memory, executable, trace);
         InstallFileSystem(memory, disc, trace);

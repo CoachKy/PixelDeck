@@ -1,5 +1,22 @@
 # Third-party notices
 
+## Dolphin Emulator
+
+PixelCube, PixelDeck's GameCube core, is derived in part from the Dolphin
+Emulator. Register layouts, hardware behaviour, timing constants and protocol
+implementations were taken from Dolphin's source, including the audio
+interface's sample rate handling, the DSP microcode boot and mailbox protocols,
+the blitting and transform processor register maps, and the command processor's
+vertex formats.
+
+Copyright (c) 2003-2026 Dolphin Emulator Project
+
+Dolphin is licensed under the GNU General Public License, version 2 or later.
+PixelDeck is therefore distributed under the same terms; see `LICENSE`.
+
+    https://github.com/dolphin-emu/dolphin
+
+
 ## paraLLEl-RDP
 
 Pixel64 optionally uses the standalone paraLLEl-RDP Vulkan compute renderer

@@ -190,7 +190,13 @@ public sealed class GekkoFloatingPointTests
         {
             Trace = new GameCubeTraceLog(GameCubeTraceSettings.Disabled);
             Memory = new GameCubeMemory(Trace);
-            Cpu = new GekkoCpu(Memory, Trace) { Pc = CodeBase };
+
+            // Floating point available, as a running machine has it. A Gekko
+            // out of reset has the unit switched off and traps to the operating
+            // system on first use, so a test that executes floating point
+            // instructions against a bare processor is testing the exception
+            // rather than the arithmetic.
+            Cpu = new GekkoCpu(Memory, Trace) { Pc = CodeBase, Msr = 0x2000 };
         }
 
         public GameCubeTraceLog Trace { get; }

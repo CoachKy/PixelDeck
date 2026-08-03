@@ -12,5 +12,5 @@ public interface IN64GraphicsBackend
 
     bool RasterizationEnabled { get; set; }
 
-    void Execute(N64RspTask task);
+    void Execute(N64RspTask task, N64GraphicsTaskProfile? profile = null);
 }

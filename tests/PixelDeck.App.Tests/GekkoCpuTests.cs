@@ -397,7 +397,11 @@ public sealed class GekkoCpuTests
             Trace = new GameCubeTraceLog(
                 new GameCubeTraceSettings(GameCubeTraceLevel.Warning, GameCubeTraceChannel.All));
             Memory = new GameCubeMemory(Trace);
-            Cpu = new GekkoCpu(Memory, Trace) { Pc = CodeBase };
+
+            // Floating point available, matching a running machine. Paired
+            // singles and the quantised load/store unit are floating point
+            // instructions too, so without this they trap rather than execute.
+            Cpu = new GekkoCpu(Memory, Trace) { Pc = CodeBase, Msr = 0x2000 };
         }
 
         public GameCubeTraceLog Trace { get; }
