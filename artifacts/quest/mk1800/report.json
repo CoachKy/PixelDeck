@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 3,
+  "pixel64Version": "0.16.026",
+  "startedAtUtc": "2026-08-04T21:30:25.9079696+00:00",
+  "completedAtUtc": "2026-08-04T21:30:42.9323471+00:00",
+  "configuration": {
+    "gamesFolder": "C:\\GitHub\\PixelDeck\\Games\\Nintendo64",
+    "fieldsPerGame": 1800,
+    "parallelism": 4,
+    "filter": "Mario Kart",
+    "captureFlaggedFrames": true,
+    "captureGraphicsTasks": false
+  },
+  "summary": {
+    "total": 1,
+    "uniqueImages": 1,
+    "passed": 0,
+    "warnings": 1,
+    "failed": 0,
+    "invalid": 0
+  },
+  "hardwareProfiles": [
+    {
+      "cic": "Cic6102",
+      "region": "Ntsc",
+      "total": 1,
+      "passed": 0,
+      "warnings": 1,
+      "failed": 0
+    }
+  ],
+  "blockers": [],
+  "games": [
+    {
+      "relativePath": "Mario Kart 64 (USA).n64",
+      "fileName": "Mario Kart 64 (USA).n64",
+      "sha256": "A8588FFDFB628C0433A2A18664CF68942812B975D16AE4D8B1C66F2045920065",
+      "status": "Warning",
+      "title": "MARIOKART64",
+      "gameCode": "NKTE",
+      "region": "Ntsc",
+      "cic": "Cic6102",
+      "saveType": "Eeprom4Kbit",
+      "sourceByteOrder": "ByteSwapped",
+      "isVerifiedTarget": false,
+      "reachedCartridgeEntryPoint": true,
+      "fieldsCompleted": 1800,
+      "hostFieldsPerSecond": 107.9052462451672,
+      "p99FieldMilliseconds": 30.6335,
+      "instructionsExecuted": 1407031250,
+      "programCounter": 2147485116,
+      "graphicsTasks": 550,
+      "audioTasks": 1757,
+      "graphicsCommands": 1407406,
+      "unsupportedGraphicsCommands": 0,
+      "unsupportedGraphicsOpcodes": "",
+      "detectedMicrocode": "F3dex",
+      "graphicsMicrocodeCrc32": 181292095,
+      "detectedAudioMicrocode": "NeadMarioKart",
+      "graphicsBackend": "Pixel64 Fast3D software renderer",
+      "rdpOtherModeHigh": 8924352,
+      "rdpOtherModeLow": 252329984,
+      "rdpCycleType": 0,
+      "alphaPixelsRejected": 742606,
+      "framebufferPixelsBlended": 126031859,
+      "unsupportedTextureFormats": "",
+      "audioCommands": 674955,
+      "unsupportedAudioCommands": 0,
+      "unsupportedAudioOpcodes": "",
+      "verticalInterrupts": 1793,
+      "audioDmas": 1778,
+      "controllerPolls": 552,
+      "maximumDistinctColors": 5981,
+      "distinctCheckpointFrames": 33,
+      "audioSamples": 1896154,
+      "audioPeak": 0.9841728,
+      "droppedAudioSamples": 0,
+      "saveStateDeterministic": true,
+      "capturePath": "captures/0000-Mario Kart 64 (USA)-A8588FFD.bmp",
+      "graphicsCapturePath": null,
+      "findings": [
+        "Pixel64 boot attempt enabled for this Nintendo 64 cartridge. Compatibility has not yet been verified."
+      ]
+    }
+  ]
+}

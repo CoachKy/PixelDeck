@@ -1,0 +1,40 @@
+# Pixel64 compatibility report
+
+- Pixel64: `0.16.026`
+- Started: `2026-08-04T16:58:00.6185451+00:00`
+- Completed: `2026-08-04T16:58:20.4471369+00:00`
+- Games folder: `C:\GitHub\PixelDeck\Games\Nintendo64`
+- Video fields per image: `1800`
+- Parallel emulators: `4`
+- Graphics-task captures: `False`
+- Filename filter: `Quest`
+
+## Summary
+
+| Total | Unique | Pass | Warning | Failed | Invalid |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 0 | 1 | 0 | 0 |
+
+## Hardware profile coverage
+
+| CIC | Region | Total | Pass | Warning | Failed |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Cic6102 | Ntsc | 1 | 0 | 1 | 0 |
+
+## First blockers
+
+None.
+
+## Failures
+
+None.
+
+## Warnings
+
+| Game | Code | Fields | PC | Finding | Capture |
+| --- | --- | ---: | --- | --- | --- |
+| Quest 64 (USA).n64 | NETE | 1800 | `0x80000518` | Pixel64 boot attempt enabled for this Nintendo 64 cartridge. Compatibility has not yet been verified. | [0000-Quest 64 (USA)-44420B60.bmp](captures/0000-Quest%2064%20%28USA%29-44420B60.bmp) |
+
+## Interpretation
+
+`Pass` proves only this bounded automated route; it does not certify the whole game. `Warning` highlights unverified cartridges, missing activity, unsupported HLE work, or performance below realtime. `Failed` is a runtime, CPU, audio-integrity, or exact save-state failure. The audit creates no battery-save files and never modifies ROMs. Full counters remain in `games.csv` and `report.json`.

@@ -44,6 +44,10 @@ public sealed class GameCubeMachine : IDisposable
 
     public GekkoCpu Cpu { get; }
 
+    public GameCubeController Controller1 => Memory.Hardware.Controllers[0];
+
+    public IReadOnlyList<GameCubeController> Controllers => Memory.Hardware.Controllers;
+
     /// <summary>
     /// The log every part of this core reports through. Exposed so the
     /// dashboard can attach its own sink and change the level while a session

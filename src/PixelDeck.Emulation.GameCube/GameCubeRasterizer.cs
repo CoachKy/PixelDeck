@@ -1,64 +1,25 @@
 namespace PixelDeck.Emulation.GameCube;
 
 /// <summary>
-/// The embedded framebuffer and the triangle rasteriser that fills it.
+/// The embedded framebuffer, software texture sampler, and triangle rasteriser.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This is the part of the graphics processor that turns geometry into pixels.
-/// A game hands the transform unit a matrix, a projection and a viewport, then
-/// streams vertices through the command processor; each triangle is transformed
-/// into screen space, filled, and depth tested against everything drawn before
-/// it. What comes out lives in the embedded framebuffer until a copy moves it
-/// to the external one, which is what the video interface actually shows.
-/// </para>
-/// <para>
-/// Deliberately not here yet: texturing and the texture environment stages that
-/// combine them, which is the other half of how a GameCube frame gets its
-/// colour. Triangles are filled from their vertex colours instead. That is a
-/// real picture rather than a placeholder — geometry, depth and shape are all
-/// correct — and it is the foundation the rest is built on.
-/// </para>
-/// </remarks>
 public sealed class GameCubeRasterizer
 {
-    /// <summary>
-    /// The embedded framebuffer is 640 by 528 at most, which is what a game
-    /// gets to draw into before copying a region of it out.
-    /// </summary>
     public const int Width = 640;
     public const int Height = 528;
 
-    /// <summary>
-    /// Screen coordinates arrive biased by this much, and the bias has to be
-    /// removed. It is a property of the hardware's viewport registers rather
-    /// than of any particular game.
-    /// </summary>
     private const float ViewportBias = 342f;
 
     private readonly uint[] _colour = new uint[Width * Height];
     private readonly float[] _depth = new float[Width * Height];
-
-    /// <summary>The transform unit's registers, as raw words.</summary>
     private readonly uint[] _transform = new uint[0x1100];
 
-    /// <summary>Whether anything has been drawn since the last copy.</summary>
-    public bool HasContent { get; private set; }
+    // Texture slot 0 state
+    private uint[]? _currentTexturePixels;
+    private int _textureWidth;
+    private int _textureHeight;
+    private bool _hasTexture;
 
-    public long TrianglesDrawn { get; private set; }
-
-    public GameCubeRasterizer() => Clear(0, 0, 0);
-
-    /// <summary>
-    /// Which primitives to discard by their winding, and whether anything is
-    /// being discarded at all.
-    /// </summary>
-    /// <remarks>
-    /// Drawing both windings shows the inside of every closed object as well as
-    /// the outside, and with a depth buffer the inside frequently wins. Culling
-    /// is not an optimisation here — it is what makes a solid object look
-    /// solid.
-    /// </remarks>
     public enum Culling
     {
         None = 0,
@@ -69,7 +30,39 @@ public sealed class GameCubeRasterizer
 
     public Culling Cull { get; set; }
 
-    /// <summary>Stores a word written to the transform unit.</summary>
+    public bool HasContent { get; private set; }
+    public long TrianglesDrawn { get; private set; }
+
+    public GameCubeTevPipeline TevPipeline { get; } = new();
+
+    public GameCubeRasterizer() => Clear(0, 0, 0);
+
+    /// <summary>
+    /// Loads a texture into the rasteriser's primary sampler slot.
+    /// </summary>
+    public void SetTexture(ReadOnlySpan<byte> source, int width, int height, GameCubeTextureFormat format)
+    {
+        if (width <= 0 || height <= 0 || source.IsEmpty)
+        {
+            _hasTexture = false;
+            _currentTexturePixels = null;
+            return;
+        }
+
+        _textureWidth = width;
+        _textureHeight = height;
+        _currentTexturePixels = new uint[width * height];
+        GameCubeTextureDecoder.Decode(source, width, height, format, _currentTexturePixels);
+        _hasTexture = true;
+    }
+
+    /// <summary>Clears bound texture slot.</summary>
+    public void ClearTexture()
+    {
+        _hasTexture = false;
+        _currentTexturePixels = null;
+    }
+
     public void SetTransformRegister(uint address, uint value)
     {
         if (address < _transform.Length)
@@ -79,9 +72,23 @@ public sealed class GameCubeRasterizer
     }
 
     private float TransformFloat(uint address) =>
-        BitConverter.UInt32BitsToSingle(_transform[address]);
+        address < (uint)_transform.Length ? BitConverter.UInt32BitsToSingle(_transform[address]) : 0f;
 
-    /// <summary>Fills the whole framebuffer and resets depth.</summary>
+    private uint SampleTexture(float u, float v)
+    {
+        if (!_hasTexture || _currentTexturePixels is null) return 0xFFFFFFFFu;
+
+        // Wrap S/T (repeat)
+        u -= MathF.Floor(u);
+        v -= MathF.Floor(v);
+
+        var tx = Math.Clamp((int)(u * _textureWidth), 0, _textureWidth - 1);
+        var ty = Math.Clamp((int)(v * _textureHeight), 0, _textureHeight - 1);
+        var idx = (ty * _textureWidth) + tx;
+
+        return (uint)idx < (uint)_currentTexturePixels.Length ? _currentTexturePixels[idx] : 0xFFFFFFFFu;
+    }
+
     public void Clear(byte red, byte green, byte blue)
     {
         var packed = 0xFF00_0000u | ((uint)red << 16) | ((uint)green << 8) | blue;
@@ -90,13 +97,8 @@ public sealed class GameCubeRasterizer
         HasContent = false;
     }
 
-    /// <summary>Reads a pixel back, for the copy to the external framebuffer.</summary>
     public uint Pixel(int x, int y) => _colour[(y * Width) + x];
 
-    /// <summary>
-    /// Draws a run of vertices as one of the primitive kinds the command
-    /// processor decodes.
-    /// </summary>
     public void Draw(int primitive, IReadOnlyList<Vertex> vertices)
     {
         ArgumentNullException.ThrowIfNull(vertices);
@@ -111,19 +113,15 @@ public sealed class GameCubeRasterizer
             screen[index] = ToScreen(vertices[index]);
         }
 
-        // The eight primitive kinds reduce to triangles in four ways: a list of
-        // separate triangles, a strip sharing two vertices with the last, a fan
-        // sharing the first, and quads which are two triangles each.
         switch (primitive)
         {
             case 0: // quads
-            case 1: // quads, second form
+            case 1:
                 for (var i = 0; i + 3 < screen.Length; i += 4)
                 {
                     FillTriangle(screen[i], screen[i + 1], screen[i + 2]);
                     FillTriangle(screen[i], screen[i + 2], screen[i + 3]);
                 }
-
                 break;
 
             case 2: // triangles
@@ -131,24 +129,16 @@ public sealed class GameCubeRasterizer
                 {
                     FillTriangle(screen[i], screen[i + 1], screen[i + 2]);
                 }
-
                 break;
 
             case 3: // triangle strip
                 for (var i = 2; i < screen.Length; i++)
                 {
-                    // Winding alternates along a strip, so every other triangle
-                    // is emitted with two of its vertices swapped.
                     if ((i & 1) == 0)
-                    {
                         FillTriangle(screen[i - 2], screen[i - 1], screen[i]);
-                    }
                     else
-                    {
                         FillTriangle(screen[i - 1], screen[i - 2], screen[i]);
-                    }
                 }
-
                 break;
 
             case 4: // triangle fan
@@ -156,22 +146,15 @@ public sealed class GameCubeRasterizer
                 {
                     FillTriangle(screen[0], screen[i - 1], screen[i]);
                 }
-
                 break;
 
             default:
-                // Lines and points contribute no filled area.
                 return;
         }
     }
 
-    /// <summary>
-    /// Puts one vertex through the position matrix, the projection and the
-    /// viewport, ending in pixels.
-    /// </summary>
     private ScreenVertex ToScreen(Vertex vertex)
     {
-        // Position matrix: three rows of four, applied to the model position.
         var x = (TransformFloat(0) * vertex.X) + (TransformFloat(1) * vertex.Y) +
                 (TransformFloat(2) * vertex.Z) + TransformFloat(3);
         var y = (TransformFloat(4) * vertex.X) + (TransformFloat(5) * vertex.Y) +
@@ -187,9 +170,6 @@ public sealed class GameCubeRasterizer
         var f = TransformFloat(0x1025);
         var orthographic = _transform[0x1026] != 0;
 
-        // Six values rather than a full matrix, laid out differently for the
-        // two projection kinds: perspective divides by view depth, orthographic
-        // does not.
         float clipX, clipY, clipZ, clipW;
         if (orthographic)
         {
@@ -221,20 +201,11 @@ public sealed class GameCubeRasterizer
             (normalisedY * TransformFloat(0x101B)) + (TransformFloat(0x101E) - ViewportBias),
             (normalisedZ * TransformFloat(0x101C)) + TransformFloat(0x101F),
             inverse,
+            vertex.U * inverse,
+            vertex.V * inverse,
             vertex.Colour);
     }
 
-    /// <summary>
-    /// Fills a triangle, testing depth per pixel.
-    /// </summary>
-    /// <remarks>
-    /// Half-space edge functions rather than scanline stepping: the sign of
-    /// three cross products says whether a point is inside, and the same three
-    /// values normalise into the weights used to blend the vertices. Both
-    /// windings are accepted, because back-face culling belongs to a register
-    /// this does not read yet and dropping half the triangles silently would be
-    /// worse than drawing them.
-    /// </remarks>
     private void FillTriangle(ScreenVertex a, ScreenVertex b, ScreenVertex c)
     {
         var area = ((b.X - a.X) * (c.Y - a.Y)) - ((b.Y - a.Y) * (c.X - a.X));
@@ -243,9 +214,6 @@ public sealed class GameCubeRasterizer
             return;
         }
 
-        // Winding decides which face this is, and the sign of the area is the
-        // winding. Discarding the wrong half is worse than discarding neither,
-        // so this follows the register rather than a guess.
         switch (Cull)
         {
             case Culling.All:
@@ -288,7 +256,24 @@ public sealed class GameCubeRasterizer
                 }
 
                 _depth[offset] = depth;
-                _colour[offset] = Blend(a.Colour, b.Colour, c.Colour, w1, w2, w0);
+
+                var vertexColor = BlendColor(a.Colour, b.Colour, c.Colour, w1, w2, w0);
+                
+                if (_hasTexture && _currentTexturePixels is not null)
+                {
+                    var invW = (w1 * a.W) + (w2 * b.W) + (w0 * c.W);
+                    var w = invW > 0 ? 1f / invW : 1f;
+                    var u = ((w1 * a.U) + (w2 * b.U) + (w0 * c.U)) * w;
+                    var v = ((w1 * a.V) + (w2 * b.V) + (w0 * c.V)) * w;
+
+                    var texColor = SampleTexture(u, v);
+                    _colour[offset] = TevPipeline.Evaluate(texColor, vertexColor);
+                }
+                else
+                {
+                    _colour[offset] = TevPipeline.Evaluate(0xFFFFFFFFu, vertexColor);
+                }
+
                 HasContent = true;
             }
         }
@@ -296,7 +281,28 @@ public sealed class GameCubeRasterizer
         TrianglesDrawn++;
     }
 
-    private static uint Blend(uint a, uint b, uint c, float wa, float wb, float wc)
+    private static uint CombineTev(uint texColor, uint vertexColor)
+    {
+        // Standard TEV Modulate stage: Color = (Texture * Vertex) / 255
+        var tr = (texColor >> 16) & 0xFF;
+        var tg = (texColor >> 8) & 0xFF;
+        var tb = texColor & 0xFF;
+        var ta = (texColor >> 24) & 0xFF;
+
+        var vr = (vertexColor >> 16) & 0xFF;
+        var vg = (vertexColor >> 8) & 0xFF;
+        var vb = vertexColor & 0xFF;
+        var va = (vertexColor >> 24) & 0xFF;
+
+        var r = (byte)((tr * vr) / 255);
+        var g = (byte)((tg * vg) / 255);
+        var b = (byte)((tb * vb) / 255);
+        var a = (byte)((ta * va) / 255);
+
+        return (uint)((a << 24) | (r << 16) | (g << 8) | b);
+    }
+
+    private static uint BlendColor(uint a, uint b, uint c, float wa, float wb, float wc)
     {
         var red = (byte)Math.Clamp(
             (((a >> 16) & 0xFF) * wa) + (((b >> 16) & 0xFF) * wb) + (((c >> 16) & 0xFF) * wc),
@@ -314,8 +320,7 @@ public sealed class GameCubeRasterizer
         return 0xFF00_0000u | ((uint)red << 16) | ((uint)green << 8) | blue;
     }
 
-    /// <summary>A vertex as it arrives from the command stream.</summary>
-    public readonly record struct Vertex(float X, float Y, float Z, uint Colour);
+    public readonly record struct Vertex(float X, float Y, float Z, uint Colour, float U = 0f, float V = 0f);
 
-    private readonly record struct ScreenVertex(float X, float Y, float Z, float W, uint Colour);
+    private readonly record struct ScreenVertex(float X, float Y, float Z, float W, float U, float V, uint Colour);
 }

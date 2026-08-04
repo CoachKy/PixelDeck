@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 3,
+  "pixel64Version": "0.16.026",
+  "startedAtUtc": "2026-08-04T15:58:48.5387495+00:00",
+  "completedAtUtc": "2026-08-04T15:58:48.545076+00:00",
+  "configuration": {
+    "gamesFolder": "C:\\GitHub\\PixelDeck\\tests\\PixelDeck.App.Tests\\TestRoms\\N64\\RSPTest-CP2",
+    "fieldsPerGame": 300,
+    "parallelism": 4,
+    "filter": "VADD_\\|VSUB_",
+    "captureFlaggedFrames": true,
+    "captureGraphicsTasks": false
+  },
+  "summary": {
+    "total": 0,
+    "uniqueImages": 0,
+    "passed": 0,
+    "warnings": 0,
+    "failed": 0,
+    "invalid": 0
+  },
+  "hardwareProfiles": [],
+  "blockers": [],
+  "games": []
+}

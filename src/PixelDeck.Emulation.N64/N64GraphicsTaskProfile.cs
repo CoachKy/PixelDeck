@@ -42,6 +42,11 @@ public sealed record N64GraphicsTaskProfile(
             return current;
         }
 
+        if (banner.Contains("S2DEX", StringComparison.OrdinalIgnoreCase))
+        {
+            return "S2DEX";
+        }
+
         if (banner.Contains("F3DZEX", StringComparison.Ordinal) ||
             (banner.Contains("F3DEX", StringComparison.Ordinal) &&
              banner.Contains(" 2.", StringComparison.Ordinal)))

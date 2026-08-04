@@ -11,5 +11,23 @@
     <AssemblyVersion>0.16.026.0</AssemblyVersion>
     <FileVersion>0.16.026.0</FileVersion>
     <InformationalVersion>0.16.026</InformationalVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Silk.NET.Vulkan" Version="2.22.0" />
+    <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.22.0" />
+  </ItemGroup>
+
+  <!--
+    The parallel-rdp shim is optional. It is built out of tree by
+    native/pixeldeck_rdp/build.bat and is only copied when present, so a clone
+    without it still builds and runs on the software renderer.
+  -->
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\..\native\pixeldeck_rdp\build\bin\pixeldeck_rdp.dll"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\pixeldeck_rdp\build\bin\pixeldeck_rdp.dll')"
+          Link="pixeldeck_rdp.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

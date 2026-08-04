@@ -32,6 +32,9 @@ public sealed partial class Vr4300Cpu
     private bool _executingDelaySlot;
     private uint _executingDelaySlotBranchAddress;
 
+    public int CountPerOp { get; set; } = 2;
+    private int _countSubCycle;
+
     public Vr4300Cpu(N64Memory memory, N64Cic cic, N64VideoRegion region)
     {
         _memory = memory;
@@ -1455,10 +1458,15 @@ public sealed partial class Vr4300Cpu
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private bool AdvanceClock()
     {
-        _coprocessor0[Cp0Count]++;
-        if (_coprocessor0[Cp0Count] == _coprocessor0[Cp0Compare])
+        _countSubCycle++;
+        if (_countSubCycle >= CountPerOp)
         {
-            _coprocessor0[Cp0Cause] |= 1u << 15;
+            _countSubCycle = 0;
+            _coprocessor0[Cp0Count]++;
+            if (_coprocessor0[Cp0Count] == _coprocessor0[Cp0Compare])
+            {
+                _coprocessor0[Cp0Cause] |= 1u << 15;
+            }
         }
 
         // Random cycles down through [Wired, 31] so TLBWR spreads refills

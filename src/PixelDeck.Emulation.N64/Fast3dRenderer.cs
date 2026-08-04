@@ -421,8 +421,22 @@ public sealed partial class Fast3dRenderer : IN64GraphicsBackend
                     DrawTriangleIndices(first, third, fourth);
                     break;
                 }
-                case 0xB5: // F3D/F3DEX G_LINE3D
-                    RecordOmittedHlePrimitives(1);
+                // F3DEX reuses 0xB5 as G_QUAD rather than G_LINE3D. Mario Kart
+                // 64 issues ~236 of these per field, all with four even vertex
+                // indices in word1; decoding them as lines discarded roughly
+                // 89% of the game's geometry.
+                case 0xB5 when _microcode == N64Microcode.F3dex:
+                {
+                    var first = (int)((word1 >> 24) & 0xFF) / 2;
+                    var second = (int)((word1 >> 16) & 0xFF) / 2;
+                    var third = (int)((word1 >> 8) & 0xFF) / 2;
+                    var fourth = (int)(word1 & 0xFF) / 2;
+                    DrawTriangleIndices(first, second, third);
+                    DrawTriangleIndices(first, third, fourth);
+                    break;
+                }
+                case 0xB5: // F3D G_LINE3D
+                    RecordOmittedUnsupportedPrimitive();
                     if (_microcode == N64Microcode.F3dex)
                     {
                         DrawLineF3dex(word0);

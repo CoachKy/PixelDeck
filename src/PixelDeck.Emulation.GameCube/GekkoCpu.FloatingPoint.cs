@@ -137,6 +137,7 @@ public sealed partial class GekkoCpu
             case 18: result = GetFloat(a) / GetFloat(b); break;                    // fdivs
             case 20: result = GetFloat(a) - GetFloat(b); break;                    // fsubs
             case 21: result = GetFloat(a) + GetFloat(b); break;                    // fadds
+            case 22: result = Math.Sqrt(GetFloat(b)); break;                       // fsqrts
             case 24: result = 1.0 / GetFloat(b); break;                            // fres
             case 25: result = GetFloat(a) * GetFloat(c); break;                    // fmuls
             case 28: result = (GetFloat(a) * GetFloat(c)) - GetFloat(b); break;    // fmsubs
@@ -165,6 +166,7 @@ public sealed partial class GekkoCpu
             case 18: return WriteFloat(d, GetFloat(a) / GetFloat(b), rc);
             case 20: return WriteFloat(d, GetFloat(a) - GetFloat(b), rc);
             case 21: return WriteFloat(d, GetFloat(a) + GetFloat(b), rc);
+            case 22: return WriteFloat(d, Math.Sqrt(GetFloat(b)), rc); // fsqrt
             case 25: return WriteFloat(d, GetFloat(a) * GetFloat(c), rc);
             case 26: return WriteFloat(d, 1.0 / Math.Sqrt(GetFloat(b)), rc); // frsqrte
             case 23: // fsel — the branchless conditional every SDK uses

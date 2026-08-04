@@ -25,10 +25,10 @@ existing Fast3D software renderer as the bundled fallback.
 | Graphics-task capture and replay | `.p64gfx`, `N64GraphicsReplay` | In place |
 | Raw RDP command dump and replay | `.p64rdp`, `N64RdpReplay` | Direct packets and ordinary HLE triangles in place; lines/custom generators remain |
 | Conformant RDP backend | `PixelDeck.ParallelRdp`, `ParallelRdpNative` | Pinned native ABI v2, hidden-coverage readback, output deltas, multi-task replay, and fail-safe live opt-in in place; the owned-local real-game sequence must still be executed |
-| Interchangeable RSP backend | — | Planned |
+| Interchangeable RSP backend | `IN64RspBackend`, `N64RspProcessor` | In place; instruction-level scalar/vector execution, SP DMA, register state, and HLE fallback seam active |
 | CIC boot behavior | `N64Machine`, `N64Memory`, `N64Cartridge` | CIC-6103/6106 entry relocation and CIC-6105 IPL2 handshake in place |
 | Custom graphics microcode | `Fast3dRenderer` | Factor 5 Rogue Squadron path in place; custom generator operations remain |
-| Per-game compatibility profiles | — | Planned |
+| Per-game compatibility profiles | `N64GameProfile`, `N64GameProfileRegistry` | In place; cartridge-code profiling, RSP execution mode, save type, and CIC overrides active |
 
 ## Ordered milestones
 
@@ -89,18 +89,18 @@ the same validated low-level envelope as paraLLEl-RDP.
 
 - Keep graphics and audio task ownership behind `IN64GraphicsBackend` and
   `IN64AudioBackend`; both boundaries are now in place.
-- Introduce an `IN64RspBackend` boundary for low-level task execution.
-- Preserve the current HLE processors as the portable fallback.
+- Introduce an `IN64RspBackend` boundary for low-level task execution. **Complete.**
+- Preserve the current HLE processors as the portable fallback. **Complete.**
 - Add an LLE-capable backend only after task lifecycle, interrupts, and
-  save-state ownership are explicit.
+  save-state ownership are explicit. **Instruction-level RSP scalar/vector core (`N64RspProcessor`) and `N64RspState` registers are now in place.**
 
 ### 5. Introduce per-game profiles
 
-- Key settings by cartridge identity rather than filename.
+- Key settings by cartridge identity rather than filename. **Complete.**
 - Limit profiles to verified compatibility choices such as backend, RSP mode,
-  framebuffer emulation, and timing workarounds.
+  framebuffer emulation, and timing workarounds. **Complete.**
 - Keep defaults correct and profiles auditable; avoid title-specific rendering
-  hacks hidden inside generic code.
+  hacks hidden inside generic code. **`N64GameProfileRegistry` is now active in `N64Machine`.**
 
 ### 6. Grow conformance and release evidence
 

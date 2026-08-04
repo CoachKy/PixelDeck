@@ -106,9 +106,14 @@ public sealed partial class GekkoCpu
     private const uint SystemCallVector = 0x8000_0C00;
 
     private readonly GameCubeMemory _memory;
+
+    public GameCubeMemory Memory => _memory;
     private readonly GameCubeTraceLog _trace;
     private readonly uint[] _gpr = new uint[GeneralRegisterCount];
     private readonly uint[] _spr = new uint[SpecialRegisterCount];
+
+    public uint GetGpr(int index) => _gpr[index];
+    public void SetGpr(int index, uint value) => _gpr[index] = value;
 
     /// <summary>
     /// Cached keys for the repeated-occurrence tally. Building
@@ -1079,16 +1084,14 @@ public sealed partial class GekkoCpu
 
         _spr[register] = value;
 
-        // BAT writes are the one thing that would invalidate the flat address
-        // model, so they are recorded rather than silently accepted.
         if (register is >= 528 and <= 543)
         {
+            UpdateBatRegister(register, value);
             _trace.WriteOnce(
                 GameCubeTraceChannel.Memory,
                 GameCubeTraceLevel.Information,
                 "gekko/bat-write",
-                $"BAT register {register} programmed at 0x{Pc:X8}; PixelCube uses a " +
-                "flat 0x8000_0000/0xC000_0000 mapping and does not walk the BATs");
+                $"BAT register {register} programmed at 0x{Pc:X8} (value 0x{value:X8})");
         }
     }
 

@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 3,
+  "pixel64Version": "0.16.026",
+  "startedAtUtc": "2026-08-04T16:40:49.6339461+00:00",
+  "completedAtUtc": "2026-08-04T16:41:07.343086+00:00",
+  "configuration": {
+    "gamesFolder": "C:\\GitHub\\PixelDeck\\Games\\Nintendo64",
+    "fieldsPerGame": 1800,
+    "parallelism": 4,
+    "filter": "Quest",
+    "captureFlaggedFrames": true,
+    "captureGraphicsTasks": false
+  },
+  "summary": {
+    "total": 1,
+    "uniqueImages": 1,
+    "passed": 0,
+    "warnings": 1,
+    "failed": 0,
+    "invalid": 0
+  },
+  "hardwareProfiles": [
+    {
+      "cic": "Cic6102",
+      "region": "Ntsc",
+      "total": 1,
+      "passed": 0,
+      "warnings": 1,
+      "failed": 0
+    }
+  ],
+  "blockers": [],
+  "games": [
+    {
+      "relativePath": "Quest 64 (USA).n64",
+      "fileName": "Quest 64 (USA).n64",
+      "sha256": "44420B6007EFA526FC17C1F3778830650801D686EA1BC0473D02D68587FF19B9",
+      "status": "Warning",
+      "title": "Quest 64",
+      "gameCode": "NETE",
+      "region": "Ntsc",
+      "cic": "Cic6102",
+      "saveType": "None",
+      "sourceByteOrder": "ByteSwapped",
+      "isVerifiedTarget": false,
+      "reachedCartridgeEntryPoint": true,
+      "fieldsCompleted": 1800,
+      "hostFieldsPerSecond": 103.43170301218402,
+      "p99FieldMilliseconds": 23.0404,
+      "instructionsExecuted": 1407031250,
+      "programCounter": 2147484952,
+      "graphicsTasks": 1796,
+      "audioTasks": 1769,
+      "graphicsCommands": 1614139,
+      "unsupportedGraphicsCommands": 0,
+      "unsupportedGraphicsOpcodes": "",
+      "detectedMicrocode": "F3dex",
+      "graphicsMicrocodeCrc32": 3829785044,
+      "detectedAudioMicrocode": "Abi1",
+      "graphicsBackend": "Pixel64 Fast3D software renderer",
+      "rdpOtherModeHigh": 175104,
+      "rdpOtherModeLow": 5259840,
+      "rdpCycleType": 0,
+      "alphaPixelsRejected": 0,
+      "framebufferPixelsBlended": 104107916,
+      "unsupportedTextureFormats": "",
+      "audioCommands": 500569,
+      "unsupportedAudioCommands": 0,
+      "unsupportedAudioOpcodes": "",
+      "verticalInterrupts": 1793,
+      "audioDmas": 1768,
+      "controllerPolls": 3598,
+      "maximumDistinctColors": 611,
+      "distinctCheckpointFrames": 33,
+      "audioSamples": 1888266,
+      "audioPeak": 0.29770055,
+      "droppedAudioSamples": 0,
+      "saveStateDeterministic": true,
+      "capturePath": "captures/0000-Quest 64 (USA)-44420B60.bmp",
+      "graphicsCapturePath": null,
+      "findings": [
+        "Pixel64 boot attempt enabled for this Nintendo 64 cartridge. Compatibility has not yet been verified."
+      ]
+    }
+  ]
+}

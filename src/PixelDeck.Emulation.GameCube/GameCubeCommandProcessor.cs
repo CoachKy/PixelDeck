@@ -216,7 +216,7 @@ public sealed class GameCubeCommandProcessor
 
             length = 5 + ((_memory.ReadUInt16(address + 1) & 0xF) + 1) * 4;
         }
-        else if (opcode >= OpPrimitiveFirst)
+        else if (opcode is >= OpPrimitiveFirst and <= OpPrimitiveLast)
         {
             // Three-byte header: the opcode carries the format index, then a
             // sixteen-bit vertex count.
@@ -333,7 +333,7 @@ public sealed class GameCubeCommandProcessor
                 // time, and arrives here too — treating it as a primitive
                 // indexes off the front of the table and throws, turning a
                 // stream that is merely out of step into a crash.
-                if (opcode < OpPrimitiveFirst)
+                if (opcode is < OpPrimitiveFirst or > OpPrimitiveLast)
                 {
                     return;
                 }

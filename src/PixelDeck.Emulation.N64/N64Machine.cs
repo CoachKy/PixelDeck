@@ -48,17 +48,17 @@ public sealed class N64Machine
         Cartridge = cartridge;
         Memory = new N64Memory(cartridge);
         _renderer = new Fast3dRenderer(Memory);
+        LleRdpEngine = new ParaLLElRdpEngine(Memory);
+        Memory.OnDpcDmaTriggered = (start, end) => LleRdpEngine.ExecuteRdpCommandBuffer(start, end);
 
-        // Pixel64 renders through its own Fast3D pipeline. An earlier build
-        // could mirror each task into a native paraLLEl-RDP bridge, but that
-        // ran this renderer first and used its lowered command batch as input,
-        // so it was a validation harness that cost a second pass rather than a
-        // faster path. It was removed in favour of improving this renderer.
         _graphicsBackend = _renderer;
         GraphicsBackendStatus = _renderer.Name;
         _audioProcessor = new N64AudioProcessor(Memory);
         _audioBackend = _audioProcessor;
         Cpu = new Vr4300Cpu(Memory, cartridge.Cic, cartridge.VideoRegion);
+        Profile = N64GameProfileRegistry.LookupProfile(cartridge);
+        RspProcessor = new N64RspProcessor(Memory);
+        Cpu.CountPerOp = Profile.CountPerOp;
         _cartridgeIdentity = SHA256.HashData(cartridge.Rom);
         _savePath = savePath;
         _controllerPakPath = savePath is null || !cartridge.UsesControllerPak
@@ -71,6 +71,26 @@ public sealed class N64Machine
 
     public const double NtscFramesPerSecond = 60.0;
 
+    public ParaLLElRdpEngine LleRdpEngine { get; }
+
+    /// <summary>
+    /// How high-level graphics tasks reach the low-level RDP engine.
+    /// Defaults to <see cref="N64RdpBridgeMode.Off"/> because the engine
+    /// cannot rasterize triangles yet; turning it to Exclusive before that
+    /// lands would blank every 3D scene.
+    /// </summary>
+    public N64RdpBridgeMode RdpBridgeMode { get; set; } = N64RdpBridgeMode.Off;
+
+    /// <summary>Native RDP packets handed to the low-level engine.</summary>
+    public long RdpBridgeCommandsDelivered { get; private set; }
+
+    /// <summary>
+    /// Primitives the encoder could not lower into a native packet. A healthy
+    /// bridge keeps this at zero; anything else is geometry the low-level
+    /// engine will never see.
+    /// </summary>
+    public long RdpBridgePrimitivesOmitted { get; private set; }
+
     /// <summary>
     /// The nominal audio output rate. Pixel64's verified target (Super Mario
     /// 64) programs the audio interface for 32 kHz; the audio-clock frame
@@ -79,6 +99,12 @@ public sealed class N64Machine
     public const int AudioSampleRate = 32_000;
 
     public N64Cartridge Cartridge { get; }
+
+    public N64GameProfile Profile { get; }
+
+    public N64RspProcessor RspProcessor { get; }
+
+    public N64RspProcessor RspBackend => RspProcessor;
 
     public N64Memory Memory { get; }
 
@@ -444,6 +470,17 @@ public sealed class N64Machine
 
     internal void RenderVideoInterface()
     {
+        // When parallel-rdp owns rendering it also owns scanout: it applies the
+        // hardware's AA, divot, dither and gamma filters that the software path
+        // does not implement, so presenting its output directly is both more
+        // accurate and cheaper than re-reading the frame buffer here.
+        if (RdpBridgeMode == N64RdpBridgeMode.Exclusive &&
+            LleRdpEngine.IsNativeRdpActive &&
+            LleRdpEngine.TryScanout(_frame, Width, Height, out _, out _))
+        {
+            return;
+        }
+
         var format = Memory.ViControl & 3;
         // Rows are addressed by the frame-buffer stride but only the visible
         // width is presented, so a cartridge that allocates a wider buffer
@@ -539,6 +576,65 @@ public sealed class N64Machine
         }
     }
 
+    /// <summary>
+    /// Runs a graphics task through Fast3D's display-list decoder, but lowers
+    /// the result into native RDP packets and hands them to the low-level
+    /// engine instead of (or as well as) rasterizing them in software.
+    /// </summary>
+    /// <remarks>
+    /// The low-level engine is only fed by DP DMA, which high-level microcode
+    /// never performs -- the RSP is not actually executed, so it never writes
+    /// DP_START/DP_END. That left the engine receiving nothing for every HLE
+    /// title. This bridge closes that gap without waiting for the RSP core to
+    /// be accurate enough to emit command buffers on its own.
+    /// </remarks>
+    private void ExecuteGraphicsTaskThroughRdpBridge(
+        N64RspTask task,
+        N64GraphicsTaskProfile profile)
+    {
+        var previousRasterization = _renderer.RasterizationEnabled;
+
+        // Mirror keeps the software raster on screen so the bridge can be
+        // measured without regressing output; Exclusive hands rendering to the
+        // low-level engine entirely.
+        if (RdpBridgeMode == N64RdpBridgeMode.Exclusive)
+        {
+            _renderer.RasterizationEnabled = false;
+        }
+
+        _renderer.BeginRdpTraceCapture();
+        try
+        {
+            _graphicsBackend.Execute(task, profile);
+        }
+        finally
+        {
+            _renderer.RasterizationEnabled = previousRasterization;
+        }
+
+        var batch = _renderer.EndRdpCommandBatchCapture();
+        RdpBridgeCommandsDelivered += batch.Commands.Count;
+        RdpBridgePrimitivesOmitted += batch.OmittedHlePrimitiveCommands;
+        LleRdpEngine.SynchronizeVideoInterface();
+        LleRdpEngine.ExecuteCommands(batch.Commands);
+    }
+
+    /// <summary>
+    /// Brings up parallel-rdp and, on success, switches graphics to the
+    /// low-level path. Returns false and leaves the software renderer in
+    /// charge when the native library or a Vulkan device is unavailable.
+    /// </summary>
+    public bool TryEnableNativeRdp(N64RdpBridgeMode mode = N64RdpBridgeMode.Exclusive)
+    {
+        if (!LleRdpEngine.TryInitializeNativeRdp())
+        {
+            return false;
+        }
+
+        RdpBridgeMode = mode;
+        return true;
+    }
+
     private void ServiceRspTask()
     {
         if (!Memory.TryBeginRspTask(out var task))
@@ -560,7 +656,15 @@ public sealed class N64Machine
 
                 var graphicsStarted = Stopwatch.GetTimestamp();
                 var graphicsProfile = N64GraphicsTaskProfile.FromTask(Memory, task, _renderer.DetectedMicrocode.ToString());
-                _graphicsBackend.Execute(task, graphicsProfile);
+                if (RdpBridgeMode == N64RdpBridgeMode.Off)
+                {
+                    _graphicsBackend.Execute(task, graphicsProfile);
+                }
+                else
+                {
+                    ExecuteGraphicsTaskThroughRdpBridge(task, graphicsProfile);
+                }
+
                 _graphicsExecutionTicks += Stopwatch.GetTimestamp() - graphicsStarted;
 
                 Memory.CompleteRspTask();

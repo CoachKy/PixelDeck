@@ -62,3 +62,7 @@
 # Per-ROM compatibility reports and captures contain local collection details.
 /artifacts/nes-compatibility/*
 /artifacts/n64-compatibility/*
+
+# Vendored parallel-rdp (MIT) and native build output
+/external/
+/native/**/build/

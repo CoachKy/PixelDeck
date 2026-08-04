@@ -11,12 +11,10 @@ public sealed class N64Memory
     public const int SpMemorySize = 4 * 1024;
 
     /// <summary>
-    /// Cartridge save RAM, mapped into PI domain 2 at 0x08000000. Titles such
-    /// as Ocarina of Time probe it during boot and block on the DMA-complete
-    /// interrupt, so the transfer must always signal completion even when the
-    /// address falls outside anything the cartridge actually provides.
+    /// Cartridge save RAM/FlashRAM, mapped into PI domain 2 at 0x08000000.
+    /// Supports 256Kbit SRAM (32 KiB), 768Kbit SRAM (96 KiB), and 1Mbit FlashRAM (128 KiB).
     /// </summary>
-    public const int SramSize = 32 * 1024;
+    public const int SramSize = 128 * 1024;
     public const int ControllerPakSize = 32 * 1024;
     public const int NtscCpuTicksPerField = 781_250;
     public const int PalCpuTicksPerField = 937_500;
@@ -41,6 +39,9 @@ public sealed class N64Memory
     private readonly bool[] _rumbleMotorActive = new bool[4];
     private readonly N64TlbEntry[] _tlb = new N64TlbEntry[32];
     private byte _tlbAsid;
+    private uint _tlbCachePage = uint.MaxValue;
+    private byte _tlbCacheAsid;
+    private uint _tlbCachePhysicalBase;
     private uint _spMemoryAddress;
     private uint _spDramAddress;
     private uint _spStatus = 1;
@@ -122,6 +123,7 @@ public sealed class N64Memory
     /// Cartridge EEPROM with the physical capacity declared by the game:
     /// 512 bytes for 4-Kbit devices or 2 KiB for 16-Kbit devices.
     /// </summary>
+    public Action<uint, uint>? OnDpcDmaTriggered { get; set; }
     public byte[] Eeprom { get; }
 
     public bool EepromDirty { get; private set; }
@@ -318,10 +320,19 @@ public sealed class N64Memory
             return address & 0x1FFFFFFF;
         }
 
+        var pageKey = address >> 12;
+        if (_tlbCachePage == pageKey && _tlbCacheAsid == _tlbAsid)
+        {
+            return _tlbCachePhysicalBase | (address & 0xFFFu);
+        }
+
         foreach (var entry in _tlb)
         {
             if (entry.TryTranslate(address, _tlbAsid, out var physicalAddress))
             {
+                _tlbCachePage = pageKey;
+                _tlbCacheAsid = _tlbAsid;
+                _tlbCachePhysicalBase = physicalAddress & ~0xFFFu;
                 return physicalAddress;
             }
         }
@@ -345,12 +356,22 @@ public sealed class N64Memory
             return N64TlbFault.None;
         }
 
+        var pageKey = address >> 12;
+        if (_tlbCachePage == pageKey && _tlbCacheAsid == _tlbAsid)
+        {
+            physicalAddress = _tlbCachePhysicalBase | (address & 0xFFFu);
+            return N64TlbFault.None;
+        }
+
         var matchedInvalid = false;
         foreach (var entry in _tlb)
         {
             switch (entry.Lookup(address, _tlbAsid, out physicalAddress))
             {
                 case N64TlbLookup.Valid:
+                    _tlbCachePage = pageKey;
+                    _tlbCacheAsid = _tlbAsid;
+                    _tlbCachePhysicalBase = physicalAddress & ~0xFFFu;
                     return N64TlbFault.None;
                 case N64TlbLookup.Invalid:
                     matchedInvalid = true;
@@ -408,6 +429,7 @@ public sealed class N64Memory
         uint entryLo1)
     {
         _tlb[index & 31] = new N64TlbEntry(pageMask, entryHi, entryLo0, entryLo1);
+        _tlbCachePage = uint.MaxValue;
     }
 
     internal N64TlbEntry ReadTlbEntry(int index) => _tlb[index & 31];
@@ -425,7 +447,11 @@ public sealed class N64Memory
         return -1;
     }
 
-    internal void SetTlbAsid(byte asid) => _tlbAsid = asid;
+    internal void SetTlbAsid(byte asid)
+    {
+        _tlbAsid = asid;
+        _tlbCachePage = uint.MaxValue;
+    }
 
     /// <summary>
     /// Resolves a physical address to the backing array of a directly mapped
@@ -1073,7 +1099,7 @@ public sealed class N64Memory
         address is >= 0x04000000 and < 0x04002000 ||
         address is >= 0x1FC007C0 and < 0x1FC00800;
 
-    private uint ReadIoWord(uint address) => address switch
+    internal uint ReadIoWord(uint address) => address switch
     {
         0x04300000 => 0x02020102,
         0x04300004 => 0x01010101,
@@ -1120,7 +1146,7 @@ public sealed class N64Memory
         _ => 0
     };
 
-    private void WriteIoWord(uint address, uint value, uint mask)
+    internal void WriteIoWord(uint address, uint value, uint mask = uint.MaxValue)
     {
         switch (address)
         {
@@ -1157,6 +1183,7 @@ public sealed class N64Memory
                 _dpcEnd = Combine(_dpcEnd, value, mask) & 0x00FFFFF8;
                 _dpcCurrent = _dpcEnd;
                 MiInterrupt |= 1u << 5;
+                OnDpcDmaTriggered?.Invoke(_dpcStart, _dpcEnd);
                 break;
             case 0x0410000C:
                 WriteDpcStatus(value);

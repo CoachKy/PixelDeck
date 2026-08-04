@@ -137,6 +137,34 @@ public sealed class GameCubeHardware
     /// <summary>The DSP's bit in the processor interface's cause register.</summary>
     private const uint DspInterruptCause = 0x0000_0040;
 
+    /// <summary>
+    /// The audio direct memory access: where sound is read from, how much of it
+    /// there is, and how much is left.
+    /// </summary>
+    /// <remarks>
+    /// This is the heartbeat of a running audio system. It reads thirty-two
+    /// bytes at a time at four thousand blocks a second — the rate the sampler
+    /// consumes stereo pairs — and when the last block of a buffer has gone it
+    /// reloads from these registers and interrupts. That interrupt is what runs
+    /// the callback that hands the game its next buffer, and a game waits for
+    /// it before believing its audio system is alive.
+    /// </remarks>
+    private const uint AudioDmaStartHigh = DspInterface + 0x30;
+    private const uint AudioDmaStartLow = DspInterface + 0x32;
+    private const uint AudioDmaControlLength = DspInterface + 0x36;
+    private const uint AudioDmaBlocksLeft = DspInterface + 0x3A;
+
+    private const uint AudioDmaEnabled = 0x8000;
+    private const int AudioDmaBlockBytes = 32;
+
+    /// <summary>Core cycles between blocks: four thousand of them a second.</summary>
+    private const long CoreCyclesPerAudioBlock = 486_000_000 / 4_000;
+
+    private uint _audioDmaSource;
+    private uint _audioDmaBlocks;
+    private uint _audioDmaRemaining;
+    private long _audioDmaCycles;
+
     /// <summary>The ARAM controller's mode register, at 0xCC00_5016.</summary>
     private const uint AramMode = DspInterface + 0x16;
 
@@ -534,6 +562,7 @@ public sealed class GameCubeHardware
         AdvanceMail(coreCycles);
         AdvanceDvd(coreCycles);
         AdvanceDspInit(coreCycles);
+        AdvanceAudioDma(coreCycles);
 
         _videoCycles += coreCycles;
         while (_videoCycles >= CoreCyclesPerLine)
@@ -718,11 +747,35 @@ public sealed class GameCubeHardware
     /// from the outside, the symptom is an operating system with nothing
     /// runnable, idling forever, rather than anything that looks like input.
     /// </remarks>
+    /// <summary>The four GameCube controller ports.</summary>
+    public GameCubeController[] Controllers { get; } = [new(), new(), new(), new()];
+
+    /// <summary>DSP voice synthesizer for 8 active ADPCM channels.</summary>
+    public DspVoiceSynthesizer AudioSynthesizer { get; } = new();
+
+    /// <summary>Ring buffer output for stereo 16-bit PCM audio samples.</summary>
+    public GameCubeAudioOutput AudioOutput { get; } = new();
+
+    public void PollControllersForTest() => PollControllers();
+
     private void PollControllers()
     {
-        if ((ReadRegister32(SerialPoll) & SerialPollEnabledPorts) == 0)
+        var enabledMask = ReadRegister32(SerialPoll) & SerialPollEnabledPorts;
+        if (enabledMask == 0)
         {
             return;
+        }
+
+        for (var i = 0; i < 4; i++)
+        {
+            var portBit = 0x80u >> i;
+            if ((enabledMask & portBit) != 0)
+            {
+                var report = Controllers[i].GetSiReport();
+                var baseOffset = SerialInterface + (uint)(i * 12);
+                WriteRegister32(baseOffset, (uint)(report >> 32));
+                WriteRegister32(baseOffset + 4, (uint)report);
+            }
         }
 
         WriteRegister32(
@@ -734,7 +787,7 @@ public sealed class GameCubeHardware
             GameCubeTraceLevel.Debug,
             "si/poll",
             60,
-            $"controllers polled; ports enabled=0x{ReadRegister32(SerialPoll) & SerialPollEnabledPorts:X2}");
+            $"controllers polled; ports enabled=0x{enabledMask:X2}");
     }
 
     /// <summary>
@@ -867,6 +920,10 @@ public sealed class GameCubeHardware
         var before = ReadRegister32(AudioSampleCounter);
         var after = before + samples;
         WriteRegister32(AudioSampleCounter, after);
+
+        Span<short> pcmBuffer = stackalloc short[32];
+        AudioSynthesizer.Synthesize(_memory, pcmBuffer);
+        AudioOutput.WriteSamples(pcmBuffer);
 
         _trace.WriteEvery(
             GameCubeTraceChannel.Audio,
@@ -1241,6 +1298,12 @@ public sealed class GameCubeHardware
         // written individually, so triggering only on a 32-bit store to the
         // size register meant every transfer a game set up half-word at a time
         // did nothing at all — silently, because the setup writes all landed.
+        if (offset == AudioDmaControlLength)
+        {
+            StartAudioDma(value);
+            return;
+        }
+
         if (offset == AramDmaSizeLow || (offset == AramDmaControl && size == 4))
         {
             PerformAramTransfer();
@@ -1586,30 +1649,37 @@ public sealed class GameCubeHardware
     /// </remarks>
     private const long MicrocodeReplyCycles = 2500;
 
-    private uint _pendingMail;
-    private string? _pendingMailDescription;
-    private long _pendingMailCycles;
+    private readonly record struct DelayedMail(uint Mail, string Description, long RemainingCycles);
+    private readonly Queue<DelayedMail> _pendingMailQueue = [];
 
     /// <summary>
-    /// Delivers a message that was posted with a delay, once the delay is up.
+    /// Delivers messages that were posted with a delay, once their delay is up.
     /// </summary>
     private void AdvanceMail(long coreCycles)
     {
-        if (_pendingMailDescription is null)
+        if (_pendingMailQueue.Count == 0)
         {
             return;
         }
 
-        _pendingMailCycles -= coreCycles;
-        if (_pendingMailCycles > 0)
+        var front = _pendingMailQueue.Dequeue();
+        var remaining = front.RemainingCycles - coreCycles;
+
+        if (remaining > 0)
         {
+            // Put updated remaining cycles back at front of queue
+            var updated = front with { RemainingCycles = remaining };
+            _pendingMailQueue.Enqueue(updated);
+            // Re-order queue so front stays at head
+            for (var i = 0; i < _pendingMailQueue.Count - 1; i++)
+            {
+                _pendingMailQueue.Enqueue(_pendingMailQueue.Dequeue());
+            }
+
             return;
         }
 
-        var mail = _pendingMail;
-        var description = _pendingMailDescription;
-        _pendingMailDescription = null;
-        DeliverMailToCpu(mail, description);
+        DeliverMailToCpu(front.Mail, front.Description);
     }
 
     private void PostMailToCpu(uint mail, string description) =>
@@ -1635,9 +1705,7 @@ public sealed class GameCubeHardware
     /// </summary>
     private void PostMailToCpuLater(uint mail, string description)
     {
-        _pendingMail = mail;
-        _pendingMailDescription = description;
-        _pendingMailCycles = MicrocodeReplyCycles;
+        _pendingMailQueue.Enqueue(new DelayedMail(mail, description, MicrocodeReplyCycles));
     }
 
     /// <summary>
@@ -1722,6 +1790,74 @@ public sealed class GameCubeHardware
             DspControlStatus,
             (ushort)(ReadRegister16(DspControlStatus) & ~DspInitInProgress));
         PostMailToCpuPolled(DspInitUCodeReadyMail, "init-audio-system microcode ready");
+    }
+
+    /// <summary>
+    /// Starts the audio transfer when software enables it, loading the source
+    /// and length it configured.
+    /// </summary>
+    private void StartAudioDma(uint value)
+    {
+        if ((value & AudioDmaEnabled) == 0)
+        {
+            _audioDmaRemaining = 0;
+            WriteRegister16(AudioDmaBlocksLeft, 0);
+            return;
+        }
+
+        _audioDmaSource =
+            (((uint)ReadRegister16(AudioDmaStartHigh) & 0x03FF) << 16) |
+            (ReadRegister16(AudioDmaStartLow) & 0xFFE0u);
+        _audioDmaBlocks = value & 0x7FFF;
+        _audioDmaRemaining = _audioDmaBlocks;
+        _audioDmaCycles = 0;
+        WriteRegister16(AudioDmaBlocksLeft, (ushort)_audioDmaRemaining);
+
+        _trace.WriteEvery(
+            GameCubeTraceChannel.Audio,
+            GameCubeTraceLevel.Information,
+            "dsp/audio-dma",
+            240,
+            $"audio transfer from 0x{_audioDmaSource:X8}, {_audioDmaBlocks} blocks " +
+            $"of {AudioDmaBlockBytes} bytes");
+    }
+
+    /// <summary>
+    /// Moves the audio transfer along, and interrupts when a buffer is spent.
+    /// </summary>
+    /// <remarks>
+    /// The interrupt comes when the last block goes, not on every block, and
+    /// the transfer then reloads itself from the same registers and carries on.
+    /// That is what makes it a heartbeat rather than a one-off: a game hands
+    /// over one buffer and is told each time another is wanted.
+    /// </remarks>
+    private void AdvanceAudioDma(long coreCycles)
+    {
+        if (_audioDmaRemaining == 0)
+        {
+            return;
+        }
+
+        _audioDmaCycles += coreCycles;
+        while (_audioDmaCycles >= CoreCyclesPerAudioBlock && _audioDmaRemaining > 0)
+        {
+            _audioDmaCycles -= CoreCyclesPerAudioBlock;
+            _audioDmaRemaining--;
+            WriteRegister16(AudioDmaBlocksLeft, (ushort)_audioDmaRemaining);
+
+            if (_audioDmaRemaining != 0)
+            {
+                continue;
+            }
+
+            // Spent. Reload from what software configured and tell it.
+            _audioDmaRemaining = _audioDmaBlocks;
+            WriteRegister16(AudioDmaBlocksLeft, (ushort)_audioDmaRemaining);
+            WriteRegister16(
+                DspControlStatus,
+                (ushort)(ReadRegister16(DspControlStatus) | AudioDmaInterrupt));
+            RefreshDspInterrupt();
+        }
     }
 
     /// <summary>Rings the bell for whatever is now at the front of the queue.</summary>

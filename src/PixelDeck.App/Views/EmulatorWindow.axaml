@@ -34,9 +34,17 @@
     </Window.Styles>
 
     <Grid>
+        <!--
+            The frame buffer is 320 or 640 pixels wide and gets stretched to
+            whatever the window is, often six times or more. Nearest-neighbour
+            turns an 8-pixel bitmap font into 50-pixel blocks, which is what
+            makes small in-game text hard to read. Filtering costs nothing and
+            only affects presentation, never what the emulator renders.
+            Set this back to "None" for hard pixel edges.
+        -->
         <Image Name="FrameImage"
                Stretch="Uniform"
-               RenderOptions.BitmapInterpolationMode="None" />
+               RenderOptions.BitmapInterpolationMode="HighQuality" />
 
         <!--
             PixelCube has no video hardware yet, so a GameCube session has
