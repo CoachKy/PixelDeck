@@ -385,9 +385,10 @@ public sealed class GameCubeHardware
     // which fires when the beam reaches a chosen line.
     private const uint DisplayInterrupt0 = VideoInterface + 0x30;
     private const int DisplayInterruptCount = 4;
-    private const uint VerticalPosition = VideoInterface + 0x2C;
 
     /// <summary>Top and bottom field base addresses of the external framebuffer.</summary>
+    private const uint VerticalPosition = VideoInterface + 0x2C;
+    private const uint VerticalPosition2 = VideoInterface + 0x02;
     private const uint TopFieldBase = VideoInterface + 0x1C;
     private const uint BottomFieldBase = VideoInterface + 0x24;
 
@@ -426,8 +427,8 @@ public sealed class GameCubeHardware
     /// </remarks>
     private const uint DisplayInterruptFired = 1u << 31;
 
-    /// <summary>Bit 28: this display interrupt is armed.</summary>
-    private const uint DisplayInterruptEnabled = 1u << 28;
+    /// <summary>Bit 28 or Bit 31: this display interrupt is armed.</summary>
+    private const uint DisplayInterruptEnabled = (1u << 28) | (1u << 31);
 
     /// <summary>The line a display interrupt fires on, in bits 16 to 25.</summary>
     private const uint DisplayInterruptLineMask = 0x3FF;
@@ -504,6 +505,13 @@ public sealed class GameCubeHardware
         _trace = trace;
         _memory = memory;
         Graphics = new GameCubeCommandProcessor(memory, trace);
+        if (PdGxNative.IsAvailable)
+        {
+            unsafe
+            {
+                _ = PdGxNative.pdgx_init((void*)memory.MainMemoryPointer, 24 * 1024 * 1024);
+            }
+        }
         Reset();
     }
 
@@ -570,6 +578,7 @@ public sealed class GameCubeHardware
             _videoCycles -= CoreCyclesPerLine;
             _verticalLine = _verticalLine >= LinesPerField ? 1 : _verticalLine + 1;
             WriteRegister16(VerticalPosition, (ushort)_verticalLine);
+            WriteRegister16(VerticalPosition2, (ushort)_verticalLine);
             FireDisplayInterrupts();
             if (_verticalLine == 1)
             {
@@ -602,7 +611,11 @@ public sealed class GameCubeHardware
 
             // The chosen line is stored one-based in bits 16 to 25.
             var line = (display >> 16) & DisplayInterruptLineMask;
-            if (line != (uint)_verticalLine)
+            if (line != 0 && line != (uint)_verticalLine)
+            {
+                continue;
+            }
+            if (line == 0 && _verticalLine != 1)
             {
                 continue;
             }
@@ -722,6 +735,32 @@ public sealed class GameCubeHardware
             FifoDistanceLow,
             FifoDistanceHigh,
             write >= read ? write - read : end - read + (write - start));
+    }
+
+    /// <summary>
+    /// Drains any pending FIFO commands between the current read and write pointers.
+    /// </summary>
+    public void DrainFifo()
+    {
+        var start = ReadPointer(FifoBaseLow, FifoBaseHigh);
+        var end = ReadPointer(FifoEndLow, FifoEndHigh);
+        if (end <= start)
+        {
+            return;
+        }
+
+        var write = ReadPointer(FifoWritePointerLow, FifoWritePointerHigh);
+        if (PdGxNative.IsAvailable)
+        {
+            var read = ReadPointer(FifoReadPointerLow, FifoReadPointerHigh);
+            var physRead = read & 0x00FF_FFFF;
+            var physWrite = write & 0x00FF_FFFF;
+            if (physRead < physWrite)
+            {
+                PdGxNative.pdgx_process_fifo(physRead, physWrite);
+            }
+        }
+        DrainFifo(start, end, write);
     }
 
     /// <summary>Reads one of the FIFO's split 32-bit pointers.</summary>
@@ -1842,6 +1881,21 @@ public sealed class GameCubeHardware
         while (_audioDmaCycles >= CoreCyclesPerAudioBlock && _audioDmaRemaining > 0)
         {
             _audioDmaCycles -= CoreCyclesPerAudioBlock;
+
+            var blockOffset = (_audioDmaBlocks - _audioDmaRemaining) * (uint)AudioDmaBlockBytes;
+            var address = _audioDmaSource + blockOffset;
+            if (GameCubeMemory.TryTranslate(address, out var ramOffset) &&
+                ramOffset + AudioDmaBlockBytes <= GameCubeMemory.MainMemorySize)
+            {
+                Span<short> pcmBuffer = stackalloc short[16];
+                for (var i = 0; i < 16; i++)
+                {
+                    pcmBuffer[i] = BinaryPrimitives.ReadInt16BigEndian(
+                        _memory.MainMemory.Slice((int)ramOffset + (i * 2), 2));
+                }
+                AudioOutput.WriteSamples(pcmBuffer);
+            }
+
             _audioDmaRemaining--;
             WriteRegister16(AudioDmaBlocksLeft, (ushort)_audioDmaRemaining);
 
@@ -2371,7 +2425,8 @@ public sealed class GameCubeHardware
         DvdCommand0 or DvdCommand1 or DvdCommand2 => true,
         DvdDmaAddress or DvdDmaLength or DvdImmediate => true,
         AramMode => true,
-        InterruptCause or InterruptMask or VerticalPosition => true,
+        InterruptCause or InterruptMask or VerticalPosition or VerticalPosition2 => true,
+        VideoInterface or TopFieldBase or TopFieldBase + 2 or BottomFieldBase or BottomFieldBase + 2 => true,
         >= DisplayInterrupt0 and < DisplayInterrupt0 + (DisplayInterruptCount * 4) => true,
         SerialCommunicationStatus or SerialStatus => true,
 

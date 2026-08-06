@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using NAudio.Wave;
+using PixelDeck.Emulation.GameCube;
 using PixelDeck.Emulation.N64;
 using PixelDeck.Emulation.Nes;
 using PixelDeck.Emulation.Snes;
@@ -23,6 +24,11 @@ internal sealed class EmulatorAudioOutput : IDisposable
     }
 
     public EmulatorAudioOutput(N64Machine machine)
+        : this(new EmulatorSampleProvider(machine))
+    {
+    }
+
+    public EmulatorAudioOutput(GameCubeMachine machine)
         : this(new EmulatorSampleProvider(machine))
     {
     }
@@ -89,6 +95,7 @@ internal sealed class EmulatorAudioOutput : IDisposable
         private NesMachine? _nesMachine;
         private SnesMachine? _snesMachine;
         private N64Machine? _n64Machine;
+        private GameCubeMachine? _gameCubeMachine;
         private int _isPaused;
         private int _hasStarted;
         private int _playbackRate = 1;
@@ -114,6 +121,12 @@ internal sealed class EmulatorAudioOutput : IDisposable
         {
             _n64Machine = machine;
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(N64Machine.AudioSampleRate, 2);
+        }
+
+        public EmulatorSampleProvider(GameCubeMachine machine)
+        {
+            _gameCubeMachine = machine;
+            WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(GameCubeMachine.AudioSampleRate, 2);
         }
 
         public WaveFormat WaveFormat { get; }
@@ -305,7 +318,13 @@ internal sealed class EmulatorAudioOutput : IDisposable
             }
 
             var n64Machine = Volatile.Read(ref _n64Machine);
-            return n64Machine?.ReadAudioSamples(destination) ?? 0;
+            if (n64Machine is not null)
+            {
+                return n64Machine.ReadAudioSamples(destination);
+            }
+
+            var gcMachine = Volatile.Read(ref _gameCubeMachine);
+            return gcMachine?.ReadAudioSamples(destination) ?? 0;
         }
     }
 }

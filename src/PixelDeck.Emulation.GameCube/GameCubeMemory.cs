@@ -41,6 +41,17 @@ public sealed class GameCubeMemory
     private readonly byte[] _auxiliaryMemory = new byte[AuxiliaryMemorySize];
     private readonly GameCubeTraceLog _trace;
 
+    public unsafe IntPtr MainMemoryPointer
+    {
+        get
+        {
+            fixed (byte* ptr = _mainMemory)
+            {
+                return (IntPtr)ptr;
+            }
+        }
+    }
+
     public GameCubeMemory(GameCubeTraceLog trace)
     {
         ArgumentNullException.ThrowIfNull(trace);

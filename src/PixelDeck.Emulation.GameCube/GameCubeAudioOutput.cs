@@ -55,6 +55,33 @@ public sealed class GameCubeAudioOutput
         return read;
     }
 
+    /// <summary>
+    /// Reads float samples normalized to [-1.0, 1.0] into <paramref name="destination"/>.
+    /// </summary>
+    public int ReadAudioSamples(Span<float> destination)
+    {
+        var count = Math.Min(destination.Length, _count);
+        if (count <= 0) return 0;
+
+        Span<short> pcm = stackalloc short[128];
+        var readTotal = 0;
+
+        while (readTotal < count)
+        {
+            var chunk = Math.Min(pcm.Length, count - readTotal);
+            var read = ReadSamples(pcm[..chunk]);
+            if (read <= 0) break;
+
+            for (var i = 0; i < read; i++)
+            {
+                destination[readTotal + i] = pcm[i] / 32768.0f;
+            }
+            readTotal += read;
+        }
+
+        return readTotal;
+    }
+
     public void Clear()
     {
         _head = 0;

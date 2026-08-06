@@ -48,6 +48,10 @@ public sealed class GameCubeMachine : IDisposable
 
     public IReadOnlyList<GameCubeController> Controllers => Memory.Hardware.Controllers;
 
+    public string GraphicsBackendStatus => PdGxNative.IsAvailable
+        ? $"Dolphin Vulkan ({PdGxNative.GetDeviceName()})"
+        : "Software GX Rasterizer";
+
     /// <summary>
     /// The log every part of this core reports through. Exposed so the
     /// dashboard can attach its own sink and change the level while a session
@@ -75,6 +79,13 @@ public sealed class GameCubeMachine : IDisposable
     public int Height => 480;
 
     public double FramesPerSecond => Disc.Header.FramesPerSecond;
+
+    public const int AudioSampleRate = 48000;
+
+    public int BufferedAudioSampleCount => Memory.Hardware.AudioOutput.AvailableSamples;
+
+    public int ReadAudioSamples(Span<float> destination) =>
+        Memory.Hardware.AudioOutput.ReadAudioSamples(destination);
 
     /// <summary>
     /// Opens a disc and prepares a machine for it. The trace log is
@@ -178,6 +189,7 @@ public sealed class GameCubeMachine : IDisposable
         }
 
         var result = Cpu.Run(maximumInstructions);
+        Memory.Hardware.DrainFifo();
         if (result.Outcome != GekkoOutcome.Completed)
         {
             Trace.Write(

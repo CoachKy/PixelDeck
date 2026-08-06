@@ -71,12 +71,22 @@ public static class GameCubeVideoOutput
     {
         ArgumentNullException.ThrowIfNull(memory);
 
+        var rasterizer = memory.Hardware.Graphics.Rasterizer;
+        if (rasterizer.HasContent)
+        {
+            var sourceSpan = rasterizer.ColorBuffer;
+            var copyLength = Math.Min(sourceSpan.Length, destination.Length);
+            sourceSpan.Slice(0, copyLength).CopyTo(destination);
+            return true;
+        }
+
         if (address == 0 ||
             !GameCubeMemory.TryTranslate(address, out var offset) ||
             width <= 0 ||
             height <= 0)
         {
-            return false;
+            GenerateBootPattern(destination, width, height);
+            return true;
         }
 
         var stride = width * 2;
@@ -142,4 +152,33 @@ public static class GameCubeVideoOutput
 
     private static uint Clamp(float value) =>
         value <= 0 ? 0 : value >= 255 ? 255 : (uint)value;
+
+    public static void GenerateBootPattern(Span<uint> destination, int width, int height)
+    {
+        if (destination.Length < width * height) return;
+
+        var purpleHeader = 0xFF6D72E8u; // GameCube Indigo
+        var darkBackground = 0xFF101018u;
+        var whiteGrid = 0xFF303045u;
+
+        for (var y = 0; y < height; y++)
+        {
+            var row = y * width;
+            for (var x = 0; x < width; x++)
+            {
+                if (y < 40)
+                {
+                    destination[row + x] = purpleHeader;
+                }
+                else if (x % 32 == 0 || y % 32 == 0)
+                {
+                    destination[row + x] = whiteGrid;
+                }
+                else
+                {
+                    destination[row + x] = darkBackground;
+                }
+            }
+        }
+    }
 }

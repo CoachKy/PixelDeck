@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 3,
+  "pixel64Version": "0.16.026",
+  "startedAtUtc": "2026-08-05T01:27:12.3461129+00:00",
+  "completedAtUtc": "2026-08-05T01:27:33.4543085+00:00",
+  "configuration": {
+    "gamesFolder": "C:\\GitHub\\PixelDeck\\Games\\Nintendo64",
+    "fieldsPerGame": 1500,
+    "parallelism": 4,
+    "filter": "Harvest",
+    "captureFlaggedFrames": true,
+    "captureGraphicsTasks": false
+  },
+  "summary": {
+    "total": 1,
+    "uniqueImages": 1,
+    "passed": 0,
+    "warnings": 1,
+    "failed": 0,
+    "invalid": 0
+  },
+  "hardwareProfiles": [
+    {
+      "cic": "Cic6102",
+      "region": "Ntsc",
+      "total": 1,
+      "passed": 0,
+      "warnings": 1,
+      "failed": 0
+    }
+  ],
+  "blockers": [],
+  "games": [
+    {
+      "relativePath": "Harvest Moon 64 (USA).n64",
+      "fileName": "Harvest Moon 64 (USA).n64",
+      "sha256": "83FAF274EC3D66F207988F805BB94EDD0E76AF147BA233F57AA3B6468B8F68CF",
+      "status": "Warning",
+      "title": "HARVESTMOON64",
+      "gameCode": "NYWE",
+      "region": "Ntsc",
+      "cic": "Cic6102",
+      "saveType": "Eeprom4Kbit",
+      "sourceByteOrder": "ByteSwapped",
+      "isVerifiedTarget": false,
+      "reachedCartridgeEntryPoint": true,
+      "fieldsCompleted": 1500,
+      "hostFieldsPerSecond": 73.57029160212876,
+      "p99FieldMilliseconds": 29.8749,
+      "instructionsExecuted": 1172656250,
+      "programCounter": 2147639376,
+      "graphicsTasks": 2158,
+      "audioTasks": 1437,
+      "graphicsCommands": 2703483,
+      "unsupportedGraphicsCommands": 0,
+      "unsupportedGraphicsOpcodes": "",
+      "detectedMicrocode": "F3dex2",
+      "graphicsMicrocodeCrc32": 1103697355,
+      "detectedAudioMicrocode": "NAudio",
+      "graphicsBackend": "Pixel64 Fast3D software renderer",
+      "rdpOtherModeHigh": 41152,
+      "rdpOtherModeLow": 252342280,
+      "rdpCycleType": 0,
+      "alphaPixelsRejected": 13050367,
+      "framebufferPixelsBlended": 13085697,
+      "unsupportedTextureFormats": "",
+      "audioCommands": 272096,
+      "unsupportedAudioCommands": 0,
+      "unsupportedAudioOpcodes": "",
+      "verticalInterrupts": 1492,
+      "audioDmas": 1435,
+      "controllerPolls": 1441,
+      "maximumDistinctColors": 1160,
+      "distinctCheckpointFrames": 42,
+      "audioSamples": 1532798,
+      "audioPeak": 0.48754844,
+      "droppedAudioSamples": 0,
+      "saveStateDeterministic": true,
+      "capturePath": "captures/0000-Harvest Moon 64 (USA)-83FAF274.bmp",
+      "graphicsCapturePath": null,
+      "findings": [
+        "Pixel64 boot attempt enabled for this Nintendo 64 cartridge. Compatibility has not yet been verified."
+      ]
+    }
+  ]
+}

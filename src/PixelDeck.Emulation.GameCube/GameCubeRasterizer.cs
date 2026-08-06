@@ -33,6 +33,8 @@ public sealed class GameCubeRasterizer
     public bool HasContent { get; private set; }
     public long TrianglesDrawn { get; private set; }
 
+    public ReadOnlySpan<uint> ColorBuffer => _colour;
+
     public GameCubeTevPipeline TevPipeline { get; } = new();
 
     public GameCubeRasterizer() => Clear(0, 0, 0);

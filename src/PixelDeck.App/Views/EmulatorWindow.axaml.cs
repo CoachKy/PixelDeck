@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -80,7 +80,7 @@ public partial class EmulatorWindow : Window
     /// </summary>
     private static readonly TimeSpan GameCubeFrameBudget = TimeSpan.FromMilliseconds(12);
 
-    private const long GameCubeInstructionsPerSlice = 250_000;
+    private const long GameCubeInstructionsPerSlice = 2_000_000;
     private GamepadReader[]? _rumbleTargets;
     private readonly bool[] _rumbleMotorActive = new bool[GamepadManager.MaximumControllers];
     private SnesMachine? _snesMachine;
@@ -162,6 +162,19 @@ public partial class EmulatorWindow : Window
                 PixelFormat.Bgra8888,
                 AlphaFormat.Opaque);
             _presentationPixels = new uint[MachineWidth * MachineHeight];
+
+            // The frame buffer is 320 or 640 wide and gets stretched several
+            // times over, so how it is interpolated is the biggest single
+            // influence on how sharp in-game text looks -- far more than the
+            // RDP's own texture filter.
+            Avalonia.Media.RenderOptions.SetBitmapInterpolationMode(
+                FrameImage,
+                PixelDeckSettingsStore.Current.DisplayScaling switch
+                {
+                    DisplayScalingFilter.Sharp => Avalonia.Media.Imaging.BitmapInterpolationMode.None,
+                    DisplayScalingFilter.Smooth => Avalonia.Media.Imaging.BitmapInterpolationMode.HighQuality,
+                    _ => Avalonia.Media.Imaging.BitmapInterpolationMode.LowQuality
+                });
             FrameImage.Source = _frameBitmap;
             _playSession = Stopwatch.StartNew();
             if (_nesMachine is not null)
@@ -175,6 +188,10 @@ public partial class EmulatorWindow : Window
             else if (_n64Machine is not null)
             {
                 _audioOutput = new EmulatorAudioOutput(_n64Machine);
+            }
+            else if (_gameCubeMachine is not null)
+            {
+                _audioOutput = new EmulatorAudioOutput(_gameCubeMachine);
             }
 
             UpdateStateAvailability();
@@ -417,13 +434,14 @@ public partial class EmulatorWindow : Window
 
         if (_gameCubeMachine is not null)
         {
-            // No video hardware, so the session panel is the whole picture.
-            // Refreshed here rather than every frame: its numbers move slowly.
             if (frameNumber % 30 == 1)
             {
                 UpdatePixelCubeOverlay();
             }
 
+            var framebuffer = _gameCubeMachine.Memory.Hardware.ExternalFramebuffer;
+            var hasContent = _gameCubeMachine.Memory.Hardware.Graphics.Rasterizer.HasContent;
+            PixelCubeOverlay.IsVisible = _gameCubeStopped || (framebuffer == 0 && !hasContent);
             return;
         }
 
@@ -523,6 +541,10 @@ public partial class EmulatorWindow : Window
             {
                 UpdateN64Controllers(settings, playerOneState, playerTwoState);
             }
+            else if (_gameCubeMachine is not null)
+            {
+                UpdateGameCubeControllers(settings, playerOneState, playerTwoState);
+            }
         }
     }
 
@@ -620,6 +642,73 @@ public partial class EmulatorWindow : Window
         if (_pressedKeys.Contains(Key.Left)) buttons |= SnesButton.Left;
         if (_pressedKeys.Contains(Key.Right)) buttons |= SnesButton.Right;
         return buttons;
+    }
+
+    private void UpdateGameCubeControllers(
+        PixelDeckSettings settings,
+        GamepadState playerOneState,
+        GamepadState playerTwoState)
+    {
+        if (_gameCubeMachine is null) return;
+
+        var gc = _gameCubeMachine.Controller1;
+        var btn = GameCubeButtons.None;
+
+        if (_pressedKeys.Contains(Key.Z)) btn |= GameCubeButtons.A;
+        if (_pressedKeys.Contains(Key.X)) btn |= GameCubeButtons.B;
+        if (_pressedKeys.Contains(Key.C)) btn |= GameCubeButtons.X;
+        if (_pressedKeys.Contains(Key.V)) btn |= GameCubeButtons.Y;
+        if (_pressedKeys.Contains(Key.Enter)) btn |= GameCubeButtons.Start;
+        if (_pressedKeys.Contains(Key.A)) btn |= GameCubeButtons.Z;
+        if (_pressedKeys.Contains(Key.Q)) btn |= GameCubeButtons.L;
+        if (_pressedKeys.Contains(Key.W)) btn |= GameCubeButtons.R;
+
+        if (_pressedKeys.Contains(Key.Up)) btn |= GameCubeButtons.Up;
+        if (_pressedKeys.Contains(Key.Down)) btn |= GameCubeButtons.Down;
+        if (_pressedKeys.Contains(Key.Left)) btn |= GameCubeButtons.Left;
+        if (_pressedKeys.Contains(Key.Right)) btn |= GameCubeButtons.Right;
+
+        var pad = playerOneState.Buttons;
+        if (pad.HasFlag(GamepadButton.A)) btn |= GameCubeButtons.A;
+        if (pad.HasFlag(GamepadButton.B)) btn |= GameCubeButtons.B;
+        if (pad.HasFlag(GamepadButton.X)) btn |= GameCubeButtons.X;
+        if (pad.HasFlag(GamepadButton.Y)) btn |= GameCubeButtons.Y;
+        if (pad.HasFlag(GamepadButton.Start)) btn |= GameCubeButtons.Start;
+        if (pad.HasFlag(GamepadButton.RightShoulder)) btn |= GameCubeButtons.Z;
+        if (pad.HasFlag(GamepadButton.LeftShoulder)) btn |= GameCubeButtons.L;
+        if (pad.HasFlag(GamepadButton.RightTrigger)) btn |= GameCubeButtons.R;
+        if (pad.HasFlag(GamepadButton.DPadUp)) btn |= GameCubeButtons.Up;
+        if (pad.HasFlag(GamepadButton.DPadDown)) btn |= GameCubeButtons.Down;
+        if (pad.HasFlag(GamepadButton.DPadLeft)) btn |= GameCubeButtons.Left;
+        if (pad.HasFlag(GamepadButton.DPadRight)) btn |= GameCubeButtons.Right;
+
+        gc.Buttons = btn;
+
+        byte stickX = 128;
+        byte stickY = 128;
+        if (_pressedKeys.Contains(Key.Left)) stickX = 30;
+        else if (_pressedKeys.Contains(Key.Right)) stickX = 226;
+        if (_pressedKeys.Contains(Key.Down)) stickY = 30;
+        else if (_pressedKeys.Contains(Key.Up)) stickY = 226;
+
+        if (playerOneState.LeftX != 0 || playerOneState.LeftY != 0)
+        {
+            stickX = (byte)Math.Clamp(128 + (playerOneState.LeftX * 98 / 32768), 0, 255);
+            stickY = (byte)Math.Clamp(128 + (playerOneState.LeftY * 98 / 32768), 0, 255);
+        }
+
+        byte cStickX = 128;
+        byte cStickY = 128;
+        if (playerOneState.RightX != 0 || playerOneState.RightY != 0)
+        {
+            cStickX = (byte)Math.Clamp(128 + (playerOneState.RightX * 98 / 32768), 0, 255);
+            cStickY = (byte)Math.Clamp(128 + (playerOneState.RightY * 98 / 32768), 0, 255);
+        }
+
+        gc.MainStickX = stickX;
+        gc.MainStickY = stickY;
+        gc.CStickX = cStickX;
+        gc.CStickY = cStickY;
     }
 
     private void OnKeyDown(object? sender, KeyEventArgs eventArgs)
@@ -1204,7 +1293,7 @@ public partial class EmulatorWindow : Window
                 $"GameCube disc: title=\"{header.Title}\" id={header.GameId} " +
                 $"region={header.RegionText} container={_gameCubeMachine.Disc.ContainerName} " +
                 $"entry=0x{_gameCubeMachine.EntryPoint:X8}");
-            Title = $"{Title} - PixelCube trace only";
+            Title = $"{Title} - {_gameCubeMachine.GraphicsBackendStatus}";
             return;
         }
 
@@ -1238,6 +1327,57 @@ public partial class EmulatorWindow : Window
             return;
         }
 
+        // Honours the N64RdpBackend setting. parallel-rdp is only brought up
+        // after a throwaway copy of this executable has proved the Vulkan
+        // device works: on a host where that initialisation stalls it takes the
+        // whole process down and cannot be killed, so it must never be
+        // attempted first in the one the player is using.
+        static void TryApplyN64RdpBackendSetting(N64Machine machine)
+        {
+            var requested = PixelDeckSettingsStore.Current.N64RdpBackend;
+
+            // Logged even when nothing is requested, so the trace answers "was
+            // the setting read at all" and not just "did it succeed".
+            EmulatorDiagnostics.Write(
+                $"N64 rdp backend: setting={requested} " +
+                $"(settings.json -> N64RdpBackend: Off | Mirror | Exclusive)");
+            if (requested == N64RdpBridgeMode.Off)
+            {
+                return;
+            }
+
+            var host = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(host))
+            {
+                EmulatorDiagnostics.Write(
+                    "N64 rdp backend: no probe host path available; software renderer.");
+                return;
+            }
+
+            EmulatorDiagnostics.Write(
+                $"N64 rdp backend: probing the Vulkan device out of process via \"{host}\" " +
+                $"{NativeRdpProbe.ProbeArgument} (up to 20s)...");
+            var probeStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+            var enabled = machine.TryEnableNativeRdpSafely(host, requested);
+            var probeSeconds =
+                System.Diagnostics.Stopwatch.GetElapsedTime(probeStarted).TotalSeconds;
+
+            if (enabled)
+            {
+                EmulatorDiagnostics.Write(
+                    $"N64 rdp backend: PROBE OK in {probeSeconds:F1}s. parallel-rdp active, " +
+                    $"mode={machine.RdpBridgeMode}, device=\"{machine.LleRdpEngine.ActiveBackendName}\". " +
+                    (machine.RdpBridgeMode == N64RdpBridgeMode.Mirror
+                        ? "Mirror draws with the software rasterizer, so the picture must not change."
+                        : "Exclusive: parallel-rdp is drawing the picture."));
+                return;
+            }
+
+            EmulatorDiagnostics.Write(
+                $"N64 rdp backend: PROBE FAILED after {probeSeconds:F1}s; software renderer. " +
+                $"{machine.NativeRdpUnavailableReason}");
+        }
+
         if (string.Equals(extension, ".z64", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".v64", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".n64", StringComparison.OrdinalIgnoreCase))
@@ -1250,6 +1390,8 @@ public partial class EmulatorWindow : Window
                 $"cic={_n64Machine.Cartridge.Cic} " +
                 $"entry=0x{_n64Machine.Cartridge.EffectiveEntryPoint:X8} " +
                 $"region={_n64Machine.Cartridge.VideoRegion} save={_n64Machine.Cartridge.SaveType}");
+
+            TryApplyN64RdpBackendSetting(_n64Machine);
 
             // The backend choice is made silently inside N64Machine, which falls
             // back to the software renderer whenever paraLLEl-RDP cannot be
@@ -1802,6 +1944,13 @@ public partial class EmulatorWindow : Window
             $"N64 render @{_n64FrameCounter}: microcode={renderer.DetectedMicrocodeName} " +
             $"crc=0x{renderer.MicrocodeCrc32:X8} " +
             $"commands={renderer.CommandsProcessed:N0} unsupported={renderer.UnsupportedCommands:N0} " +
+            $"dropped-sub={renderer.UnsupportedSubCommands:N0}" +
+            (renderer.UnsupportedSubCommands > 0
+                ? $" ({string.Join(",", renderer.UnsupportedSubCommandCounts
+                    .OrderByDescending(entry => entry.Value)
+                    .Take(4)
+                    .Select(entry => $"{entry.Key}={entry.Value}"))}) "
+                : " ") +
             $"tris={renderer.TrianglesDrawn:N0} fillrects={renderer.FillRectanglesDrawn:N0} " +
             $"texrects={renderer.TextureRectanglesDrawn:N0} texpixels={renderer.TexturedPixelsDrawn:N0} " +
             $"texel1={renderer.SecondaryTexturePixelsSampled:N0} " +
@@ -1810,6 +1959,16 @@ public partial class EmulatorWindow : Window
             $"depthreject={renderer.DepthPixelsRejected:N0} " +
             $"alphareject={renderer.AlphaPixelsRejected:N0} blended={renderer.FramebufferPixelsBlended:N0} " +
             $"centrepinned={renderer.CentrePinnedVertices:N0} offscreen={renderer.OffscreenProjectedVertices:N0}; " +
+            // Live proof the bridge is doing something: a non-Off mode with a
+            // rising delivered count means Fast3D really is lowering the
+            // display list into native RDP packets.
+            $"rdp-bridge={_n64Machine.RdpBridgeMode}" +
+            (_n64Machine.RdpBridgeMode == N64RdpBridgeMode.Off
+                ? " "
+                : $"/native={_n64Machine.LleRdpEngine.IsNativeRdpActive} " +
+                  $"delivered={_n64Machine.RdpBridgeCommandsDelivered:N0} " +
+                  $"omitted={_n64Machine.RdpBridgePrimitivesOmitted:N0} " +
+                  $"scanouts={_n64Machine.LleRdpEngine.ScanoutsPresented:N0}; ") +
             $"blocks={cachedBlocks:N0}/{cachedInstructions:N0} instructions " +
             $"({cachedCoverage:F1}% coverage, {averageBlockLength:F1} avg); " +
             $"idle-skipped={_n64Machine.Cpu.IdleInstructionsSkipped:N0}; " +

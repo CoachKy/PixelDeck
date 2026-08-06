@@ -682,8 +682,8 @@ public sealed partial class GekkoCpu
             case 476: return WriteResult(a, ~(_gpr[d] & _gpr[b]), rc); // nand
             case 124: return WriteResult(a, ~(_gpr[d] | _gpr[b]), rc); // nor
             case 284: return WriteResult(a, ~(_gpr[d] ^ _gpr[b]), rc); // eqv
-            case 954: return WriteResult(a, (uint)(sbyte)_gpr[d], rc); // extsb
-            case 922: return WriteResult(a, (uint)(short)_gpr[d], rc); // extsh
+            case 85 or 597 or 954: return WriteResult(a, (uint)(sbyte)_gpr[d], rc); // extsb
+            case 298 or 810 or 922: return WriteResult(a, (uint)(short)_gpr[d], rc); // extsh
             case 26: return WriteResult(a, (uint)BitOperations.LeadingZeroCount(_gpr[d]), rc); // cntlzw
 
             // --- shifts -----------------------------------------------------
@@ -713,7 +713,7 @@ public sealed partial class GekkoCpu
                 return WriteResult(a, (uint)(source >> shift), rc);
             }
 
-            case 824: // srawi
+            case 725 or 824: // srawi
             {
                 var shift = b;
                 var source = (int)_gpr[d];

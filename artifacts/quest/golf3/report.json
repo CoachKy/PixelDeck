@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 3,
+  "pixel64Version": "0.16.026",
+  "startedAtUtc": "2026-08-04T22:04:09.8721458+00:00",
+  "completedAtUtc": "2026-08-04T22:04:54.9780395+00:00",
+  "configuration": {
+    "gamesFolder": "C:\\GitHub\\PixelDeck\\Games\\Nintendo64",
+    "fieldsPerGame": 2400,
+    "parallelism": 4,
+    "filter": "Mario Golf",
+    "captureFlaggedFrames": true,
+    "captureGraphicsTasks": false
+  },
+  "summary": {
+    "total": 1,
+    "uniqueImages": 1,
+    "passed": 0,
+    "warnings": 1,
+    "failed": 0,
+    "invalid": 0
+  },
+  "hardwareProfiles": [
+    {
+      "cic": "Cic6102",
+      "region": "Ntsc",
+      "total": 1,
+      "passed": 0,
+      "warnings": 1,
+      "failed": 0
+    }
+  ],
+  "blockers": [],
+  "games": [
+    {
+      "relativePath": "Mario Golf (USA).n64",
+      "fileName": "Mario Golf (USA).n64",
+      "sha256": "3A055916907462714CEB3841E4277A0777526AEF79C0DD32D039E6A14B946272",
+      "status": "Warning",
+      "title": "MarioGolf64",
+      "gameCode": "NMFE",
+      "region": "Ntsc",
+      "cic": "Cic6102",
+      "saveType": "Sram256Kbit",
+      "sourceByteOrder": "ByteSwapped",
+      "isVerifiedTarget": false,
+      "reachedCartridgeEntryPoint": true,
+      "fieldsCompleted": 2400,
+      "hostFieldsPerSecond": 53.81893633357519,
+      "p99FieldMilliseconds": 70.1972,
+      "instructionsExecuted": 1875781250,
+      "programCounter": 2147655348,
+      "graphicsTasks": 1162,
+      "audioTasks": 2338,
+      "graphicsCommands": 5444333,
+      "unsupportedGraphicsCommands": 0,
+      "unsupportedGraphicsOpcodes": "",
+      "detectedMicrocode": "F3dex2",
+      "graphicsMicrocodeCrc32": 3690939786,
+      "detectedAudioMicrocode": "NAudio",
+      "graphicsBackend": "Pixel64 Fast3D software renderer",
+      "rdpOtherModeHigh": 240,
+      "rdpOtherModeLow": 5574848,
+      "rdpCycleType": 0,
+      "alphaPixelsRejected": 29425013,
+      "framebufferPixelsBlended": 59069418,
+      "unsupportedTextureFormats": "",
+      "audioCommands": 516844,
+      "unsupportedAudioCommands": 0,
+      "unsupportedAudioOpcodes": "",
+      "verticalInterrupts": 2392,
+      "audioDmas": 2336,
+      "controllerPolls": 2385,
+      "maximumDistinctColors": 6102,
+      "distinctCheckpointFrames": 76,
+      "audioSamples": 2493834,
+      "audioPeak": 0.6474966,
+      "droppedAudioSamples": 0,
+      "saveStateDeterministic": true,
+      "capturePath": "captures/0000-Mario Golf (USA)-3A055916.bmp",
+      "graphicsCapturePath": null,
+      "findings": [
+        "Core throughput was 53.8 fields/s, below 60.0 fields/s realtime.",
+        "Pixel64 boot attempt enabled for this Nintendo 64 cartridge. Compatibility has not yet been verified."
+      ]
+    }
+  ]
+}

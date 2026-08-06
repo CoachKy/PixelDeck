@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>boot-diag</AssemblyName>
+    <RootNamespace>BootDiag</RootNamespace>
+    <NoWarn>$(NoWarn);CA1848;CA1305;CA1310;CA1861;CA1002</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\PixelDeck.Emulation.N64\PixelDeck.Emulation.N64.csproj" />
+  </ItemGroup>
+</Project>
